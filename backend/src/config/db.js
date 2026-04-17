@@ -1,17 +1,9 @@
-const { Pool } = require('pg');
+const { createClient } = require('@libsql/client');
 require('dotenv').config();
 
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: parseInt(process.env.DB_PORT),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
+const db = createClient({
+  url: process.env.TURSO_DATABASE_URL || 'file:./local.db',
+  authToken: process.env.TURSO_AUTH_TOKEN || undefined,
 });
 
-pool.on('error', (err) => {
-  console.error('Unexpected PostgreSQL error:', err);
-  process.exit(-1);
-});
-
-module.exports = pool;
+module.exports = db;

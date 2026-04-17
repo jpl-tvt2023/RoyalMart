@@ -6,15 +6,13 @@ const STATUS_FLOW = {
   'Arrived':    'Received',
 };
 
-async function applyPOStatusChange(pool, poId, newStatus, actingUserId) {
-  const client = await pool.connect();
+async function applyPOStatusChange(db, poId, newStatus, actingUserId) {
+  const tx = await db.transaction('write');
   try {
-    await client.query('BEGIN');
-
-    const { rows: poRows } = await client.query(
-      'SELECT * FROM supplier_pos WHERE id = $1 FOR UPDATE',
-      [poId]
-    );
+    const { rows: poRows } = await tx.execute({
+      sql: 'SELECT * FROM supplier_pos WHERE id = ?',
+      args: [poId],
+    });
     const po = poRows[0];
     if (!po) throw Object.assign(new Error('PO not found'), { status: 404 });
 
@@ -29,30 +27,30 @@ async function applyPOStatusChange(pool, poId, newStatus, actingUserId) {
 
     let inventoryDelta = {};
     if (newStatus === 'In-Transit') {
-      await client.query(
-        'UPDATE inventory SET in_transit_qty = in_transit_qty + $1, updated_at = NOW() WHERE sku_id = $2',
-        [po.quantity, po.sku_id]
-      );
+      await tx.execute({
+        sql: 'UPDATE inventory SET in_transit_qty = in_transit_qty + ?, updated_at = datetime(\'now\') WHERE sku_id = ?',
+        args: [po.quantity, po.sku_id],
+      });
       inventoryDelta = { in_transit_qty: `+${po.quantity}` };
     } else if (newStatus === 'Received') {
-      await client.query(
-        `UPDATE inventory SET
-          in_transit_qty = GREATEST(in_transit_qty - $1, 0),
-          on_hand_qty = on_hand_qty + $1,
-          updated_at = NOW()
-         WHERE sku_id = $2`,
-        [po.quantity, po.sku_id]
-      );
+      await tx.execute({
+        sql: `UPDATE inventory SET
+                in_transit_qty = MAX(in_transit_qty - ?, 0),
+                on_hand_qty = on_hand_qty + ?,
+                updated_at = datetime('now')
+              WHERE sku_id = ?`,
+        args: [po.quantity, po.quantity, po.sku_id],
+      });
       inventoryDelta = { in_transit_qty: `-${po.quantity}`, on_hand_qty: `+${po.quantity}` };
     }
 
-    const { rows: updatedPO } = await client.query(
-      'UPDATE supplier_pos SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
-      [newStatus, poId]
-    );
+    const { rows: updatedPO } = await tx.execute({
+      sql: 'UPDATE supplier_pos SET status = ?, updated_at = datetime(\'now\') WHERE id = ? RETURNING *',
+      args: [newStatus, poId],
+    });
 
     await logAction({
-      client,
+      client: tx,
       userId: actingUserId,
       actionType: 'PO_STATUS_CHANGE',
       description: `PO #${poId} status changed: ${po.status} → ${newStatus} (SKU ID: ${po.sku_id}, Qty: ${po.quantity})`,
@@ -62,7 +60,7 @@ async function applyPOStatusChange(pool, poId, newStatus, actingUserId) {
 
     if (Object.keys(inventoryDelta).length > 0) {
       await logAction({
-        client,
+        client: tx,
         userId: actingUserId,
         actionType: 'INVENTORY_UPDATE',
         description: `Inventory updated via PO #${poId}: ${JSON.stringify(inventoryDelta)}`,
@@ -71,13 +69,11 @@ async function applyPOStatusChange(pool, poId, newStatus, actingUserId) {
       });
     }
 
-    await client.query('COMMIT');
+    await tx.commit();
     return { po: updatedPO[0], inventoryDelta };
   } catch (err) {
-    await client.query('ROLLBACK');
+    await tx.rollback();
     throw err;
-  } finally {
-    client.release();
   }
 }
 

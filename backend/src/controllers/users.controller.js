@@ -1,13 +1,17 @@
 const bcrypt = require('bcryptjs');
-const pool = require('../config/db');
+const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
+
+function coerceUser(row) {
+  return { ...row, is_first_login: !!row.is_first_login };
+}
 
 async function list(req, res, next) {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await db.execute(
       'SELECT id, name, email, role, is_first_login, created_at FROM users ORDER BY created_at DESC'
     );
-    res.json(rows);
+    res.json(rows.map(coerceUser));
   } catch (err) { next(err); }
 }
 
@@ -22,15 +26,17 @@ async function create(req, res, next) {
       return res.status(400).json({ message: 'Invalid role' });
     }
     const hash = await bcrypt.hash(password, 10);
-    const { rows } = await pool.query(
-      `INSERT INTO users (name, email, password_hash, role, is_first_login)
-       VALUES ($1,$2,$3,$4,true) RETURNING id, name, email, role, is_first_login, created_at`,
-      [name, email, hash, role]
-    );
+    const { rows } = await db.execute({
+      sql: `INSERT INTO users (name, email, password_hash, role, is_first_login)
+            VALUES (?,?,?,?,1) RETURNING id, name, email, role, is_first_login, created_at`,
+      args: [name, email, hash, role],
+    });
     await logAction({ userId: req.user.id, actionType: 'USER_CREATE', description: `Created user ${email} (${role})`, entityType: 'user', entityId: rows[0].id });
-    res.status(201).json(rows[0]);
+    res.status(201).json(coerceUser(rows[0]));
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ message: 'Email already exists' });
+    if (err.message && err.message.includes('UNIQUE constraint failed')) {
+      return res.status(409).json({ message: 'Email already exists' });
+    }
     next(err);
   }
 }
@@ -43,18 +49,17 @@ async function update(req, res, next) {
 
     const updates = [];
     const values = [];
-    let i = 1;
-    if (name) { updates.push(`name = $${i++}`); values.push(name); }
-    if (role) { updates.push(`role = $${i++}`); values.push(role); }
+    if (name) { updates.push('name = ?'); values.push(name); }
+    if (role) { updates.push('role = ?'); values.push(role); }
     values.push(id);
 
-    const { rows } = await pool.query(
-      `UPDATE users SET ${updates.join(', ')} WHERE id = $${i} RETURNING id, name, email, role, is_first_login`,
-      values
-    );
+    const { rows } = await db.execute({
+      sql: `UPDATE users SET ${updates.join(', ')} WHERE id = ? RETURNING id, name, email, role, is_first_login`,
+      args: values,
+    });
     if (!rows.length) return res.status(404).json({ message: 'User not found' });
     await logAction({ userId: req.user.id, actionType: 'USER_UPDATE', description: `Updated user ${rows[0].email}`, entityType: 'user', entityId: rows[0].id });
-    res.json(rows[0]);
+    res.json(coerceUser(rows[0]));
   } catch (err) { next(err); }
 }
 
@@ -64,7 +69,7 @@ async function remove(req, res, next) {
     if (parseInt(id) === req.user.id) {
       return res.status(400).json({ message: 'Cannot delete your own account' });
     }
-    const { rows } = await pool.query('DELETE FROM users WHERE id = $1 RETURNING email', [id]);
+    const { rows } = await db.execute({ sql: 'DELETE FROM users WHERE id = ? RETURNING email', args: [id] });
     if (!rows.length) return res.status(404).json({ message: 'User not found' });
     await logAction({ userId: req.user.id, actionType: 'USER_DELETE', description: `Deleted user ${rows[0].email}`, entityType: 'user', entityId: id });
     res.json({ message: 'User deleted' });
@@ -79,10 +84,10 @@ async function adminResetPassword(req, res, next) {
       return res.status(400).json({ message: 'Password must be at least 8 characters' });
     }
     const hash = await bcrypt.hash(newPassword, 10);
-    const { rows } = await pool.query(
-      'UPDATE users SET password_hash = $1, is_first_login = true WHERE id = $2 RETURNING email',
-      [hash, id]
-    );
+    const { rows } = await db.execute({
+      sql: 'UPDATE users SET password_hash = ?, is_first_login = 1 WHERE id = ? RETURNING email',
+      args: [hash, id],
+    });
     if (!rows.length) return res.status(404).json({ message: 'User not found' });
     await logAction({ userId: req.user.id, actionType: 'PASSWORD_RESET', description: `Admin reset password for ${rows[0].email}`, entityType: 'user', entityId: id });
     res.json({ message: 'Password reset. User will be prompted to change on next login.' });

@@ -1,10 +1,10 @@
-const pool = require('../config/db');
+const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
 const { applyPOStatusChange } = require('../services/inventory.service');
 
 async function list(req, res, next) {
   try {
-    const { rows } = await pool.query(`
+    const { rows } = await db.execute(`
       SELECT sp.*, p.sku_code, p.name AS sku_name, u.name AS created_by_name
       FROM supplier_pos sp
       JOIN products p ON p.id = sp.sku_id
@@ -23,14 +23,14 @@ async function create(req, res, next) {
     }
     if (quantity <= 0) return res.status(400).json({ message: 'quantity must be positive' });
 
-    const { rows: skuCheck } = await pool.query('SELECT id FROM products WHERE id = $1', [sku_id]);
+    const { rows: skuCheck } = await db.execute({ sql: 'SELECT id FROM products WHERE id = ?', args: [sku_id] });
     if (!skuCheck.length) return res.status(404).json({ message: 'SKU not found' });
 
-    const { rows } = await pool.query(
-      `INSERT INTO supplier_pos (supplier_name, sku_id, quantity, created_by, status)
-       VALUES ($1,$2,$3,$4,'Ordered') RETURNING *`,
-      [supplier_name, sku_id, quantity, req.user.id]
-    );
+    const { rows } = await db.execute({
+      sql: `INSERT INTO supplier_pos (supplier_name, sku_id, quantity, created_by, status)
+            VALUES (?,?,?,?,'Ordered') RETURNING *`,
+      args: [supplier_name, sku_id, quantity, req.user.id],
+    });
     await logAction({ userId: req.user.id, actionType: 'PO_CREATE', description: `Created PO #${rows[0].id}: ${supplier_name}, SKU ${sku_id}, Qty ${quantity}`, entityType: 'supplier_po', entityId: rows[0].id });
     res.status(201).json(rows[0]);
   } catch (err) { next(err); }
@@ -54,7 +54,7 @@ async function updateStatus(req, res, next) {
       return res.status(403).json({ message: `Your role cannot set status to ${status}` });
     }
 
-    const result = await applyPOStatusChange(pool, parseInt(id), status, req.user.id);
+    const result = await applyPOStatusChange(db, parseInt(id), status, req.user.id);
     res.json(result);
   } catch (err) { next(err); }
 }

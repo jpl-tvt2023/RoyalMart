@@ -1,10 +1,10 @@
 CREATE TABLE IF NOT EXISTS users (
-  id            SERIAL PRIMARY KEY,
-  name          VARCHAR(120) NOT NULL,
-  email         VARCHAR(255) UNIQUE NOT NULL,
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  name          TEXT NOT NULL,
+  email         TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
-  role          VARCHAR(30) NOT NULL
+  role          TEXT NOT NULL
                   CHECK (role IN ('Admin','Owner','Office_POC','Purchase_Team','Stocks_Team')),
-  is_first_login BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  is_first_login INTEGER NOT NULL DEFAULT 1,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+)

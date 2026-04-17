@@ -5,7 +5,10 @@
       "Bash(npm init *)",
       "Bash(npm create *)",
       "Bash(npm install *)",
-      "Bash(node -e \"require\\('./app'\\)\")"
+      "Bash(node -e \"require\\('./app'\\)\")",
+      "Bash(npm uninstall *)",
+      "Bash(node -e \"require\\('./app'\\); console.log\\('App loaded OK'\\)\")",
+      "Bash(node -e \"require\\('./app'\\); console.log\\('OK'\\)\")"
     ]
   }
 }

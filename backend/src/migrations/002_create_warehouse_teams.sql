@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS warehouse_teams (
-  id         SERIAL PRIMARY KEY,
-  team_name  VARCHAR(120) NOT NULL,
-  lead_name  VARCHAR(120),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_name  TEXT NOT NULL,
+  lead_name  TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
