@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//d/My Projects/**)",
+      "Bash(npm init *)",
+      "Bash(npm create *)",
+      "Bash(npm install *)",
+      "Bash(node -e \"require\\('./app'\\)\")"
+    ]
+  }
+}
