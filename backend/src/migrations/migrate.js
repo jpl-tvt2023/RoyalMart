@@ -23,7 +23,7 @@ async function migrate() {
     `);
 
     const { rows: applied } = await db.execute('SELECT filename FROM schema_migrations');
-    const appliedSet = new Set(applied.map(r => r.filename));
+    const appliedSet = new Set(applied.map(r => String(r.filename)));
 
     const dir = path.join(__dirname);
     const files = fs.readdirSync(dir)
@@ -38,19 +38,25 @@ async function migrate() {
       const sql = fs.readFileSync(path.join(dir, file), 'utf8');
       const statements = splitSQL(sql);
 
-      await db.batch(
-        [
-          ...statements.map(s => ({ sql: s })),
-          { sql: 'INSERT INTO schema_migrations (filename) VALUES (?)', args: [file] },
-        ],
-        'write'
-      );
+      const tx = await db.transaction('write');
+      try {
+        for (const stmt of statements) {
+          await tx.execute(stmt);
+        }
+        await tx.execute({ sql: 'INSERT INTO schema_migrations (filename) VALUES (?)', args: [file] });
+        await tx.commit();
+      } catch (err) {
+        await tx.rollback();
+        throw err;
+      }
       console.log(`  applied: ${file}`);
     }
     console.log('Migrations complete.');
   } catch (err) {
     console.error('Migration failed:', err.message);
     process.exit(1);
+  } finally {
+    db.close();
   }
 }
 
