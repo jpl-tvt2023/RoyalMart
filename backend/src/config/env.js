@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const required = [
-  'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD',
+  'TURSO_DATABASE_URL',
   'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET',
 ];
 

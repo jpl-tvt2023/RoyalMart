@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const pool = require('../config/db');
+const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
 const {
   JWT_ACCESS_SECRET, JWT_REFRESH_SECRET,
@@ -25,7 +25,7 @@ async function login(req, res, next) {
     if (!email || !password) {
       return res.status(400).json({ message: 'Email and password are required' });
     }
-    const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const { rows } = await db.execute({ sql: 'SELECT * FROM users WHERE email = ?', args: [email] });
     const user = rows[0];
     if (!user) return res.status(401).json({ message: 'Invalid credentials' });
 
@@ -46,7 +46,7 @@ async function login(req, res, next) {
 
     res.json({
       accessToken,
-      user: { id: user.id, name: user.name, email: user.email, role: user.role, is_first_login: user.is_first_login },
+      user: { id: user.id, name: user.name, email: user.email, role: user.role, is_first_login: !!user.is_first_login },
     });
   } catch (err) { next(err); }
 }
@@ -59,7 +59,7 @@ async function refresh(req, res, next) {
     try { payload = jwt.verify(token, JWT_REFRESH_SECRET); }
     catch { return res.status(401).json({ message: 'Invalid refresh token' }); }
 
-    const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [payload.id]);
+    const { rows } = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [payload.id] });
     const user = rows[0];
     if (!user) return res.status(401).json({ message: 'User not found' });
 
@@ -73,7 +73,7 @@ async function changePassword(req, res, next) {
     if (!newPassword || newPassword.length < 8) {
       return res.status(400).json({ message: 'New password must be at least 8 characters' });
     }
-    const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [req.user.id]);
+    const { rows } = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [req.user.id] });
     const user = rows[0];
 
     if (!user.is_first_login) {
@@ -83,10 +83,10 @@ async function changePassword(req, res, next) {
     }
 
     const hash = await bcrypt.hash(newPassword, 10);
-    await pool.query(
-      'UPDATE users SET password_hash = $1, is_first_login = false WHERE id = $2',
-      [hash, user.id]
-    );
+    await db.execute({
+      sql: 'UPDATE users SET password_hash = ?, is_first_login = 0 WHERE id = ?',
+      args: [hash, user.id],
+    });
 
     await logAction({ userId: user.id, actionType: 'PASSWORD_CHANGE', description: `${user.name} changed password`, entityType: 'user', entityId: user.id });
 

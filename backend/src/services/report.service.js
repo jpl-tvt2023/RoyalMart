@@ -1,7 +1,7 @@
 const ExcelJS = require('exceljs');
 const path = require('path');
 const fs = require('fs');
-const pool = require('../config/db');
+const db = require('../config/db');
 const { REPORT_OUTPUT_DIR } = require('../config/env');
 
 async function generateDailyReport() {
@@ -16,19 +16,19 @@ async function generateDailyReport() {
   // Sheet 1: Stock Snapshot
   const stockSheet = wb.addWorksheet('Stock Snapshot');
   stockSheet.columns = [
-    { header: 'SKU Code',       key: 'sku_code',        width: 18 },
-    { header: 'Name',           key: 'name',            width: 35 },
-    { header: 'Color',          key: 'color',           width: 12 },
-    { header: 'On Hand',        key: 'on_hand_qty',     width: 12 },
-    { header: 'In Transit',     key: 'in_transit_qty',  width: 12 },
-    { header: 'Committed',      key: 'committed_qty',   width: 12 },
-    { header: 'Net Position',   key: 'net_position',    width: 14 },
-    { header: 'Safety Threshold', key: 'safety_threshold', width: 18 },
-    { header: 'Status',         key: 'status',          width: 12 },
+    { header: 'SKU Code',         key: 'sku_code',          width: 18 },
+    { header: 'Name',             key: 'name',              width: 35 },
+    { header: 'Color',            key: 'color',             width: 12 },
+    { header: 'On Hand',          key: 'on_hand_qty',       width: 12 },
+    { header: 'In Transit',       key: 'in_transit_qty',    width: 12 },
+    { header: 'Committed',        key: 'committed_qty',     width: 12 },
+    { header: 'Net Position',     key: 'net_position',      width: 14 },
+    { header: 'Safety Threshold', key: 'safety_threshold',  width: 18 },
+    { header: 'Status',           key: 'status',            width: 12 },
   ];
   stockSheet.getRow(1).font = { bold: true };
 
-  const { rows: stockRows } = await pool.query(`
+  const { rows: stockRows } = await db.execute(`
     SELECT p.sku_code, p.name, p.color, i.on_hand_qty, i.in_transit_qty, i.committed_qty,
            (i.on_hand_qty + i.in_transit_qty - i.committed_qty) AS net_position,
            p.safety_threshold
@@ -58,21 +58,28 @@ async function generateDailyReport() {
   // Sheet 3: Audit Log (today)
   const auditSheet = wb.addWorksheet('Audit Log');
   auditSheet.columns = [
-    { header: 'Time',        key: 'timestamp',    width: 22 },
-    { header: 'User',        key: 'user_name',    width: 20 },
-    { header: 'Action',      key: 'action_type',  width: 22 },
-    { header: 'Entity',      key: 'entity_type',  width: 15 },
-    { header: 'Entity ID',   key: 'entity_id',    width: 10 },
-    { header: 'Description', key: 'description',  width: 60 },
+    { header: 'Time',        key: 'timestamp',   width: 22 },
+    { header: 'User',        key: 'user_name',   width: 20 },
+    { header: 'Action',      key: 'action_type', width: 22 },
+    { header: 'Entity',      key: 'entity_type', width: 15 },
+    { header: 'Entity ID',   key: 'entity_id',   width: 10 },
+    { header: 'Description', key: 'description', width: 60 },
   ];
   auditSheet.getRow(1).font = { bold: true };
 
-  const { rows: auditRows } = await pool.query(`
-    SELECT al.timestamp, u.name AS user_name, al.action_type, al.entity_type, al.entity_id, al.description
-    FROM audit_logs al LEFT JOIN users u ON u.id = al.user_id
-    WHERE al.timestamp >= CURRENT_DATE AND al.timestamp < CURRENT_DATE + INTERVAL '1 day'
-    ORDER BY al.timestamp
-  `);
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const tomorrowStart = new Date(todayStart);
+  tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+
+  const { rows: auditRows } = await db.execute({
+    sql: `SELECT al.timestamp, u.name AS user_name, al.action_type, al.entity_type, al.entity_id, al.description
+          FROM audit_logs al LEFT JOIN users u ON u.id = al.user_id
+          WHERE al.timestamp >= ? AND al.timestamp < ?
+          ORDER BY al.timestamp`,
+    args: [todayStart.toISOString(), tomorrowStart.toISOString()],
+  });
+
   for (const row of auditRows) {
     auditSheet.addRow({
       ...row,
