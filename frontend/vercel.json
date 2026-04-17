@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://royalmartportalfrontend.vercel.app/api/:path*"
+      "destination": "https://royalmartportal.vercel.app/api/:path*"
     },
     {
       "source": "/(.*)",
