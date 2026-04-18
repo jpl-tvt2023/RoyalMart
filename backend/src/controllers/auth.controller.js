@@ -44,11 +44,12 @@ async function login(req, res, next) {
     const accessToken = signAccess(user);
     const refreshToken = signRefresh(user.id);
 
+    const isProd = process.env.NODE_ENV === 'production';
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
-      sameSite: 'strict',
+      sameSite: isProd ? 'none' : 'strict',
+      secure: isProd,
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      secure: process.env.NODE_ENV === 'production',
     });
 
     await logAction({ userId: user.id, actionType: 'LOGIN', description: `${user.name} logged in`, entityType: 'user', entityId: user.id });
@@ -105,7 +106,12 @@ async function changePassword(req, res, next) {
 }
 
 async function logout(req, res) {
-  res.clearCookie('refreshToken');
+  const isProd = process.env.NODE_ENV === 'production';
+  res.clearCookie('refreshToken', {
+    httpOnly: true,
+    sameSite: isProd ? 'none' : 'strict',
+    secure: isProd,
+  });
   res.json({ message: 'Logged out' });
 }
 
