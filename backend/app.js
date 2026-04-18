@@ -27,6 +27,7 @@ app.use('/api/skus',         require('./src/routes/skus.routes'));
 app.use('/api/inventory',    require('./src/routes/inventory.routes'));
 app.use('/api/supplier-pos', require('./src/routes/supplierPO.routes'));
 app.use('/api/packaging',    require('./src/routes/packaging.routes'));
+app.use('/api/marketplace-pos', require('./src/routes/marketplacePO.routes'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 

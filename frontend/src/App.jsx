@@ -12,8 +12,12 @@ import SKUMaster from './pages/skus/SKUMaster';
 import InventoryDashboard from './pages/inventory/InventoryDashboard';
 import SupplierPOs from './pages/restock/SupplierPOs';
 import PackagingInventory from './pages/packaging/PackagingInventory';
+import PurchaseOrdersList from './pages/PurchaseOrders/PurchaseOrdersList';
+import PurchaseOrderImport from './pages/PurchaseOrders/PurchaseOrderImport';
+import PurchaseOrderDetail from './pages/PurchaseOrders/PurchaseOrderDetail';
 
-const ALL_ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Stocks_Team'];
+const ALL_ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Stocks_Team', 'PO_Executive'];
+const PO_ROLES = ['Admin', 'Owner', 'PO_Executive'];
 
 export default function App() {
   return (
@@ -61,6 +65,16 @@ export default function App() {
 
           <Route path="/packaging" element={
             <ProtectedRoute roles={['Admin', 'Owner', 'Stocks_Team']}><PackagingInventory /></ProtectedRoute>
+          } />
+
+          <Route path="/purchase-orders" element={
+            <ProtectedRoute roles={PO_ROLES}><PurchaseOrdersList /></ProtectedRoute>
+          } />
+          <Route path="/purchase-orders/new" element={
+            <ProtectedRoute roles={PO_ROLES}><PurchaseOrderImport /></ProtectedRoute>
+          } />
+          <Route path="/purchase-orders/:poId" element={
+            <ProtectedRoute roles={PO_ROLES}><PurchaseOrderDetail /></ProtectedRoute>
           } />
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
