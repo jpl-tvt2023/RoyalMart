@@ -21,7 +21,7 @@ async function create(req, res, next) {
     if (!name || !email || !role || !password) {
       return res.status(400).json({ message: 'name, email, role, and password are required' });
     }
-    const validRoles = ['Admin','Owner','Office_POC','Purchase_Team','Stocks_Team'];
+    const validRoles = ['Admin','Owner','Office_POC','Purchase_Team','Stocks_Team','PO_Executive'];
     if (!validRoles.includes(role)) {
       return res.status(400).json({ message: 'Invalid role' });
     }

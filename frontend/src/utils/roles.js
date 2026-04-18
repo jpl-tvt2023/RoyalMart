@@ -4,13 +4,14 @@ export const ROLES = {
   OFFICE_POC: 'Office_POC',
   PURCHASE_TEAM: 'Purchase_Team',
   STOCKS_TEAM: 'Stocks_Team',
+  PO_EXECUTIVE: 'PO_Executive',
 };
 
 export const NAV_MAP = [
   {
     label: 'Dashboard',
     path: '/dashboard',
-    roles: [ROLES.ADMIN, ROLES.OWNER, ROLES.OFFICE_POC, ROLES.PURCHASE_TEAM, ROLES.STOCKS_TEAM],
+    roles: [ROLES.ADMIN, ROLES.OWNER, ROLES.OFFICE_POC, ROLES.PURCHASE_TEAM, ROLES.STOCKS_TEAM, ROLES.PO_EXECUTIVE],
   },
   {
     label: 'User Management',
@@ -41,5 +42,10 @@ export const NAV_MAP = [
     label: 'Packaging Materials',
     path: '/packaging',
     roles: [ROLES.ADMIN, ROLES.OWNER, ROLES.STOCKS_TEAM],
+  },
+  {
+    label: 'Purchase Orders',
+    path: '/purchase-orders',
+    roles: [ROLES.ADMIN, ROLES.OWNER, ROLES.PO_EXECUTIVE],
   },
 ];

@@ -8,7 +8,12 @@
       "Bash(node -e \"require\\('./app'\\)\")",
       "Bash(npm uninstall *)",
       "Bash(node -e \"require\\('./app'\\); console.log\\('App loaded OK'\\)\")",
-      "Bash(node -e \"require\\('./app'\\); console.log\\('OK'\\)\")"
+      "Bash(node -e \"require\\('./app'\\); console.log\\('OK'\\)\")",
+      "Read(//c/Users/Rahul/Downloads/attachment examples for PO/**)",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"const p = require\\('pdf-parse'\\); console.log\\(typeof p, Object.keys\\(p || {}\\)\\);\")",
+      "Bash(npx vite *)",
+      "Bash(npm test *)"
     ]
   }
 }
