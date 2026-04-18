@@ -20,7 +20,8 @@ jobs:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: backend/package-lock.json
-      - run: npm ci
+      # TODO: revert to `npm ci` once backend/package-lock.json is regenerated on Linux
+      - run: npm install --no-audit --no-fund
       - run: npm test
 
   frontend-tests:
