@@ -2,6 +2,8 @@ import { Trash2, Plus } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import { INDIAN_CITIES } from '../../data/indianCities';
 
+const PO_STATUSES = ['Open', 'In Progress', 'Completed', 'Cancelled'];
+
 export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true, onboarderSlot = null }) {
   const set = (patch) => onChange({ ...value, ...patch });
   const lines = value.lines || [];
@@ -41,6 +43,11 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
           <select value={value.city || ''} onChange={e => set({ city: e.target.value })} className={inputCls}>
             <option value="">Select city...</option>
             {INDIAN_CITIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label="Status">
+          <select value={value.status || 'Open'} onChange={e => set({ status: e.target.value })} className={inputCls}>
+            {PO_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </Field>
         {onboarderSlot}
