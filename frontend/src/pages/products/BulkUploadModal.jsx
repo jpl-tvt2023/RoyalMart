@@ -20,6 +20,18 @@ function downloadTemplate(existing = []) {
   XLSX.writeFile(wb, 'product-vendor-mappings-template.xlsx');
 }
 
+function summariseResult({ inserted, updated, skipped }) {
+  const parts = [];
+  if (inserted) parts.push(`${inserted} new mapping${inserted !== 1 ? 's' : ''} added`);
+  if (updated)  parts.push(`${updated} existing mapping${updated !== 1 ? 's' : ''} updated`);
+  if (!parts.length) return skipped.length
+    ? `No changes saved — all ${skipped.length} row${skipped.length !== 1 ? 's were' : ' was'} skipped.`
+    : 'No changes — your file matched what was already saved.';
+  let msg = parts.join(' and ') + '.';
+  if (skipped.length) msg += ` ${skipped.length} row${skipped.length !== 1 ? 's' : ''} skipped.`;
+  return msg;
+}
+
 function normaliseRow(raw) {
   const out = {};
   for (const key of Object.keys(raw)) {
@@ -84,7 +96,7 @@ export default function BulkUploadModal({ isOpen, onClose, onDone, existingRows 
     try {
       const r = await bulkUpsertVendorCodes(rows);
       setResult(r.data);
-      toast.success(`+${r.data.inserted} inserted · ~${r.data.updated} updated · !${r.data.skipped.length} skipped`);
+      toast.success(summariseResult(r.data), { duration: 5000 });
       onDone?.();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Upload failed');
@@ -122,7 +134,7 @@ export default function BulkUploadModal({ isOpen, onClose, onDone, existingRows 
             </table>
           </div>
           <p className="text-xs text-gray-500 mt-2">
-            Upsert key is <code>vendor + vendor_item_code</code>. Existing rows with the same pair will have their product and description overwritten.
+            If a row in your file has the same <b>Vendor</b> and <b>Vendor Product ID</b> as an existing mapping, the existing one will be updated with the new details. New combinations will be added as fresh mappings.
           </p>
         </div>
 
@@ -142,12 +154,22 @@ export default function BulkUploadModal({ isOpen, onClose, onDone, existingRows 
         </div>
 
         {result && (
-          <div className="border border-gray-200 rounded-lg p-3 text-sm">
-            <div className="flex gap-4 font-medium">
-              <span className="text-emerald-700">+{result.inserted} inserted</span>
-              <span className="text-blue-700">~{result.updated} updated</span>
-              <span className="text-amber-700">!{result.skipped.length} skipped</span>
-            </div>
+          <div className="border border-emerald-200 bg-emerald-50 rounded-lg p-4 text-sm">
+            <p className="font-medium text-emerald-800">Upload complete</p>
+            <ul className="mt-2 space-y-1 text-gray-800">
+              {result.inserted > 0 && (
+                <li><span className="font-semibold text-emerald-700">{result.inserted}</span> new mapping{result.inserted !== 1 ? 's' : ''} added.</li>
+              )}
+              {result.updated > 0 && (
+                <li><span className="font-semibold text-blue-700">{result.updated}</span> existing mapping{result.updated !== 1 ? 's' : ''} updated with new details.</li>
+              )}
+              {result.inserted === 0 && result.updated === 0 && result.skipped.length === 0 && (
+                <li className="text-gray-600">No changes — your file matched what was already saved.</li>
+              )}
+              {result.skipped.length > 0 && (
+                <li><span className="font-semibold text-amber-700">{result.skipped.length}</span> row{result.skipped.length !== 1 ? 's' : ''} skipped (missing info or unknown SKU).</li>
+              )}
+            </ul>
             {result.skipped.length > 0 && (
               <details className="mt-2">
                 <summary className="cursor-pointer text-xs text-gray-600">Show skipped rows</summary>
