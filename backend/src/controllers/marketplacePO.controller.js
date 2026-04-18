@@ -52,11 +52,13 @@ async function list(req, res, next) {
     const { rows } = await db.execute({
       sql: `
         SELECT p.po_id, p.vendor, p.vendor_po_id, p.po_date, p.expected_delivery_date,
-               p.po_expiry_date, p.created_at, p.updated_at,
+               p.po_expiry_date, p.city, p.onboarded_by, p.created_at, p.updated_at,
                u.name AS created_by_name,
+               ob.name AS onboarded_by_name,
                (SELECT COUNT(*) FROM marketplace_po_lines WHERE po_id = p.po_id) AS line_count
         FROM marketplace_pos p
-        LEFT JOIN users u ON u.id = p.created_by
+        LEFT JOIN users u  ON u.id  = p.created_by
+        LEFT JOIN users ob ON ob.id = p.onboarded_by
         ${where}
         ORDER BY p.updated_at DESC
       `,
@@ -70,8 +72,10 @@ async function getOne(req, res, next) {
   try {
     const { poId } = req.params;
     const { rows } = await db.execute({
-      sql: `SELECT p.*, u.name AS created_by_name
-            FROM marketplace_pos p LEFT JOIN users u ON u.id = p.created_by
+      sql: `SELECT p.*, u.name AS created_by_name, ob.name AS onboarded_by_name
+            FROM marketplace_pos p
+            LEFT JOIN users u  ON u.id  = p.created_by
+            LEFT JOIN users ob ON ob.id = p.onboarded_by
             WHERE p.po_id = ?`,
       args: [poId],
     });
@@ -105,7 +109,7 @@ async function create(req, res, next) {
   try {
     const err = validatePayload(req.body);
     if (err) return res.status(400).json({ message: err });
-    const { vendor, vendor_po_id, po_date, expected_delivery_date, po_expiry_date, lines } = req.body;
+    const { vendor, vendor_po_id, po_date, expected_delivery_date, po_expiry_date, city, lines } = req.body;
     const cleanVendorPoId = String(vendor_po_id).trim();
 
     const tx = await db.transaction('write');
@@ -121,9 +125,10 @@ async function create(req, res, next) {
         poId = existing[0].po_id;
         await tx.execute({
           sql: `UPDATE marketplace_pos
-                SET po_date = ?, expected_delivery_date = ?, po_expiry_date = ?, updated_at = datetime('now')
+                SET po_date = ?, expected_delivery_date = ?, po_expiry_date = ?, city = ?,
+                    updated_at = datetime('now')
                 WHERE po_id = ?`,
-          args: [po_date || null, expected_delivery_date || null, po_expiry_date || null, poId],
+          args: [po_date || null, expected_delivery_date || null, po_expiry_date || null, city || null, poId],
         });
       } else {
         isNew = true;
@@ -136,9 +141,9 @@ async function create(req, res, next) {
         poId = `${VENDOR_PREFIX[vendor]}${pad3(nextSeq)}`;
         await tx.execute({
           sql: `INSERT INTO marketplace_pos
-                (po_id, vendor, vendor_po_id, po_date, expected_delivery_date, po_expiry_date, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          args: [poId, vendor, cleanVendorPoId, po_date || null, expected_delivery_date || null, po_expiry_date || null, req.user.id],
+                (po_id, vendor, vendor_po_id, po_date, expected_delivery_date, po_expiry_date, city, created_by, onboarded_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [poId, vendor, cleanVendorPoId, po_date || null, expected_delivery_date || null, po_expiry_date || null, city || null, req.user.id, req.user.id],
         });
       }
 
@@ -184,16 +189,33 @@ async function update(req, res, next) {
       po_date: req.body.po_date,
       expected_delivery_date: req.body.expected_delivery_date,
       po_expiry_date: req.body.po_expiry_date,
+      city: req.body.city,
       lines: req.body.lines,
     };
     const err = validatePayload(body);
     if (err) return res.status(400).json({ message: err });
 
+    let newOnboardedBy = null;
+    const canReassign = ['Admin', 'Owner'].includes(req.user.role);
+    if (canReassign && req.body.onboarded_by != null) {
+      const onbId = Number(req.body.onboarded_by);
+      if (!Number.isInteger(onbId)) return res.status(400).json({ message: 'Invalid onboarded_by' });
+      const { rows: u } = await db.execute({
+        sql: 'SELECT id, role FROM users WHERE id = ?',
+        args: [onbId],
+      });
+      if (!u.length) return res.status(400).json({ message: 'Onboarder user not found' });
+      if (u[0].role !== 'PO_Executive') {
+        return res.status(400).json({ message: 'Onboarder must be a PO_Executive' });
+      }
+      newOnboardedBy = onbId;
+    }
+
     const tx = await db.transaction('write');
     try {
       await tx.execute({
         sql: `UPDATE marketplace_pos
-              SET vendor_po_id = ?, po_date = ?, expected_delivery_date = ?, po_expiry_date = ?,
+              SET vendor_po_id = ?, po_date = ?, expected_delivery_date = ?, po_expiry_date = ?, city = ?,
                   updated_at = datetime('now')
               WHERE po_id = ?`,
         args: [
@@ -201,9 +223,16 @@ async function update(req, res, next) {
           body.po_date || null,
           body.expected_delivery_date || null,
           body.po_expiry_date || null,
+          body.city || null,
           poId,
         ],
       });
+      if (newOnboardedBy !== null) {
+        await tx.execute({
+          sql: 'UPDATE marketplace_pos SET onboarded_by = ? WHERE po_id = ?',
+          args: [newOnboardedBy, poId],
+        });
+      }
       await tx.execute({ sql: 'DELETE FROM marketplace_po_lines WHERE po_id = ?', args: [poId] });
       for (let idx = 0; idx < body.lines.length; idx++) {
         const ln = body.lines[idx];
