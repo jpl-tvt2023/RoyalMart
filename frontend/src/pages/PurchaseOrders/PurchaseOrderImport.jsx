@@ -30,6 +30,7 @@ export default function PurchaseOrderImport() {
         po_date: data.po_date || '',
         expected_delivery_date: data.expected_delivery_date || '',
         po_expiry_date: data.po_expiry_date || '',
+        city: '',
         lines: data.lines || [],
       });
       toast.success(`Parsed ${data.lines.length} line item${data.lines.length !== 1 ? 's' : ''}`);
@@ -40,6 +41,7 @@ export default function PurchaseOrderImport() {
 
   const handleApprove = async () => {
     if (!summary.vendor_po_id) return toast.error('Vendor PO No. is required');
+    if (!summary.city) return toast.error('City is required');
     if (!summary.lines?.length) return toast.error('At least one line item is required');
     setCommitting(true);
     try {

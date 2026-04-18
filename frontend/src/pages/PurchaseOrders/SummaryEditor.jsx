@@ -1,7 +1,8 @@
 import { Trash2, Plus } from 'lucide-react';
 import Button from '../../components/ui/Button';
+import { INDIAN_CITIES } from '../../data/indianCities';
 
-export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true }) {
+export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true, onboarderSlot = null }) {
   const set = (patch) => onChange({ ...value, ...patch });
   const lines = value.lines || [];
 
@@ -36,6 +37,13 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
         <Field label="PO Expiry Date">
           <input type="date" value={value.po_expiry_date || ''} onChange={e => set({ po_expiry_date: e.target.value })} className={inputCls} />
         </Field>
+        <Field label="City">
+          <select value={value.city || ''} onChange={e => set({ city: e.target.value })} className={inputCls}>
+            <option value="">Select city...</option>
+            {INDIAN_CITIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </Field>
+        {onboarderSlot}
       </div>
 
       <div>

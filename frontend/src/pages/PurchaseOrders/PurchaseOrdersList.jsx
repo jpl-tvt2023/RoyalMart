@@ -75,7 +75,7 @@ export default function PurchaseOrdersList() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                {['PO ID', 'Vendor', 'Vendor PO No.', 'PO Date', 'Expected Delivery', 'Expiry', 'Lines', 'Updated', 'Actions'].map(h => (
+                {['PO ID', 'Vendor', 'Vendor PO No.', 'City', 'Onboarded By', 'PO Date', 'Expected Delivery', 'Expiry', 'Lines', 'Updated', 'Actions'].map(h => (
                   <th key={h} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -83,7 +83,7 @@ export default function PurchaseOrdersList() {
             <tbody>
               {loading ? (
                 [...Array(4)].map((_, i) => (
-                  <tr key={i}><td colSpan={9} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
+                  <tr key={i}><td colSpan={11} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
               ) : items.map(po => (
                 <tr key={po.po_id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
@@ -94,6 +94,8 @@ export default function PurchaseOrdersList() {
                   </td>
                   <td className="px-4 py-3">{po.vendor}</td>
                   <td className="px-4 py-3 font-mono text-gray-700">{po.vendor_po_id}</td>
+                  <td className="px-4 py-3 text-gray-600">{po.city || '—'}</td>
+                  <td className="px-4 py-3 text-gray-600">{po.onboarded_by_name || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{po.po_date || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{po.expected_delivery_date || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{po.po_expiry_date || '—'}</td>
