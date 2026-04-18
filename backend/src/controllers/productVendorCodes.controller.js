@@ -4,7 +4,8 @@ const { logAction } = require('../services/auditLog.service');
 async function list(req, res, next) {
   try {
     const { rows } = await db.execute(`
-      SELECT pvc.id, pvc.product_id, pvc.vendor, pvc.vendor_item_code, pvc.created_at,
+      SELECT pvc.id, pvc.product_id, pvc.vendor, pvc.vendor_item_code,
+             pvc.product_description, pvc.created_at,
              p.sku_code, p.name AS product_name
       FROM product_vendor_codes pvc
       JOIN products p ON p.id = pvc.product_id
@@ -22,11 +23,17 @@ function validate(body) {
   return null;
 }
 
+function normDesc(v) {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+
 async function create(req, res, next) {
   try {
     const err = validate(req.body);
     if (err) return res.status(400).json({ message: err });
-    const { product_id, vendor, vendor_item_code } = req.body;
+    const { product_id, vendor, vendor_item_code, product_description } = req.body;
 
     const { rows: p } = await db.execute({
       sql: 'SELECT id, sku_code FROM products WHERE id = ?',
@@ -35,9 +42,9 @@ async function create(req, res, next) {
     if (!p.length) return res.status(400).json({ message: 'Product not found' });
 
     const { rows } = await db.execute({
-      sql: `INSERT INTO product_vendor_codes (product_id, vendor, vendor_item_code)
-            VALUES (?, ?, ?) RETURNING *`,
-      args: [Number(product_id), String(vendor).trim(), String(vendor_item_code).trim()],
+      sql: `INSERT INTO product_vendor_codes (product_id, vendor, vendor_item_code, product_description)
+            VALUES (?, ?, ?, ?) RETURNING *`,
+      args: [Number(product_id), String(vendor).trim(), String(vendor_item_code).trim(), normDesc(product_description)],
     });
     await logAction({
       userId: req.user.id,
@@ -60,12 +67,12 @@ async function update(req, res, next) {
     const { id } = req.params;
     const err = validate(req.body);
     if (err) return res.status(400).json({ message: err });
-    const { product_id, vendor, vendor_item_code } = req.body;
+    const { product_id, vendor, vendor_item_code, product_description } = req.body;
     const { rows } = await db.execute({
       sql: `UPDATE product_vendor_codes
-            SET product_id = ?, vendor = ?, vendor_item_code = ?
+            SET product_id = ?, vendor = ?, vendor_item_code = ?, product_description = ?
             WHERE id = ? RETURNING *`,
-      args: [Number(product_id), String(vendor).trim(), String(vendor_item_code).trim(), id],
+      args: [Number(product_id), String(vendor).trim(), String(vendor_item_code).trim(), normDesc(product_description), id],
     });
     if (!rows.length) return res.status(404).json({ message: 'Mapping not found' });
     await logAction({
@@ -103,4 +110,74 @@ async function remove(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, create, update, remove };
+const BULK_LIMIT = 2000;
+
+async function bulkUpsert(req, res, next) {
+  try {
+    const { rows: input } = req.body || {};
+    if (!Array.isArray(input) || input.length === 0) {
+      return res.status(400).json({ message: 'rows must be a non-empty array' });
+    }
+    if (input.length > BULK_LIMIT) {
+      return res.status(400).json({ message: `Too many rows; max ${BULK_LIMIT}` });
+    }
+
+    const { rows: skus } = await db.execute('SELECT id, sku_code FROM products');
+    const skuToId = new Map(skus.map(s => [String(s.sku_code).trim().toLowerCase(), s.id]));
+
+    const { rows: existing } = await db.execute('SELECT vendor, vendor_item_code FROM product_vendor_codes');
+    const existingKeys = new Set(existing.map(e => `${e.vendor}\u0001${e.vendor_item_code}`));
+
+    const skipped = [];
+    let inserted = 0;
+    let updated = 0;
+
+    for (let i = 0; i < input.length; i++) {
+      const r = input[i] || {};
+      const sku_code = String(r.sku_code || '').trim();
+      const vendor = String(r.vendor || '').trim();
+      const vendor_item_code = String(r.vendor_item_code || '').trim();
+      const product_description = normDesc(r.product_description);
+
+      if (!sku_code || !vendor || !vendor_item_code) {
+        skipped.push({ row: i + 2, reason: 'Missing required field(s)' });
+        continue;
+      }
+      const product_id = skuToId.get(sku_code.toLowerCase());
+      if (!product_id) {
+        skipped.push({ row: i + 2, reason: `Unknown sku_code "${sku_code}"` });
+        continue;
+      }
+
+      const key = `${vendor}\u0001${vendor_item_code}`;
+      const isUpdate = existingKeys.has(key);
+
+      try {
+        await db.execute({
+          sql: `INSERT INTO product_vendor_codes (product_id, vendor, vendor_item_code, product_description)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(vendor, vendor_item_code) DO UPDATE SET
+                  product_id = excluded.product_id,
+                  product_description = excluded.product_description`,
+          args: [product_id, vendor, vendor_item_code, product_description],
+        });
+        if (isUpdate) updated++;
+        else { inserted++; existingKeys.add(key); }
+      } catch (e) {
+        skipped.push({ row: i + 2, reason: e.message || 'DB error' });
+      }
+    }
+
+    await logAction({
+      userId: req.user.id,
+      actionType: 'PRODUCT_VENDOR_CODE_BULK_UPSERT',
+      description: `Bulk: +${inserted} inserted, ~${updated} updated, !${skipped.length} skipped`,
+      entityType: 'product_vendor_code',
+      entityId: null,
+    });
+
+    res.json({ inserted, updated, skipped });
+  } catch (err) { next(err); }
+}
+
+module.exports = { list, create, update, remove, bulkUpsert };

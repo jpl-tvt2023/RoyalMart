@@ -5,12 +5,13 @@ import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import { getVendorCodes, createVendorCode, updateVendorCode, deleteVendorCode } from '../../api/productVendorCodes.api';
 import { getSKUs } from '../../api/skus.api';
-import { Plus, Pencil, Trash2, Search } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useRBAC } from '../../hooks/useRBAC';
+import BulkUploadModal from './BulkUploadModal';
 
 const KNOWN_VENDORS = ['Swiggy', 'Zepto', 'Blinkit'];
-const EMPTY_FORM = { product_id: '', vendor: '', vendor_item_code: '' };
+const EMPTY_FORM = { product_id: '', vendor: '', vendor_item_code: '', product_description: '' };
 
 export default function ProductList() {
   const { canAccess } = useRBAC();
@@ -25,6 +26,7 @@ export default function ProductList() {
   const [customVendor, setCustomVendor] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -45,7 +47,7 @@ export default function ProductList() {
     if (!q) return rows;
     return rows.filter(r =>
       (r.sku_code || '').toLowerCase().includes(q) ||
-      (r.product_name || '').toLowerCase().includes(q) ||
+      (r.product_description || '').toLowerCase().includes(q) ||
       (r.vendor || '').toLowerCase().includes(q) ||
       (r.vendor_item_code || '').toLowerCase().includes(q)
     );
@@ -53,7 +55,7 @@ export default function ProductList() {
 
   const openAdd = () => { setForm(EMPTY_FORM); setCustomVendor(false); setModal('add'); };
   const openEdit = (r) => {
-    setForm({ product_id: String(r.product_id), vendor: r.vendor, vendor_item_code: r.vendor_item_code });
+    setForm({ product_id: String(r.product_id), vendor: r.vendor, vendor_item_code: r.vendor_item_code, product_description: r.product_description || '' });
     setCustomVendor(!KNOWN_VENDORS.includes(r.vendor));
     setModal({ type: 'edit', id: r.id });
   };
@@ -66,6 +68,7 @@ export default function ProductList() {
         product_id: Number(form.product_id),
         vendor: form.vendor.trim(),
         vendor_item_code: form.vendor_item_code.trim(),
+        product_description: form.product_description.trim() || null,
       };
       if (modal === 'add') {
         await createVendorCode(payload);
@@ -105,6 +108,7 @@ export default function ProductList() {
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…" className="pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f] w-52" />
           </div>
+          {canWrite && <Button variant="ghost" onClick={() => setBulkOpen(true)}><Upload size={16} />Bulk Upload</Button>}
           {canWrite && <Button onClick={openAdd}><Plus size={16} />Add Mapping</Button>}
         </div>
       </div>
@@ -114,7 +118,7 @@ export default function ProductList() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                {['Internal Product ID', 'Product Name', 'Vendor', 'Vendor Product ID', canWrite ? 'Actions' : ''].filter(Boolean).map(h => (
+                {['Internal Product ID', 'Product Description', 'Vendor', 'Vendor Product ID', canWrite ? 'Actions' : ''].filter(Boolean).map(h => (
                   <th key={h} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -127,7 +131,7 @@ export default function ProductList() {
               ) : filtered.map(r => (
                 <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3 font-mono text-xs font-semibold text-[#003049]">{r.sku_code}</td>
-                  <td className="px-4 py-3 font-medium text-gray-900">{r.product_name}</td>
+                  <td className="px-4 py-3 text-gray-900">{r.product_description || '—'}</td>
                   <td className="px-4 py-3 text-gray-700">{r.vendor}</td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-700">{r.vendor_item_code}</td>
                   {canWrite && (
@@ -206,12 +210,30 @@ export default function ProductList() {
             />
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Product Description</label>
+            <textarea
+              rows={2}
+              value={form.product_description}
+              onChange={e => setForm(f => ({ ...f, product_description: e.target.value }))}
+              placeholder="Vendor-facing listing title (e.g. Red Cotton Bandana — Pack of 1)"
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]"
+            />
+          </div>
+
           <div className="flex gap-3 justify-end pt-2">
             <Button variant="ghost" type="button" onClick={() => setModal(null)}>Cancel</Button>
             <Button type="submit" loading={saving}>{modal === 'add' ? 'Create Mapping' : 'Save Changes'}</Button>
           </div>
         </form>
       </Modal>
+
+      <BulkUploadModal
+        isOpen={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        onDone={load}
+        existingRows={rows}
+      />
 
       <ConfirmDialog
         isOpen={!!confirmDelete}
