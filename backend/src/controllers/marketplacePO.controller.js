@@ -208,16 +208,20 @@ async function update(req, res, next) {
     }
 
     let newOnboardedBy = null;
-    const canReassign = ['Admin', 'Owner'].includes(req.user.role);
+    const canReassign = (req.user.roles || []).some(r => ['Admin', 'Owner'].includes(r));
     if (canReassign && req.body.onboarded_by != null) {
       const onbId = Number(req.body.onboarded_by);
       if (!Number.isInteger(onbId)) return res.status(400).json({ message: 'Invalid onboarded_by' });
       const { rows: u } = await db.execute({
-        sql: 'SELECT id, role FROM users WHERE id = ?',
+        sql: 'SELECT id FROM users WHERE id = ?',
         args: [onbId],
       });
       if (!u.length) return res.status(400).json({ message: 'Onboarder user not found' });
-      if (u[0].role !== 'PO_Executive') {
+      const { rows: rr } = await db.execute({
+        sql: 'SELECT role FROM user_roles WHERE user_id = ?',
+        args: [onbId],
+      });
+      if (!rr.some(r => r.role === 'PO_Executive')) {
         return res.status(400).json({ message: 'Onboarder must be a PO_Executive' });
       }
       newOnboardedBy = onbId;

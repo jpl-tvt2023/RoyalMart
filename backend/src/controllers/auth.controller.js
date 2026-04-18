@@ -9,10 +9,18 @@ const {
 
 function signAccess(user) {
   return jwt.sign(
-    { id: user.id, email: user.email, role: user.role, name: user.name },
+    { id: user.id, email: user.email, name: user.name, roles: user.roles || [] },
     JWT_ACCESS_SECRET,
     { expiresIn: JWT_ACCESS_EXPIRY }
   );
+}
+
+async function loadUserRoles(userId) {
+  const { rows } = await db.execute({
+    sql: 'SELECT role FROM user_roles WHERE user_id = ? ORDER BY role',
+    args: [userId],
+  });
+  return rows.map(r => r.role);
 }
 
 function signRefresh(userId) {
@@ -32,6 +40,7 @@ async function login(req, res, next) {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ message: 'Invalid credentials' });
 
+    user.roles = await loadUserRoles(user.id);
     const accessToken = signAccess(user);
     const refreshToken = signRefresh(user.id);
 
@@ -46,7 +55,7 @@ async function login(req, res, next) {
 
     res.json({
       accessToken,
-      user: { id: user.id, name: user.name, email: user.email, role: user.role, is_first_login: !!user.is_first_login },
+      user: { id: user.id, name: user.name, email: user.email, roles: user.roles, is_first_login: !!user.is_first_login },
     });
   } catch (err) { next(err); }
 }
@@ -63,6 +72,7 @@ async function refresh(req, res, next) {
     const user = rows[0];
     if (!user) return res.status(401).json({ message: 'User not found' });
 
+    user.roles = await loadUserRoles(user.id);
     res.json({ accessToken: signAccess(user) });
   } catch (err) { next(err); }
 }

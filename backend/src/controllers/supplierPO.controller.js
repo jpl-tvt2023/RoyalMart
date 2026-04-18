@@ -42,15 +42,14 @@ async function updateStatus(req, res, next) {
     const { status } = req.body;
     if (!status) return res.status(400).json({ message: 'status is required' });
 
-    const userRole = req.user.role;
     const allowedByRole = {
       'Purchase_Team': ['In-Transit', 'Arrived'],
       'Stocks_Team':   ['Received'],
       'Admin':         ['In-Transit', 'Arrived', 'Received'],
       'Owner':         ['In-Transit', 'Arrived', 'Received'],
     };
-    const allowed = allowedByRole[userRole] || [];
-    if (!allowed.includes(status)) {
+    const allowed = new Set((req.user.roles || []).flatMap(r => allowedByRole[r] || []));
+    if (!allowed.has(status)) {
       return res.status(403).json({ message: `Your role cannot set status to ${status}` });
     }
 

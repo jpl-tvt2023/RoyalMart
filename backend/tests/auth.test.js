@@ -11,7 +11,7 @@ describe('Auth — login flow', () => {
     expect(res.body).toHaveProperty('accessToken');
     expect(res.body.user).toMatchObject({
       email: 'admin@royalmart.in',
-      role: 'Admin',
+      roles: expect.arrayContaining(['Admin']),
     });
     expect(res.body.user.is_first_login).toBeTruthy();
   });

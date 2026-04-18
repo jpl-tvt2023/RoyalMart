@@ -2,6 +2,7 @@ import { useAuth } from '../context/AuthContext';
 
 export function useRBAC() {
   const { user } = useAuth();
-  const canAccess = (...roles) => !!user && roles.includes(user.role);
-  return { canAccess, role: user?.role };
+  const roles = user?.roles || [];
+  const canAccess = (...allowed) => !!user && allowed.some(r => roles.includes(r));
+  return { canAccess, roles };
 }

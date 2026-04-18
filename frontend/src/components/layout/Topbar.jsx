@@ -25,7 +25,7 @@ export default function Topbar({ onMenuClick }) {
       <div className="flex items-center gap-3">
         <div className="hidden sm:block text-right">
           <p className="text-sm font-medium text-gray-800 leading-tight">{user?.name}</p>
-          <p className="text-xs text-gray-400">{user?.role}</p>
+          <p className="text-xs text-gray-400">{(user?.roles || []).join(', ') || '—'}</p>
         </div>
         <button
           onClick={handleLogout}
