@@ -3,7 +3,7 @@ const auth = require('../middleware/auth');
 const { allowRoles } = require('../middleware/rbac');
 const c = require('../controllers/skus.controller');
 
-const allAuth = allowRoles('Admin','Owner','Office_POC','Purchase_Team','Stocks_Team');
+const allAuth = allowRoles('Admin','Owner','Office_POC','Purchase_Team','Stocks_Team','PO_Executive');
 const canWrite = allowRoles('Admin','Owner');
 
 router.get('/',       auth, allAuth, c.list);

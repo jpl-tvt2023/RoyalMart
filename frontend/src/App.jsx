@@ -25,10 +25,11 @@ export default function App() {
     <AuthProvider>
       <BrowserRouter>
         <Toaster
-          position="top-right"
+          position="top-center"
+          containerStyle={{ top: 70 }}
           toastOptions={{
             duration: 3000,
-            style: { fontSize: '14px', maxWidth: '360px' },
+            style: { fontSize: '14px', maxWidth: '420px' },
             success: { iconTheme: { primary: '#003049', secondary: '#fff' } },
             error: { iconTheme: { primary: '#c1121f', secondary: '#fff' } },
           }}
