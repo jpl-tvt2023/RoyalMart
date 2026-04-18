@@ -4,6 +4,7 @@ const { parse } = require('../parsers/marketplacePO');
 
 const VENDOR_PREFIX = { Swiggy: 'S', Zepto: 'Z', Blinkit: 'B' };
 const VALID_VENDORS = Object.keys(VENDOR_PREFIX);
+const VALID_STATUSES = ['Open', 'In Progress', 'Completed', 'Cancelled'];
 
 function pad3(n) { return String(n).padStart(3, '0'); }
 
@@ -52,13 +53,15 @@ async function list(req, res, next) {
     const { rows } = await db.execute({
       sql: `
         SELECT p.po_id, p.vendor, p.vendor_po_id, p.po_date, p.expected_delivery_date,
-               p.po_expiry_date, p.city, p.onboarded_by, p.created_at, p.updated_at,
+               p.po_expiry_date, p.city, p.status, p.onboarded_by, p.updated_by, p.created_at, p.updated_at,
                u.name AS created_by_name,
                ob.name AS onboarded_by_name,
+               ub.name AS updated_by_name,
                (SELECT COUNT(*) FROM marketplace_po_lines WHERE po_id = p.po_id) AS line_count
         FROM marketplace_pos p
         LEFT JOIN users u  ON u.id  = p.created_by
         LEFT JOIN users ob ON ob.id = p.onboarded_by
+        LEFT JOIN users ub ON ub.id = p.updated_by
         ${where}
         ORDER BY p.updated_at DESC
       `,
@@ -72,10 +75,11 @@ async function getOne(req, res, next) {
   try {
     const { poId } = req.params;
     const { rows } = await db.execute({
-      sql: `SELECT p.*, u.name AS created_by_name, ob.name AS onboarded_by_name
+      sql: `SELECT p.*, u.name AS created_by_name, ob.name AS onboarded_by_name, ub.name AS updated_by_name
             FROM marketplace_pos p
             LEFT JOIN users u  ON u.id  = p.created_by
             LEFT JOIN users ob ON ob.id = p.onboarded_by
+            LEFT JOIN users ub ON ub.id = p.updated_by
             WHERE p.po_id = ?`,
       args: [poId],
     });
@@ -126,9 +130,9 @@ async function create(req, res, next) {
         await tx.execute({
           sql: `UPDATE marketplace_pos
                 SET po_date = ?, expected_delivery_date = ?, po_expiry_date = ?, city = ?,
-                    updated_at = datetime('now')
+                    updated_by = ?, updated_at = datetime('now')
                 WHERE po_id = ?`,
-          args: [po_date || null, expected_delivery_date || null, po_expiry_date || null, city || null, poId],
+          args: [po_date || null, expected_delivery_date || null, po_expiry_date || null, city || null, req.user.id, poId],
         });
       } else {
         isNew = true;
@@ -141,9 +145,9 @@ async function create(req, res, next) {
         poId = `${VENDOR_PREFIX[vendor]}${pad3(nextSeq)}`;
         await tx.execute({
           sql: `INSERT INTO marketplace_pos
-                (po_id, vendor, vendor_po_id, po_date, expected_delivery_date, po_expiry_date, city, created_by, onboarded_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [poId, vendor, cleanVendorPoId, po_date || null, expected_delivery_date || null, po_expiry_date || null, city || null, req.user.id, req.user.id],
+                (po_id, vendor, vendor_po_id, po_date, expected_delivery_date, po_expiry_date, city, created_by, onboarded_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [poId, vendor, cleanVendorPoId, po_date || null, expected_delivery_date || null, po_expiry_date || null, city || null, req.user.id, req.user.id, req.user.id],
         });
       }
 
@@ -195,6 +199,14 @@ async function update(req, res, next) {
     const err = validatePayload(body);
     if (err) return res.status(400).json({ message: err });
 
+    let statusToSet = null;
+    if (req.body.status != null) {
+      if (!VALID_STATUSES.includes(req.body.status)) {
+        return res.status(400).json({ message: 'Invalid status' });
+      }
+      statusToSet = req.body.status;
+    }
+
     let newOnboardedBy = null;
     const canReassign = ['Admin', 'Owner'].includes(req.user.role);
     if (canReassign && req.body.onboarded_by != null) {
@@ -216,7 +228,7 @@ async function update(req, res, next) {
       await tx.execute({
         sql: `UPDATE marketplace_pos
               SET vendor_po_id = ?, po_date = ?, expected_delivery_date = ?, po_expiry_date = ?, city = ?,
-                  updated_at = datetime('now')
+                  updated_by = ?, updated_at = datetime('now')
               WHERE po_id = ?`,
         args: [
           String(body.vendor_po_id).trim(),
@@ -224,9 +236,16 @@ async function update(req, res, next) {
           body.expected_delivery_date || null,
           body.po_expiry_date || null,
           body.city || null,
+          req.user.id,
           poId,
         ],
       });
+      if (statusToSet !== null) {
+        await tx.execute({
+          sql: 'UPDATE marketplace_pos SET status = ? WHERE po_id = ?',
+          args: [statusToSet, poId],
+        });
+      }
       if (newOnboardedBy !== null) {
         await tx.execute({
           sql: 'UPDATE marketplace_pos SET onboarded_by = ? WHERE po_id = ?',

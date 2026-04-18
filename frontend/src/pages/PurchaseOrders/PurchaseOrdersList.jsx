@@ -5,10 +5,28 @@ import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
+import Badge from '../../components/ui/Badge';
 import { listPOs, deletePO } from '../../api/marketplacePO.api';
 import { formatDateTime } from '../../utils/formatters';
 
 const VENDORS = ['Swiggy', 'Zepto', 'Blinkit'];
+const STATUS_COLORS = { Open: 'blue', 'In Progress': 'yellow', Completed: 'green', Cancelled: 'gray' };
+
+function expiryTone(po) {
+  if (!po.po_expiry_date) return null;
+  if (po.status === 'Completed' || po.status === 'Cancelled') return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const exp = new Date(po.po_expiry_date); exp.setHours(0, 0, 0, 0);
+  const days = Math.round((exp - today) / 86400000);
+  if (days < 0) return 'expired';
+  if (days <= 2) return 'soon';
+  return null;
+}
+
+const TONE_ROW = {
+  expired: 'bg-red-50 hover:bg-red-100',
+  soon: 'bg-amber-50 hover:bg-amber-100',
+};
 
 export default function PurchaseOrdersList() {
   const navigate = useNavigate();
@@ -75,7 +93,7 @@ export default function PurchaseOrdersList() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                {['PO ID', 'Vendor', 'Vendor PO No.', 'City', 'Onboarded By', 'PO Date', 'Expected Delivery', 'Expiry', 'Lines', 'Updated', 'Actions'].map(h => (
+                {['PO ID', 'Vendor', 'Vendor PO No.', 'City', 'Status', 'Onboarded By', 'PO Date', 'Expected Delivery', 'Expiry', 'Lines', 'Updated', 'Last Updated By', 'Actions'].map(h => (
                   <th key={h} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -83,10 +101,13 @@ export default function PurchaseOrdersList() {
             <tbody>
               {loading ? (
                 [...Array(4)].map((_, i) => (
-                  <tr key={i}><td colSpan={11} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
+                  <tr key={i}><td colSpan={13} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
-              ) : items.map(po => (
-                <tr key={po.po_id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+              ) : items.map(po => {
+                const tone = expiryTone(po);
+                const rowCls = tone ? TONE_ROW[tone] : 'hover:bg-gray-50';
+                return (
+                <tr key={po.po_id} className={`border-b border-gray-100 transition-colors ${rowCls}`}>
                   <td className="px-4 py-3 font-mono font-semibold text-[#003049]">
                     <Link to={`/purchase-orders/${po.po_id}`} className="flex items-center gap-2 hover:underline">
                       <FileText size={14} className="text-gray-400 shrink-0" />{po.po_id}
@@ -95,12 +116,14 @@ export default function PurchaseOrdersList() {
                   <td className="px-4 py-3">{po.vendor}</td>
                   <td className="px-4 py-3 font-mono text-gray-700">{po.vendor_po_id}</td>
                   <td className="px-4 py-3 text-gray-600">{po.city || '—'}</td>
+                  <td className="px-4 py-3"><Badge color={STATUS_COLORS[po.status] || 'gray'}>{po.status || 'Open'}</Badge></td>
                   <td className="px-4 py-3 text-gray-600">{po.onboarded_by_name || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{po.po_date || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{po.expected_delivery_date || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{po.po_expiry_date || '—'}</td>
                   <td className="px-4 py-3 font-semibold text-gray-800">{po.line_count}</td>
                   <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{formatDateTime(po.updated_at)}</td>
+                  <td className="px-4 py-3 text-gray-600">{po.updated_by_name || '—'}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1">
                       <Link to={`/purchase-orders/${po.po_id}`} title="View/Edit" className="p-1.5 rounded hover:bg-blue-50 text-blue-500"><Pencil size={14} /></Link>
@@ -108,7 +131,8 @@ export default function PurchaseOrdersList() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           {!loading && items.length === 0 && (

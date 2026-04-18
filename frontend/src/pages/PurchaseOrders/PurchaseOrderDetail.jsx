@@ -28,6 +28,7 @@ export default function PurchaseOrderDetail() {
         expected_delivery_date: po.expected_delivery_date || '',
         po_expiry_date: po.po_expiry_date || '',
         city: po.city || '',
+        status: po.status || 'Open',
         onboarded_by: po.onboarded_by || null,
         onboarded_by_name: po.onboarded_by_name || '',
         lines: (po.lines || []).map(l => ({ ...l })),

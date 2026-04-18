@@ -31,6 +31,7 @@ export default function PurchaseOrderImport() {
         expected_delivery_date: data.expected_delivery_date || '',
         po_expiry_date: data.po_expiry_date || '',
         city: '',
+        status: 'Open',
         lines: data.lines || [],
       });
       toast.success(`Parsed ${data.lines.length} line item${data.lines.length !== 1 ? 's' : ''}`);
