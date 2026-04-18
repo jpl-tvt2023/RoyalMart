@@ -5,7 +5,8 @@ import { Package2, X } from 'lucide-react';
 
 export default function Sidebar({ isOpen, onClose }) {
   const { user } = useAuth();
-  const navItems = NAV_MAP.filter(item => item.roles.includes(user?.role));
+  const userRoles = user?.roles || [];
+  const navItems = NAV_MAP.filter(item => item.roles.some(r => userRoles.includes(r)));
 
   return (
     <>
@@ -56,7 +57,7 @@ export default function Sidebar({ isOpen, onClose }) {
         <div className="px-4 py-4 border-t border-white/10">
           <p className="text-white/40 text-xs">Logged in as</p>
           <p className="text-white text-sm font-medium truncate">{user?.name}</p>
-          <p className="text-white/50 text-xs">{user?.role}</p>
+          <p className="text-white/50 text-xs">{userRoles.join(', ') || '—'}</p>
         </div>
       </aside>
     </>

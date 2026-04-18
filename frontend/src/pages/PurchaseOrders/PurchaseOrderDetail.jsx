@@ -13,7 +13,7 @@ export default function PurchaseOrderDetail() {
   const { poId } = useParams();
   const navigate = useNavigate();
   const { user: me } = useAuth();
-  const canReassign = me && ['Admin', 'Owner'].includes(me.role);
+  const canReassign = !!me && (me.roles || []).some(r => ['Admin', 'Owner'].includes(r));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(null);
@@ -40,7 +40,7 @@ export default function PurchaseOrderDetail() {
   useEffect(() => {
     if (!canReassign) return;
     getUsers()
-      .then(r => setPoExecutives(r.data.filter(u => u.role === 'PO_Executive')))
+      .then(r => setPoExecutives(r.data.filter(u => (u.roles || []).includes('PO_Executive'))))
       .catch(() => {});
   }, [canReassign]);
 

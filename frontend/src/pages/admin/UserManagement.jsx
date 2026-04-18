@@ -13,7 +13,7 @@ import { useAuth } from '../../context/AuthContext';
 const ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Stocks_Team', 'PO_Executive'];
 const roleColors = { Admin: 'red', Owner: 'purple', Office_POC: 'blue', Purchase_Team: 'orange', Stocks_Team: 'green', PO_Executive: 'yellow' };
 
-const EMPTY_FORM = { name: '', email: '', role: 'Office_POC', password: '' };
+const EMPTY_FORM = { name: '', email: '', roles: ['Office_POC'], password: '' };
 
 export default function UserManagement() {
   const { user: me } = useAuth();
@@ -33,17 +33,25 @@ export default function UserManagement() {
   useEffect(load, []);
 
   const openAdd = () => { setForm(EMPTY_FORM); setModal('add'); };
-  const openEdit = (u) => { setForm({ name: u.name, email: u.email, role: u.role, password: '' }); setModal({ type: 'edit', id: u.id }); };
+  const openEdit = (u) => { setForm({ name: u.name, email: u.email, roles: u.roles || [], password: '' }); setModal({ type: 'edit', id: u.id }); };
+
+  const toggleRole = (role) => {
+    setForm(f => {
+      const has = f.roles.includes(role);
+      return { ...f, roles: has ? f.roles.filter(r => r !== role) : [...f.roles, role] };
+    });
+  };
 
   const handleSave = async (e) => {
     e.preventDefault();
+    if (!form.roles.length) return toast.error('Select at least one role');
     setSaving(true);
     try {
       if (modal === 'add') {
-        await createUser(form);
+        await createUser({ name: form.name, email: form.email, password: form.password, roles: form.roles });
         toast.success('User created');
       } else {
-        await updateUser(modal.id, { name: form.name, role: form.role });
+        await updateUser(modal.id, { name: form.name, roles: form.roles });
         toast.success('User updated');
       }
       setModal(null);
@@ -94,7 +102,7 @@ export default function UserManagement() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                {['Name', 'Email', 'Role', 'First Login?', 'Joined', 'Actions'].map(h => (
+                {['Name', 'Email', 'Roles', 'First Login?', 'Joined', 'Actions'].map(h => (
                   <th key={h} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -108,7 +116,13 @@ export default function UserManagement() {
                 <tr key={u.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3 font-medium text-gray-900">{u.name}</td>
                   <td className="px-4 py-3 text-gray-600">{u.email}</td>
-                  <td className="px-4 py-3"><Badge color={roleColors[u.role] || 'gray'}>{u.role}</Badge></td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap gap-1">
+                      {(u.roles || []).map(r => (
+                        <Badge key={r} color={roleColors[r] || 'gray'}>{r}</Badge>
+                      ))}
+                    </div>
+                  </td>
                   <td className="px-4 py-3">
                     {u.is_first_login
                       ? <span className="text-amber-600 text-xs font-semibold">Pending Reset</span>
@@ -147,10 +161,23 @@ export default function UserManagement() {
             </div>
           )}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
-            <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]">
-              {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-            </select>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Roles <span className="text-gray-400 font-normal">(pick one or more)</span></label>
+            <div className="grid grid-cols-2 gap-2 p-3 border border-gray-200 rounded-lg">
+              {ROLES.map(r => (
+                <label key={r} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.roles.includes(r)}
+                    onChange={() => toggleRole(r)}
+                    className="w-4 h-4 accent-[#c1121f]"
+                  />
+                  {r}
+                </label>
+              ))}
+            </div>
+            {form.roles.length === 0 && (
+              <p className="text-xs text-red-500 mt-1">Select at least one role.</p>
+            )}
           </div>
           {modal === 'add' && (
             <div>
