@@ -24,8 +24,8 @@ function expiryTone(po) {
 }
 
 const TONE_ROW = {
-  expired: 'bg-red-50 hover:bg-red-100',
-  soon: 'bg-amber-50 hover:bg-amber-100',
+  expired: 'bg-red-200/70 hover:bg-red-300/70',
+  soon: 'bg-amber-200/70 hover:bg-amber-300/70',
 };
 
 export default function PurchaseOrdersList() {
@@ -34,6 +34,7 @@ export default function PurchaseOrdersList() {
   const [loading, setLoading] = useState(true);
   const [vendor, setVendor] = useState('');
   const [search, setSearch] = useState('');
+  const [expiryFilter, setExpiryFilter] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -50,6 +51,13 @@ export default function PurchaseOrdersList() {
   useEffect(() => { load(); /* eslint-disable-line */ }, [vendor]);
 
   const onSearchKey = (e) => { if (e.key === 'Enter') load(); };
+
+  const visible = items.filter(po => {
+    if (!expiryFilter) return true;
+    const t = expiryTone(po);
+    if (expiryFilter === 'attention') return t === 'soon' || t === 'expired';
+    return t === expiryFilter;
+  });
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -68,7 +76,7 @@ export default function PurchaseOrdersList() {
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[#003049]">Purchase Orders</h1>
-          <p className="text-gray-500 text-sm">{items.length} purchase order{items.length !== 1 ? 's' : ''}</p>
+          <p className="text-gray-500 text-sm">{visible.length} purchase order{visible.length !== 1 ? 's' : ''}{expiryFilter && ` (filtered from ${items.length})`}</p>
         </div>
         <Button onClick={() => navigate('/purchase-orders/new')}><Plus size={16} />Add PO</Button>
       </div>
@@ -77,6 +85,12 @@ export default function PurchaseOrdersList() {
         <select value={vendor} onChange={e => setVendor(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30">
           <option value="">All vendors</option>
           {VENDORS.map(v => <option key={v} value={v}>{v}</option>)}
+        </select>
+        <select value={expiryFilter} onChange={e => setExpiryFilter(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30">
+          <option value="">All expiry states</option>
+          <option value="attention">Needs attention (soon + expired)</option>
+          <option value="soon">Expiring soon (≤2 days)</option>
+          <option value="expired">Already expired</option>
         </select>
         <input
           placeholder="Search PO ID or vendor PO..."
@@ -103,7 +117,7 @@ export default function PurchaseOrdersList() {
                 [...Array(4)].map((_, i) => (
                   <tr key={i}><td colSpan={13} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
-              ) : items.map(po => {
+              ) : visible.map(po => {
                 const tone = expiryTone(po);
                 const rowCls = tone ? TONE_ROW[tone] : 'hover:bg-gray-50';
                 return (
@@ -135,8 +149,8 @@ export default function PurchaseOrdersList() {
               })}
             </tbody>
           </table>
-          {!loading && items.length === 0 && (
-            <p className="text-center text-gray-400 py-8">No purchase orders yet</p>
+          {!loading && visible.length === 0 && (
+            <p className="text-center text-gray-400 py-8">{items.length === 0 ? 'No purchase orders yet' : 'No POs match the current filter'}</p>
           )}
         </div>
       </div>
