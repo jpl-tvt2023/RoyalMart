@@ -16,7 +16,7 @@ export const NAV_MAP = [
   {
     label: 'User Management',
     path: '/admin/users',
-    roles: [ROLES.ADMIN],
+    roles: [ROLES.ADMIN, ROLES.OWNER],
   },
   {
     label: 'Team Management',
