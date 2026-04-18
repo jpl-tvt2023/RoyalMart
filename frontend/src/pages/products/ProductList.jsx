@@ -98,19 +98,27 @@ export default function ProductList() {
 
   return (
     <AppShell>
-      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+      <div className="mb-4 flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[#003049]">Products</h1>
-          <p className="text-gray-500 text-sm">{filtered.length} of {rows.length} mapping{rows.length !== 1 ? 's' : ''}</p>
+          <p className="text-gray-500 text-sm">{rows.length} mapping{rows.length !== 1 ? 's' : ''}</p>
         </div>
-        <div className="flex gap-3 items-center flex-wrap">
-          <div className="relative">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…" className="pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f] w-52" />
+        {canWrite && (
+          <div className="flex gap-2 items-center">
+            <Button variant="ghost" onClick={() => setBulkOpen(true)}><Upload size={16} />Bulk Upload</Button>
+            <Button onClick={openAdd}><Plus size={16} />Add Mapping</Button>
           </div>
-          {canWrite && <Button variant="ghost" onClick={() => setBulkOpen(true)}><Upload size={16} />Bulk Upload</Button>}
-          {canWrite && <Button onClick={openAdd}><Plus size={16} />Add Mapping</Button>}
+        )}
+      </div>
+
+      <div className="mb-4 flex items-center gap-3 flex-wrap">
+        <div className="relative flex-1 min-w-[220px] max-w-md">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by SKU, vendor, or description…" className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]" />
         </div>
+        {search && (
+          <span className="text-xs text-gray-500">Showing {filtered.length} of {rows.length}</span>
+        )}
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
