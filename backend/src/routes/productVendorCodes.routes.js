@@ -7,6 +7,7 @@ const allAuth = allowRoles('Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Sto
 const canWrite = allowRoles('Admin', 'Owner', 'PO_Executive');
 
 router.get('/',       auth, allAuth,  c.list);
+router.post('/bulk',  auth, canWrite, c.bulkUpsert);
 router.post('/',      auth, canWrite, c.create);
 router.put('/:id',    auth, canWrite, c.update);
 router.delete('/:id', auth, canWrite, c.remove);
