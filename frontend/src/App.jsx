@@ -15,6 +15,7 @@ import PackagingInventory from './pages/packaging/PackagingInventory';
 import PurchaseOrdersList from './pages/PurchaseOrders/PurchaseOrdersList';
 import PurchaseOrderImport from './pages/PurchaseOrders/PurchaseOrderImport';
 import PurchaseOrderDetail from './pages/PurchaseOrders/PurchaseOrderDetail';
+import ProductList from './pages/products/ProductList';
 
 const ALL_ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Stocks_Team', 'PO_Executive'];
 const PO_ROLES = ['Admin', 'Owner', 'PO_Executive'];
@@ -65,6 +66,10 @@ export default function App() {
 
           <Route path="/packaging" element={
             <ProtectedRoute roles={['Admin', 'Owner', 'Stocks_Team']}><PackagingInventory /></ProtectedRoute>
+          } />
+
+          <Route path="/products" element={
+            <ProtectedRoute roles={ALL_ROLES}><ProductList /></ProtectedRoute>
           } />
 
           <Route path="/purchase-orders" element={
