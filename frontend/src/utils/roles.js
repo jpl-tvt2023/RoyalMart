@@ -44,6 +44,11 @@ export const NAV_MAP = [
     roles: [ROLES.ADMIN, ROLES.OWNER, ROLES.STOCKS_TEAM],
   },
   {
+    label: 'Products',
+    path: '/products',
+    roles: [ROLES.ADMIN, ROLES.OWNER, ROLES.OFFICE_POC, ROLES.PURCHASE_TEAM, ROLES.STOCKS_TEAM, ROLES.PO_EXECUTIVE],
+  },
+  {
     label: 'Purchase Orders',
     path: '/purchase-orders',
     roles: [ROLES.ADMIN, ROLES.OWNER, ROLES.PO_EXECUTIVE],
