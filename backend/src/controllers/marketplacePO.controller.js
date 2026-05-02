@@ -38,7 +38,7 @@ async function parsePreview(req, res, next) {
 
 async function list(req, res, next) {
   try {
-    const { po_id, vendor, vendor_po_id, city, po_date, po_expiry_date } = req.query;
+    const { po_id, vendor, vendor_po_id, city, po_date, po_expiry_date, status } = req.query;
     const conditions = [];
     const args = [];
     if (po_id) {
@@ -64,6 +64,10 @@ async function list(req, res, next) {
     if (po_expiry_date) {
       conditions.push('p.po_expiry_date = ?');
       args.push(po_expiry_date);
+    }
+    if (status && VALID_STATUSES.includes(status)) {
+      conditions.push('p.status = ?');
+      args.push(status);
     }
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
     const { rows } = await db.execute({
