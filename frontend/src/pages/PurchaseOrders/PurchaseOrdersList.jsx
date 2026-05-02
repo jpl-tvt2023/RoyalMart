@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Plus, Pencil, Trash2, FileText } from 'lucide-react';
+import { Plus, Pencil, Trash2, FileText, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
@@ -13,7 +13,22 @@ import { INDIAN_CITIES } from '../../data/indianCities';
 const VENDORS = ['Swiggy', 'Zepto', 'Blinkit'];
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
-const EMPTY_FILTERS = { po_id: '', vendor: '', vendor_po_id: '', city: '', po_date: '', po_expiry_date: '' };
+const EMPTY_FILTERS = { po_id: '', vendor: '', vendor_po_id: '', city: '', po_date: '', po_expiry_date: '', status: 'Open' };
+
+const COLUMNS = [
+  { key: 'po_id', label: 'PO ID' },
+  { key: 'vendor', label: 'Vendor' },
+  { key: 'vendor_po_id', label: 'Vendor PO No.' },
+  { key: 'city', label: 'City' },
+  { key: 'status', label: 'Status' },
+  { key: 'onboarded_by_name', label: 'Onboarded By' },
+  { key: 'po_date', label: 'PO Date' },
+  { key: 'po_expiry_date', label: 'Expiry' },
+  { key: 'line_count', label: 'Line Item', numeric: true },
+  { key: 'total_qty', label: 'Total Qty', numeric: true },
+  { key: 'updated_at', label: 'Updated' },
+  { key: 'updated_by_name', label: 'Last Updated By' },
+];
 
 function expiryTone(po) {
   if (!po.po_expiry_date) return null;
@@ -36,6 +51,7 @@ export default function PurchaseOrdersList() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -43,7 +59,10 @@ export default function PurchaseOrdersList() {
     const active = overrides ?? filters;
     setLoading(true);
     const params = {};
-    Object.entries(active).forEach(([k, v]) => { if (v) params[k] = v; });
+    Object.entries(active).forEach(([k, v]) => {
+      if (k === 'status' && v === 'All') return;
+      if (v) params[k] = v;
+    });
     listPOs(params)
       .then(setItems)
       .catch(() => toast.error('Failed to load purchase orders'))
@@ -54,6 +73,25 @@ export default function PurchaseOrdersList() {
   const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
   const onSearchKey = (e) => { if (e.key === 'Enter') load(); };
   const clearFilters = () => { setFilters(EMPTY_FILTERS); load(EMPTY_FILTERS); };
+
+  const toggleSort = (key) => {
+    setSort(s => s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });
+  };
+
+  const sortedItems = useMemo(() => {
+    const col = COLUMNS.find(c => c.key === sort.key);
+    const numeric = col?.numeric;
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    return [...items].sort((a, b) => {
+      const av = a[sort.key];
+      const bv = b[sort.key];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (numeric) return (Number(av) - Number(bv)) * dir;
+      return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' }) * dir;
+    });
+  }, [items, sort]);
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -69,6 +107,11 @@ export default function PurchaseOrdersList() {
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30';
 
+  const SortIcon = ({ colKey }) => {
+    if (sort.key !== colKey) return <ArrowUpDown size={12} className="text-gray-300" />;
+    return sort.dir === 'asc' ? <ArrowUp size={12} className="text-[#c1121f]" /> : <ArrowDown size={12} className="text-[#c1121f]" />;
+  };
+
   return (
     <AppShell>
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
@@ -80,7 +123,7 @@ export default function PurchaseOrdersList() {
       </div>
 
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-3">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">PO ID</label>
             <input value={filters.po_id} onChange={e => setFilter('po_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search PO ID..." className={inputCls} />
@@ -111,6 +154,14 @@ export default function PurchaseOrdersList() {
             <label className="block text-xs font-medium text-gray-600 mb-1">PO Expiry Date</label>
             <input type="date" value={filters.po_expiry_date} onChange={e => setFilter('po_expiry_date', e.target.value)} className={inputCls} />
           </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
+            <select value={filters.status} onChange={e => setFilter('status', e.target.value)} className={inputCls}>
+              <option value="Open">Open</option>
+              <option value="Closed">Closed</option>
+              <option value="All">All</option>
+            </select>
+          </div>
         </div>
         <div className="flex justify-end gap-2 mt-3">
           <Button variant="ghost" onClick={clearFilters}>Clear</Button>
@@ -123,9 +174,14 @@ export default function PurchaseOrdersList() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                {['PO ID', 'Vendor', 'Vendor PO No.', 'City', 'Status', 'Onboarded By', 'PO Date', 'Expiry', 'Line Item', 'Total Qty', 'Updated', 'Last Updated By', 'Actions'].map(h => (
-                  <th key={h} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{h}</th>
+                {COLUMNS.map(col => (
+                  <th key={col.key} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">
+                    <button type="button" onClick={() => toggleSort(col.key)} className="inline-flex items-center gap-1 hover:text-[#003049]">
+                      {col.label}<SortIcon colKey={col.key} />
+                    </button>
+                  </th>
                 ))}
+                <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -133,7 +189,7 @@ export default function PurchaseOrdersList() {
                 [...Array(4)].map((_, i) => (
                   <tr key={i}><td colSpan={13} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
-              ) : items.map(po => {
+              ) : sortedItems.map(po => {
                 const tone = expiryTone(po);
                 const rowCls = tone ? TONE_ROW[tone] : 'hover:bg-gray-50';
                 return (
