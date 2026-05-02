@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Check, X } from 'lucide-react';
+import { Upload, Check, X, Pencil } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
@@ -15,6 +15,7 @@ export default function PurchaseOrderImport() {
   const [file, setFile] = useState(null);
   const [parsing, setParsing] = useState(false);
   const [summary, setSummary] = useState(null);
+  const [mode, setMode] = useState(null); // 'pdf' | 'manual'
   const [committing, setCommitting] = useState(false);
 
   const handleParse = async (e) => {
@@ -34,10 +35,26 @@ export default function PurchaseOrderImport() {
         status: 'Open',
         lines: data.lines || [],
       });
+      setMode('pdf');
       toast.success(`Parsed ${data.lines.length} line item${data.lines.length !== 1 ? 's' : ''}`);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Parse failed');
     } finally { setParsing(false); }
+  };
+
+  const handleAddManually = () => {
+    if (!vendor) return toast.error('Select a vendor');
+    setSummary({
+      vendor,
+      vendor_po_id: '',
+      po_date: '',
+      expected_delivery_date: '',
+      po_expiry_date: '',
+      city: '',
+      status: 'Open',
+      lines: [{ line_no: 1, item_code: '', qty: 1 }],
+    });
+    setMode('manual');
   };
 
   const handleApprove = async () => {
@@ -56,14 +73,15 @@ export default function PurchaseOrderImport() {
 
   const handleReject = () => {
     setSummary(null);
+    setMode(null);
     setFile(null);
   };
 
   return (
     <AppShell>
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-[#003049]">Import Purchase Order</h1>
-        <p className="text-gray-500 text-sm">Upload a marketplace PO PDF, review, then approve to save.</p>
+        <h1 className="text-2xl font-bold text-[#003049]">Add Purchase Order</h1>
+        <p className="text-gray-500 text-sm">Upload a PDF to import, or add a PO manually.</p>
       </div>
 
       {!summary && (
@@ -77,11 +95,12 @@ export default function PurchaseOrderImport() {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">PO PDF</label>
-            <input required type="file" accept="application/pdf,.pdf" onChange={e => setFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0 file:bg-[#003049] file:text-white file:cursor-pointer" />
-            <p className="text-xs text-gray-400 mt-1">Max 10 MB. PDF files only.</p>
+            <input type="file" accept="application/pdf,.pdf" onChange={e => setFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0 file:bg-[#003049] file:text-white file:cursor-pointer" />
+            <p className="text-xs text-gray-400 mt-1">Max 10 MB. PDF files only. Leave blank to add manually.</p>
           </div>
-          <div className="flex gap-3 justify-end">
+          <div className="flex gap-3 justify-end flex-wrap">
             <Button type="button" variant="ghost" onClick={() => navigate('/purchase-orders')}>Cancel</Button>
+            <Button type="button" variant="outline" onClick={handleAddManually}><Pencil size={16} />Add Manually</Button>
             <Button type="submit" loading={parsing}><Upload size={16} />Parse PDF</Button>
           </div>
         </form>
@@ -90,12 +109,14 @@ export default function PurchaseOrderImport() {
       {summary && (
         <div className="space-y-5">
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-900">
-            Review the parsed data below. Edit any field inline before approving. Rejecting discards this upload.
+            {mode === 'manual'
+              ? 'Enter the PO details below, then approve to save.'
+              : 'Review the parsed data below. Edit any field inline before approving. Rejecting discards this upload.'}
           </div>
-          <SummaryEditor value={summary} onChange={setSummary} showVendor readOnlyVendor />
+          <SummaryEditor value={summary} onChange={setSummary} showVendor readOnlyVendor={mode !== 'manual'} />
           <div className="flex gap-3 justify-end">
-            <Button variant="ghost" onClick={handleReject}><X size={16} />Reject</Button>
-            <Button onClick={handleApprove} loading={committing}><Check size={16} />Approve &amp; Save</Button>
+            <Button variant="ghost" onClick={handleReject}><X size={16} />{mode === 'manual' ? 'Cancel' : 'Reject'}</Button>
+            <Button onClick={handleApprove} loading={committing}><Check size={16} />{mode === 'manual' ? 'Save PO' : 'Approve & Save'}</Button>
           </div>
         </div>
       )}

@@ -15,9 +15,10 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
   };
   const addLine = () => {
     const nextNo = lines.reduce((m, l) => Math.max(m, Number(l.line_no) || 0), 0) + 1;
-    set({ lines: [...lines, { line_no: nextNo, item_code: '', item_desc: '', qty: 1 }] });
+    set({ lines: [...lines, { line_no: nextNo, item_code: '', qty: 1 }] });
   };
   const removeLine = (idx) => set({ lines: lines.filter((_, i) => i !== idx) });
+  const totalQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
 
   return (
     <div className="space-y-5">
@@ -55,7 +56,10 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
 
       <div>
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold text-[#003049]">Line Items ({lines.length})</h3>
+          <h3 className="text-sm font-semibold text-[#003049]">
+            Line Items ({lines.length})
+            <span className="ml-2 text-gray-500 font-normal">· Total Quantity {totalQty}</span>
+          </h3>
           <Button type="button" variant="ghost" onClick={addLine}><Plus size={14} />Add Line</Button>
         </div>
         <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
@@ -64,7 +68,7 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="px-3 py-2 text-left font-semibold text-gray-600 w-16">Line</th>
                 <th className="px-3 py-2 text-left font-semibold text-gray-600 w-40">Item Code</th>
-                <th className="px-3 py-2 text-left font-semibold text-gray-600">Item Description</th>
+                <th className="px-3 py-2 text-left font-semibold text-gray-600">Internal Product ID</th>
                 <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Qty</th>
                 <th className="px-3 py-2 w-12" />
               </tr>
@@ -78,8 +82,8 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
                   <td className="px-3 py-2">
                     <input value={ln.item_code || ''} onChange={e => updateLine(idx, { item_code: e.target.value })} className={cellCls} />
                   </td>
-                  <td className="px-3 py-2">
-                    <input value={ln.item_desc || ''} onChange={e => updateLine(idx, { item_desc: e.target.value })} className={cellCls} />
+                  <td className="px-3 py-2 text-gray-700 font-mono text-xs">
+                    {ln.internal_sku_code || '—'}
                   </td>
                   <td className="px-3 py-2">
                     <input type="number" min={1} value={ln.qty || ''} onChange={e => updateLine(idx, { qty: Number(e.target.value) })} className={cellCls} />

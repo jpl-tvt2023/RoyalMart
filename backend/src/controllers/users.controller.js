@@ -122,6 +122,22 @@ async function remove(req, res, next) {
     if (parseInt(id) === req.user.id) {
       return res.status(400).json({ message: 'Cannot delete your own account' });
     }
+
+    const blockers = await Promise.all([
+      db.execute({ sql: 'SELECT COUNT(*) AS c FROM marketplace_pos WHERE created_by = ? OR onboarded_by = ? OR updated_by = ?', args: [id, id, id] }),
+      db.execute({ sql: 'SELECT COUNT(*) AS c FROM supplier_pos WHERE created_by = ?', args: [id] }),
+    ]);
+    const poCount = blockers[0].rows[0].c;
+    const supCount = blockers[1].rows[0].c;
+    if (poCount > 0 || supCount > 0) {
+      const parts = [];
+      if (poCount > 0) parts.push(`${poCount} purchase order${poCount !== 1 ? 's' : ''}`);
+      if (supCount > 0) parts.push(`${supCount} supplier PO${supCount !== 1 ? 's' : ''}`);
+      return res.status(409).json({
+        message: `Cannot delete: user is linked to ${parts.join(' and ')}. Reassign those records first.`,
+      });
+    }
+
     const { rows } = await db.execute({ sql: 'DELETE FROM users WHERE id = ? RETURNING email', args: [id] });
     if (!rows.length) return res.status(404).json({ message: 'User not found' });
     await logAction({ userId: req.user.id, actionType: 'USER_DELETE', description: `Deleted user ${rows[0].email}`, entityType: 'user', entityId: id });

@@ -16,7 +16,9 @@
       "Bash(npm test *)",
       "Bash(node src/migrations/migrate.js)",
       "Bash(npx vitest *)",
-      "Bash(node -e \"console.log\\(require\\('xlsx/package.json'\\).version\\)\")"
+      "Bash(node -e \"console.log\\(require\\('xlsx/package.json'\\).version\\)\")",
+      "Bash(Get-ChildItem -Path \"d:/My Projects/Royal Mart Portal\" -Directory)",
+      "Bash(Select-Object Name)"
     ]
   }
 }
