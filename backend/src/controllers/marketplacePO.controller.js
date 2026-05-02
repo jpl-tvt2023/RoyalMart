@@ -4,7 +4,7 @@ const { parse } = require('../parsers/marketplacePO');
 
 const VENDOR_PREFIX = { Swiggy: 'S', Zepto: 'Z', Blinkit: 'B' };
 const VALID_VENDORS = Object.keys(VENDOR_PREFIX);
-const VALID_STATUSES = ['Open', 'In Progress', 'Completed', 'Cancelled'];
+const VALID_STATUSES = ['Open', 'Closed'];
 
 function pad3(n) { return String(n).padStart(3, '0'); }
 
@@ -118,7 +118,7 @@ async function getOne(req, res, next) {
 }
 
 function validatePayload(body) {
-  const { vendor, vendor_po_id, po_date, expected_delivery_date, po_expiry_date, lines } = body;
+  const { vendor, vendor_po_id, po_date, po_expiry_date, lines } = body;
   if (!VALID_VENDORS.includes(vendor)) return 'Invalid vendor';
   if (!vendor_po_id || !String(vendor_po_id).trim()) return 'vendor_po_id is required';
   if (!Array.isArray(lines) || lines.length === 0) return 'At least one line item is required';
@@ -126,7 +126,7 @@ function validatePayload(body) {
     if (!ln.item_code || !String(ln.item_code).trim()) return 'Each line needs item_code';
     if (!Number.isFinite(Number(ln.qty)) || Number(ln.qty) <= 0) return 'Each line needs a positive qty';
   }
-  for (const d of [po_date, expected_delivery_date, po_expiry_date]) {
+  for (const d of [po_date, po_expiry_date]) {
     if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return `Invalid date format: ${d}`;
   }
   return null;
@@ -136,7 +136,7 @@ async function create(req, res, next) {
   try {
     const err = validatePayload(req.body);
     if (err) return res.status(400).json({ message: err });
-    const { vendor, vendor_po_id, po_date, expected_delivery_date, po_expiry_date, city, lines } = req.body;
+    const { vendor, vendor_po_id, po_date, po_expiry_date, city, lines } = req.body;
     const cleanVendorPoId = String(vendor_po_id).trim();
 
     const tx = await db.transaction('write');
@@ -152,10 +152,10 @@ async function create(req, res, next) {
         poId = existing[0].po_id;
         await tx.execute({
           sql: `UPDATE marketplace_pos
-                SET po_date = ?, expected_delivery_date = ?, po_expiry_date = ?, city = ?,
+                SET po_date = ?, po_expiry_date = ?, city = ?,
                     updated_by = ?, updated_at = datetime('now')
                 WHERE po_id = ?`,
-          args: [po_date || null, expected_delivery_date || null, po_expiry_date || null, city || null, req.user.id, poId],
+          args: [po_date || null, po_expiry_date || null, city || null, req.user.id, poId],
         });
       } else {
         isNew = true;
@@ -168,9 +168,9 @@ async function create(req, res, next) {
         poId = `${VENDOR_PREFIX[vendor]}${pad3(nextSeq)}`;
         await tx.execute({
           sql: `INSERT INTO marketplace_pos
-                (po_id, vendor, vendor_po_id, po_date, expected_delivery_date, po_expiry_date, city, created_by, onboarded_by, updated_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [poId, vendor, cleanVendorPoId, po_date || null, expected_delivery_date || null, po_expiry_date || null, city || null, req.user.id, req.user.id, req.user.id],
+                (po_id, vendor, vendor_po_id, po_date, po_expiry_date, city, status, created_by, onboarded_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`,
+          args: [poId, vendor, cleanVendorPoId, po_date || null, po_expiry_date || null, city || null, req.user.id, req.user.id, req.user.id],
         });
       }
 
@@ -214,21 +214,12 @@ async function update(req, res, next) {
       vendor: existing[0].vendor,
       vendor_po_id: req.body.vendor_po_id || existing[0].vendor_po_id,
       po_date: req.body.po_date,
-      expected_delivery_date: req.body.expected_delivery_date,
       po_expiry_date: req.body.po_expiry_date,
       city: req.body.city,
       lines: req.body.lines,
     };
     const err = validatePayload(body);
     if (err) return res.status(400).json({ message: err });
-
-    let statusToSet = null;
-    if (req.body.status != null) {
-      if (!VALID_STATUSES.includes(req.body.status)) {
-        return res.status(400).json({ message: 'Invalid status' });
-      }
-      statusToSet = req.body.status;
-    }
 
     let newOnboardedBy = null;
     const canReassign = (req.user.roles || []).some(r => ['Admin', 'Owner'].includes(r));
@@ -254,25 +245,18 @@ async function update(req, res, next) {
     try {
       await tx.execute({
         sql: `UPDATE marketplace_pos
-              SET vendor_po_id = ?, po_date = ?, expected_delivery_date = ?, po_expiry_date = ?, city = ?,
+              SET vendor_po_id = ?, po_date = ?, po_expiry_date = ?, city = ?,
                   updated_by = ?, updated_at = datetime('now')
               WHERE po_id = ?`,
         args: [
           String(body.vendor_po_id).trim(),
           body.po_date || null,
-          body.expected_delivery_date || null,
           body.po_expiry_date || null,
           body.city || null,
           req.user.id,
           poId,
         ],
       });
-      if (statusToSet !== null) {
-        await tx.execute({
-          sql: 'UPDATE marketplace_pos SET status = ? WHERE po_id = ?',
-          args: [statusToSet, poId],
-        });
-      }
       if (newOnboardedBy !== null) {
         await tx.execute({
           sql: 'UPDATE marketplace_pos SET onboarded_by = ? WHERE po_id = ?',

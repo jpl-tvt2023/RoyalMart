@@ -11,13 +11,13 @@ import { formatDateTime } from '../../utils/formatters';
 import { INDIAN_CITIES } from '../../data/indianCities';
 
 const VENDORS = ['Swiggy', 'Zepto', 'Blinkit'];
-const STATUS_COLORS = { Open: 'blue', 'In Progress': 'yellow', Completed: 'green', Cancelled: 'gray' };
+const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
 const EMPTY_FILTERS = { po_id: '', vendor: '', vendor_po_id: '', city: '', po_date: '', po_expiry_date: '' };
 
 function expiryTone(po) {
   if (!po.po_expiry_date) return null;
-  if (po.status === 'Completed' || po.status === 'Cancelled') return null;
+  if (po.status === 'Closed') return null;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const exp = new Date(po.po_expiry_date); exp.setHours(0, 0, 0, 0);
   const days = Math.round((exp - today) / 86400000);

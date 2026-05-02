@@ -2,7 +2,7 @@ import { Trash2, Plus } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import { INDIAN_CITIES } from '../../data/indianCities';
 
-const PO_STATUSES = ['Open', 'In Progress', 'Completed', 'Cancelled'];
+const PO_STATUSES = ['Open', 'Closed'];
 
 export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true, onboarderSlot = null }) {
   const set = (patch) => onChange({ ...value, ...patch });
@@ -34,9 +34,6 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
         <Field label="PO Date">
           <input type="date" value={value.po_date || ''} onChange={e => set({ po_date: e.target.value })} className={inputCls} />
         </Field>
-        <Field label="Expected Delivery Date">
-          <input type="date" value={value.expected_delivery_date || ''} onChange={e => set({ expected_delivery_date: e.target.value })} className={inputCls} />
-        </Field>
         <Field label="PO Expiry Date">
           <input type="date" value={value.po_expiry_date || ''} onChange={e => set({ po_expiry_date: e.target.value })} className={inputCls} />
         </Field>
@@ -47,9 +44,7 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
           </select>
         </Field>
         <Field label="Status">
-          <select value={value.status || 'Open'} onChange={e => set({ status: e.target.value })} className={inputCls}>
-            {PO_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <input disabled value={value.status || 'Open'} className={`${inputCls} bg-gray-50 text-gray-600`} />
         </Field>
         {onboarderSlot}
       </div>
