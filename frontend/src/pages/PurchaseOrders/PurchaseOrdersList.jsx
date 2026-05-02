@@ -8,9 +8,12 @@ import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Badge from '../../components/ui/Badge';
 import { listPOs, deletePO } from '../../api/marketplacePO.api';
 import { formatDateTime } from '../../utils/formatters';
+import { INDIAN_CITIES } from '../../data/indianCities';
 
 const VENDORS = ['Swiggy', 'Zepto', 'Blinkit'];
 const STATUS_COLORS = { Open: 'blue', 'In Progress': 'yellow', Completed: 'green', Cancelled: 'gray' };
+
+const EMPTY_FILTERS = { po_id: '', vendor: '', vendor_po_id: '', city: '', po_date: '', po_expiry_date: '' };
 
 function expiryTone(po) {
   if (!po.po_expiry_date) return null;
@@ -32,32 +35,25 @@ export default function PurchaseOrdersList() {
   const navigate = useNavigate();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [vendor, setVendor] = useState('');
-  const [search, setSearch] = useState('');
-  const [expiryFilter, setExpiryFilter] = useState('');
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
-  const load = () => {
+  const load = (overrides) => {
+    const active = overrides ?? filters;
     setLoading(true);
     const params = {};
-    if (vendor) params.vendor = vendor;
-    if (search) params.search = search;
+    Object.entries(active).forEach(([k, v]) => { if (v) params[k] = v; });
     listPOs(params)
       .then(setItems)
       .catch(() => toast.error('Failed to load purchase orders'))
       .finally(() => setLoading(false));
   };
-  useEffect(() => { load(); /* eslint-disable-line */ }, [vendor]);
+  useEffect(() => { load(EMPTY_FILTERS); /* eslint-disable-line */ }, []);
 
+  const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
   const onSearchKey = (e) => { if (e.key === 'Enter') load(); };
-
-  const visible = items.filter(po => {
-    if (!expiryFilter) return true;
-    const t = expiryTone(po);
-    if (expiryFilter === 'attention') return t === 'soon' || t === 'expired';
-    return t === expiryFilter;
-  });
+  const clearFilters = () => { setFilters(EMPTY_FILTERS); load(EMPTY_FILTERS); };
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -71,35 +67,55 @@ export default function PurchaseOrdersList() {
     } finally { setDeleting(false); }
   };
 
+  const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30';
+
   return (
     <AppShell>
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[#003049]">Purchase Orders</h1>
-          <p className="text-gray-500 text-sm">{visible.length} purchase order{visible.length !== 1 ? 's' : ''}{expiryFilter && ` (filtered from ${items.length})`}</p>
+          <p className="text-gray-500 text-sm">{items.length} purchase order{items.length !== 1 ? 's' : ''}</p>
         </div>
         <Button onClick={() => navigate('/purchase-orders/new')}><Plus size={16} />Add PO</Button>
       </div>
 
-      <div className="flex flex-wrap gap-3 mb-4">
-        <select value={vendor} onChange={e => setVendor(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30">
-          <option value="">All vendors</option>
-          {VENDORS.map(v => <option key={v} value={v}>{v}</option>)}
-        </select>
-        <select value={expiryFilter} onChange={e => setExpiryFilter(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30">
-          <option value="">All expiry states</option>
-          <option value="attention">Needs attention (soon + expired)</option>
-          <option value="soon">Expiring soon (≤2 days)</option>
-          <option value="expired">Already expired</option>
-        </select>
-        <input
-          placeholder="Search PO ID or vendor PO..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          onKeyDown={onSearchKey}
-          className="flex-1 min-w-[200px] px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30"
-        />
-        <Button variant="outline" onClick={load}>Search</Button>
+      <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">PO ID</label>
+            <input value={filters.po_id} onChange={e => setFilter('po_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search PO ID..." className={inputCls} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Vendor</label>
+            <select value={filters.vendor} onChange={e => setFilter('vendor', e.target.value)} className={inputCls}>
+              <option value="">All vendors</option>
+              {VENDORS.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Vendor PO No.</label>
+            <input value={filters.vendor_po_id} onChange={e => setFilter('vendor_po_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search vendor PO..." className={inputCls} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">City</label>
+            <select value={filters.city} onChange={e => setFilter('city', e.target.value)} className={inputCls}>
+              <option value="">All cities</option>
+              {INDIAN_CITIES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">PO Date</label>
+            <input type="date" value={filters.po_date} onChange={e => setFilter('po_date', e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">PO Expiry Date</label>
+            <input type="date" value={filters.po_expiry_date} onChange={e => setFilter('po_expiry_date', e.target.value)} className={inputCls} />
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-3">
+          <Button variant="ghost" onClick={clearFilters}>Clear</Button>
+          <Button variant="outline" onClick={() => load()}>Search</Button>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -107,7 +123,7 @@ export default function PurchaseOrdersList() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                {['PO ID', 'Vendor', 'Vendor PO No.', 'City', 'Status', 'Onboarded By', 'PO Date', 'Expected Delivery', 'Expiry', 'Lines', 'Updated', 'Last Updated By', 'Actions'].map(h => (
+                {['PO ID', 'Vendor', 'Vendor PO No.', 'City', 'Status', 'Onboarded By', 'PO Date', 'Expiry', 'Line Item', 'Total Qty', 'Updated', 'Last Updated By', 'Actions'].map(h => (
                   <th key={h} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -117,7 +133,7 @@ export default function PurchaseOrdersList() {
                 [...Array(4)].map((_, i) => (
                   <tr key={i}><td colSpan={13} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
-              ) : visible.map(po => {
+              ) : items.map(po => {
                 const tone = expiryTone(po);
                 const rowCls = tone ? TONE_ROW[tone] : 'hover:bg-gray-50';
                 return (
@@ -133,9 +149,9 @@ export default function PurchaseOrdersList() {
                   <td className="px-4 py-3"><Badge color={STATUS_COLORS[po.status] || 'gray'}>{po.status || 'Open'}</Badge></td>
                   <td className="px-4 py-3 text-gray-600">{po.onboarded_by_name || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{po.po_date || '—'}</td>
-                  <td className="px-4 py-3 text-gray-600">{po.expected_delivery_date || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{po.po_expiry_date || '—'}</td>
                   <td className="px-4 py-3 font-semibold text-gray-800">{po.line_count}</td>
+                  <td className="px-4 py-3 font-semibold text-gray-800">{po.total_qty ?? 0}</td>
                   <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{formatDateTime(po.updated_at)}</td>
                   <td className="px-4 py-3 text-gray-600">{po.updated_by_name || '—'}</td>
                   <td className="px-4 py-3">
@@ -149,8 +165,8 @@ export default function PurchaseOrdersList() {
               })}
             </tbody>
           </table>
-          {!loading && visible.length === 0 && (
-            <p className="text-center text-gray-400 py-8">{items.length === 0 ? 'No purchase orders yet' : 'No POs match the current filter'}</p>
+          {!loading && items.length === 0 && (
+            <p className="text-center text-gray-400 py-8">No purchase orders match the current filters</p>
           )}
         </div>
       </div>

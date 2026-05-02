@@ -38,16 +38,32 @@ async function parsePreview(req, res, next) {
 
 async function list(req, res, next) {
   try {
-    const { vendor, search } = req.query;
+    const { po_id, vendor, vendor_po_id, city, po_date, po_expiry_date } = req.query;
     const conditions = [];
     const args = [];
+    if (po_id) {
+      conditions.push('p.po_id LIKE ?');
+      args.push(`%${po_id}%`);
+    }
     if (vendor && VALID_VENDORS.includes(vendor)) {
       conditions.push('p.vendor = ?');
       args.push(vendor);
     }
-    if (search) {
-      conditions.push('(p.po_id LIKE ? OR p.vendor_po_id LIKE ?)');
-      args.push(`%${search}%`, `%${search}%`);
+    if (vendor_po_id) {
+      conditions.push('p.vendor_po_id LIKE ?');
+      args.push(`%${vendor_po_id}%`);
+    }
+    if (city) {
+      conditions.push('p.city = ?');
+      args.push(city);
+    }
+    if (po_date) {
+      conditions.push('p.po_date = ?');
+      args.push(po_date);
+    }
+    if (po_expiry_date) {
+      conditions.push('p.po_expiry_date = ?');
+      args.push(po_expiry_date);
     }
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
     const { rows } = await db.execute({
@@ -57,7 +73,8 @@ async function list(req, res, next) {
                u.name AS created_by_name,
                ob.name AS onboarded_by_name,
                ub.name AS updated_by_name,
-               (SELECT COUNT(*) FROM marketplace_po_lines WHERE po_id = p.po_id) AS line_count
+               (SELECT COUNT(*) FROM marketplace_po_lines WHERE po_id = p.po_id) AS line_count,
+               (SELECT COALESCE(SUM(qty), 0) FROM marketplace_po_lines WHERE po_id = p.po_id) AS total_qty
         FROM marketplace_pos p
         LEFT JOIN users u  ON u.id  = p.created_by
         LEFT JOIN users ob ON ob.id = p.onboarded_by
@@ -86,9 +103,15 @@ async function getOne(req, res, next) {
     if (!rows.length) return res.status(404).json({ message: 'PO not found' });
     const po = rows[0];
     const { rows: lines } = await db.execute({
-      sql: `SELECT id, line_no, item_code, item_desc, qty
-            FROM marketplace_po_lines WHERE po_id = ? ORDER BY line_no`,
-      args: [poId],
+      sql: `SELECT l.id, l.line_no, l.item_code, l.item_desc, l.qty,
+                   pr.id AS internal_product_id, pr.sku_code AS internal_sku_code
+            FROM marketplace_po_lines l
+            LEFT JOIN product_vendor_codes pvc
+              ON pvc.vendor = ? AND pvc.vendor_item_code = l.item_code
+            LEFT JOIN products pr ON pr.id = pvc.product_id
+            WHERE l.po_id = ?
+            ORDER BY l.line_no`,
+      args: [po.vendor, poId],
     });
     res.json({ ...po, lines });
   } catch (err) { next(err); }
