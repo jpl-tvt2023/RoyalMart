@@ -25,7 +25,6 @@ export default function PurchaseOrderDetail() {
         vendor: po.vendor,
         vendor_po_id: po.vendor_po_id || '',
         po_date: po.po_date || '',
-        expected_delivery_date: po.expected_delivery_date || '',
         po_expiry_date: po.po_expiry_date || '',
         city: po.city || '',
         status: po.status || 'Open',
