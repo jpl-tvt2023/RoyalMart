@@ -2,7 +2,7 @@ const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
 const { parse } = require('../parsers/marketplacePO');
 
-const VENDOR_PREFIX = { Swiggy: 'S', Zepto: 'Z', Blinkit: 'B' };
+const VENDOR_PREFIX = { Scootsy: 'S', Zepto: 'Z', Blinkit: 'B' };
 const VALID_VENDORS = Object.keys(VENDOR_PREFIX);
 const VALID_STATUSES = ['Open', 'Closed'];
 
@@ -12,7 +12,7 @@ async function parsePreview(req, res, next) {
   try {
     const { vendor } = req.body;
     if (!VALID_VENDORS.includes(vendor)) {
-      return res.status(400).json({ message: 'Invalid vendor. Must be Swiggy, Zepto, or Blinkit.' });
+      return res.status(400).json({ message: 'Invalid vendor. Must be Scootsy, Zepto, or Blinkit.' });
     }
     if (!req.file || !req.file.buffer) {
       return res.status(400).json({ message: 'PDF file is required' });

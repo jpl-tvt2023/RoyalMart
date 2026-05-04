@@ -10,7 +10,7 @@ import toast from 'react-hot-toast';
 import { useRBAC } from '../../hooks/useRBAC';
 import BulkUploadModal from './BulkUploadModal';
 
-const KNOWN_VENDORS = ['Swiggy', 'Zepto', 'Blinkit'];
+const KNOWN_VENDORS = ['Scootsy', 'Zepto', 'Blinkit'];
 const EMPTY_FORM = { product_id: '', vendor: '', vendor_item_code: '', product_description: '' };
 
 export default function ProductList() {

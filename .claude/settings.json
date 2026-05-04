@@ -18,7 +18,10 @@
       "Bash(npx vitest *)",
       "Bash(node -e \"console.log\\(require\\('xlsx/package.json'\\).version\\)\")",
       "Bash(Get-ChildItem -Path \"d:/My Projects/Royal Mart Portal\" -Directory)",
-      "Bash(Select-Object Name)"
+      "Bash(Select-Object Name)",
+      "Bash(node -e \"const pdf=require\\('d:/My Projects/Royal Mart Portal/backend/node_modules/pdf-parse'\\); const fs=require\\('fs'\\); pdf\\(fs.readFileSync\\('C:/Users/Rahul/Downloads/2273910055299.pdf'\\)\\).then\\(r=>{const lines=r.text.split\\(/\\\\r?\\\\n/\\); console.log\\('TOTAL_LINES:'+lines.length\\); lines.forEach\\(\\(l,i\\)=>console.log\\(i+'|'+l\\)\\);}\\);\")",
+      "Read(//c/Users/Rahul/Downloads/Blinkit/**)",
+      "Bash(node -e \"const pdf=require\\('d:/My Projects/Royal Mart Portal/backend/node_modules/pdf-parse'\\); const fs=require\\('fs'\\); const path=require\\('path'\\); const dir='C:/Users/Rahul/Downloads/Blinkit'; \\(async\\(\\)=>{ for\\(const f of fs.readdirSync\\(dir\\)\\){ const r=await pdf\\(fs.readFileSync\\(path.join\\(dir,f\\)\\)\\); const lines=r.text.split\\(/\\\\r?\\\\n/\\); console.log\\('===='+f+' lines='+lines.length+' ===='\\); lines.forEach\\(\\(l,i\\)=>console.log\\(i+'|'+l\\)\\); console.log\\(''\\); } }\\)\\(\\);\")"
     ]
   }
 }
