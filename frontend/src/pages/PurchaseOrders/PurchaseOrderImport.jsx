@@ -7,7 +7,7 @@ import Button from '../../components/ui/Button';
 import SummaryEditor from './SummaryEditor';
 import { parsePreview, commitPO } from '../../api/marketplacePO.api';
 
-const VENDORS = ['Swiggy', 'Zepto', 'Blinkit'];
+const VENDORS = ['Scootsy', 'Zepto', 'Blinkit'];
 
 export default function PurchaseOrderImport() {
   const navigate = useNavigate();

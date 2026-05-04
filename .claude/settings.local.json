@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Rahul/Downloads/Scootsy/**)",
+      "Read(//c/Users/Rahul/Downloads/Zepto/**)",
+      "Bash(node -e \"const pdf=require\\('d:/My Projects/Royal Mart Portal/backend/node_modules/pdf-parse'\\); const fs=require\\('fs'\\); const path=require\\('path'\\); const dir='C:/Users/Rahul/Downloads/Scootsy'; \\(async\\(\\)=>{ for\\(const f of fs.readdirSync\\(dir\\)\\){ const r=await pdf\\(fs.readFileSync\\(path.join\\(dir,f\\)\\)\\); const lines=r.text.split\\(/\\\\r?\\\\n/\\); console.log\\('===='+f+' lines='+lines.length+' ===='\\); lines.forEach\\(\\(l,i\\)=>console.log\\(i+'|'+l\\)\\); console.log\\(''\\); } }\\)\\(\\);\")",
+      "Bash(node -e \"const pdf=require\\('d:/My Projects/Royal Mart Portal/backend/node_modules/pdf-parse'\\); const fs=require\\('fs'\\); const path=require\\('path'\\); const dir='C:/Users/Rahul/Downloads/Zepto'; \\(async\\(\\)=>{ for\\(const f of fs.readdirSync\\(dir\\)\\){ const r=await pdf\\(fs.readFileSync\\(path.join\\(dir,f\\)\\)\\); const lines=r.text.split\\(/\\\\r?\\\\n/\\); console.log\\('===='+f+' lines='+lines.length+' ===='\\); lines.forEach\\(\\(l,i\\)=>console.log\\(i+'|'+l\\)\\); console.log\\(''\\); } }\\)\\(\\);\")",
+      "Bash(node -e ' *)",
+      "Bash(node \"d:/My Projects/Royal Mart Portal/backend/test-zepto-regex.js\")",
+      "Bash(rm \"d:/My Projects/Royal Mart Portal/backend/test-zepto-regex.js\")",
+      "Bash(rm \"d:/My Projects/Royal Mart Portal/backend/src/parsers/marketplacePO/swiggy.js\")"
+    ]
+  }
+}

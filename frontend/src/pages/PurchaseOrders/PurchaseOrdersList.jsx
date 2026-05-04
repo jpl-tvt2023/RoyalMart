@@ -10,7 +10,7 @@ import { listPOs, deletePO } from '../../api/marketplacePO.api';
 import { formatDateTime } from '../../utils/formatters';
 import { INDIAN_CITIES } from '../../data/indianCities';
 
-const VENDORS = ['Swiggy', 'Zepto', 'Blinkit'];
+const VENDORS = ['Scootsy', 'Zepto', 'Blinkit'];
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
 const EMPTY_FILTERS = { po_id: '', vendor: '', vendor_po_id: '', city: '', po_date: '', po_expiry_date: '', status: 'Open' };

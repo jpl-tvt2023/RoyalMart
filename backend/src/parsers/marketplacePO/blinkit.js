@@ -48,52 +48,61 @@ async function parseBlinkit(buffer) {
 
   if (!vendor_po_id) throw new Error('Could not find R.O. Number in Blinkit PDF');
 
-  const HEAD_RE = /^(\d{1,2})(\d{8})(\d{5})$/;
-  const NUM_RE = /^(\d+\.\d{2})(\d+\.\d{2})(\d+)(\d{3,4}\.\d{2})(\d+\.\d{2})$/;
-
-  const lines = [];
-  let currentHead = null;
-  let descParts = [];
-
-  const flush = (numLine) => {
-    if (!currentHead) return;
-    const m = numLine.match(NUM_RE);
-    if (m) {
-      const qty = parseInt(m[3], 10);
-      if (qty > 0) {
-        const item_desc = descParts.join(' ').replace(/\s+/g, ' ').trim();
-        lines.push({
-          line_no: currentHead.srNo,
-          item_code: currentHead.item_code,
-          item_desc,
-          qty,
-        });
+  // Qty-bearing tail: Tax + Landing + Qty + MRP + Total, all glued with no separators.
+  // Tax may have 1 or 2 decimals; Landing/MRP/Total are .00. The split between
+  // qty digits and MRP digits is ambiguous from the string alone (e.g.
+  // "208249.00" could be qty=208 + MRP=249.00, or qty=2 + MRP=8249.00),
+  // so we enumerate splits and pick the one where qty * landing == total.
+  const parseQtyTail = (line) => {
+    for (const taxDec of [2, 1]) {
+      for (let qLen = 1; qLen <= 6; qLen++) {
+        const re = new RegExp(`^(\\d+\\.\\d{${taxDec}})(\\d+\\.\\d{2})(\\d{${qLen}})(\\d+\\.\\d{2})(\\d+\\.\\d{2})$`);
+        const m = line.match(re);
+        if (!m) continue;
+        const landing = parseFloat(m[2]);
+        const qty = parseInt(m[3], 10);
+        const total = parseFloat(m[5]);
+        if (qty > 0 && Math.abs(qty * landing - total) < 0.01) return qty;
       }
     }
-    currentHead = null;
-    descParts = [];
+    return null;
   };
+  const QTY_TAIL_SHAPE = /^\d+\.\d{1,2}\d+\.\d{2}\d+\d+\.\d{2}\d+\.\d{2}$/;
 
-  for (let i = 0; i < flat.length; i++) {
+  const endIdx = flat.findIndex(l => /^Total\s+Quantity/i.test(l));
+  const end = endIdx === -1 ? flat.length : endIdx;
+
+  const lines = [];
+  let i = 0;
+  let expectedSr = 1;
+  while (i < end) {
     const line = flat[i];
-    const head = line.match(HEAD_RE);
-    if (head) {
-      currentHead = { srNo: parseInt(head[1], 10), item_code: head[2] };
-      descParts = [];
-      continue;
+    const srStr = String(expectedSr);
+    if (/^\d+$/.test(line) && line.startsWith(srStr) && line.length >= srStr.length + 6) {
+      let item_code = line.slice(srStr.length);
+      let j = i + 1;
+      while (item_code.length < 8 && j < end && /^\d+$/.test(flat[j])) {
+        item_code += flat[j];
+        j++;
+      }
+      item_code = item_code.slice(0, 8);
+      let qty = null;
+      while (j < end) {
+        if (QTY_TAIL_SHAPE.test(flat[j])) {
+          qty = parseQtyTail(flat[j]);
+          j++;
+          break;
+        }
+        j++;
+      }
+      if (qty != null && qty > 0) {
+        lines.push({ line_no: expectedSr, item_code, item_desc: '', qty });
+      }
+      expectedSr++;
+      i = j;
+    } else {
+      i++;
     }
-    if (!currentHead) continue;
-    if (NUM_RE.test(line)) { flush(line); continue; }
-    if (/^\d{3}$/.test(line)) continue;
-    if (/^\d+\.\d+/.test(line)) continue;
-    if (/^\d$/.test(line)) continue;
-    const upcMatch = line.match(/^(\d{8})(.*)$/);
-    if (upcMatch) {
-      if (upcMatch[2].trim()) descParts.push(upcMatch[2].trim());
-      continue;
-    }
-    if (/Total Quantity|Total Taxable|Grand Total/i.test(line)) { currentHead = null; break; }
-    descParts.push(line);
   }
 
   return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, lines };

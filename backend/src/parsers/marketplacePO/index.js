@@ -1,6 +1,6 @@
 const parsers = {
   Zepto:   require('./zepto'),
-  Swiggy:  require('./swiggy'),
+  Scootsy: require('./scootsy'),
   Blinkit: require('./blinkit'),
 };
 

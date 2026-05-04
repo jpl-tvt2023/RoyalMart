@@ -7,7 +7,7 @@ import { Download, Upload, FileSpreadsheet } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const HEADERS = ['sku_code', 'vendor', 'vendor_item_code', 'product_description'];
-const SAMPLE_ROW = ['BND-RED-S1', 'Swiggy', 'SWG-12345', 'Red Cotton Bandana (Single Pack)'];
+const SAMPLE_ROW = ['BND-RED-S1', 'Scootsy', 'SCT-12345', 'Red Cotton Bandana (Single Pack)'];
 
 function downloadTemplate(existing = []) {
   const dataRows = existing.length
