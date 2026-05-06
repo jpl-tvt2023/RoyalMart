@@ -101,7 +101,7 @@ async function updateOne(req, res, next) {
   try {
     const { poId } = req.params;
     const { rows: existing } = await db.execute({
-      sql: 'SELECT po_id, status, dispatch_date FROM marketplace_pos WHERE po_id = ?',
+      sql: 'SELECT po_id, status, dispatch_date, office_poc, warehouse_poc FROM marketplace_pos WHERE po_id = ?',
       args: [poId],
     });
     if (!existing.length) return res.status(404).json({ message: 'PO not found' });

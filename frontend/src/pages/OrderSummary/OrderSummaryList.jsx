@@ -343,25 +343,25 @@ export default function OrderSummaryList() {
 
       {/* Bulk action bar */}
       {canEdit && selected.size > 0 && (
-        <div className="bg-[#003049] text-white rounded-xl px-4 py-3 mb-3 flex items-center gap-3 flex-wrap sticky top-2 z-10 shadow">
-          <span className="font-medium">{selected.size} selected</span>
+        <div className="bg-[#003049] text-white rounded-xl px-4 py-3 mb-3 flex items-center gap-3 flex-wrap sticky top-2 z-20 shadow">
+          <span className="font-medium whitespace-nowrap">{selected.size} selected</span>
           <span className="text-white/40">·</span>
-          <label className="text-sm">Set status</label>
+          <label className="text-sm whitespace-nowrap">Set status</label>
           <select
             value={bulkStatus}
             onChange={e => setBulkStatus(e.target.value)}
-            className="px-2 py-1 rounded text-sm text-[#003049]"
+            className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[7rem]"
           >
             <option value="Open">Open</option>
             <option value="Closed">Closed</option>
           </select>
+          <label className="text-sm whitespace-nowrap">Dispatch</label>
           <input
             type="date"
             value={bulkDispatchDate}
             onChange={e => setBulkDispatchDate(e.target.value)}
             disabled={bulkStatus !== 'Closed'}
-            placeholder="Dispatch date"
-            className="px-2 py-1 rounded text-sm text-[#003049] disabled:opacity-40"
+            className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[9rem] disabled:opacity-40 disabled:cursor-not-allowed"
           />
           <Button
             onClick={applyBulk}
@@ -374,7 +374,7 @@ export default function OrderSummaryList() {
           <button
             type="button"
             onClick={() => setSelected(new Set())}
-            className="text-white/80 hover:text-white text-sm underline"
+            className="text-white/80 hover:text-white text-sm underline whitespace-nowrap"
           >
             Clear selection
           </button>
