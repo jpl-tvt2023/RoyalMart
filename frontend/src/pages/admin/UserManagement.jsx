@@ -10,8 +10,8 @@ import { UserPlus, Pencil, Trash2, KeyRound } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../context/AuthContext';
 
-const ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Stocks_Team', 'PO_Executive'];
-const roleColors = { Admin: 'red', Owner: 'purple', Office_POC: 'blue', Purchase_Team: 'orange', Stocks_Team: 'green', PO_Executive: 'yellow' };
+const ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Warehouse_POC', 'PO_Executive'];
+const roleColors = { Admin: 'red', Owner: 'purple', Office_POC: 'blue', Purchase_Team: 'orange', Warehouse_POC: 'green', PO_Executive: 'yellow' };
 
 const EMPTY_FORM = { name: '', email: '', roles: ['Office_POC'], password: '' };
 

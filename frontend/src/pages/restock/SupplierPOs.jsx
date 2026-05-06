@@ -16,7 +16,7 @@ const STATUS_FLOW = ['Ordered', 'In-Transit', 'Arrived', 'Received'];
 
 const NEXT_STATUS_BY_ROLE = {
   Purchase_Team: { Ordered: 'In-Transit', 'In-Transit': 'Arrived' },
-  Stocks_Team:   { Arrived: 'Received' },
+  Warehouse_POC: { Arrived: 'Received' },
   Admin:         { Ordered: 'In-Transit', 'In-Transit': 'Arrived', Arrived: 'Received' },
   Owner:         { Ordered: 'In-Transit', 'In-Transit': 'Arrived', Arrived: 'Received' },
 };

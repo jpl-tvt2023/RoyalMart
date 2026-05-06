@@ -36,59 +36,89 @@ async function parsePreview(req, res, next) {
   } catch (err) { next(err); }
 }
 
+const PO_SORT_COLUMNS = {
+  po_id:             'p.po_id',
+  vendor:            'p.vendor',
+  vendor_po_id:      'p.vendor_po_id',
+  city:              'p.city',
+  status:            'p.status',
+  po_date:           'p.po_date',
+  po_expiry_date:    'p.po_expiry_date',
+  updated_at:        'p.updated_at',
+  onboarded_by_name: 'ob.name',
+  updated_by_name:   'ub.name',
+  line_count:        '(SELECT COUNT(*)            FROM marketplace_po_lines WHERE po_id = p.po_id)',
+  total_qty:         '(SELECT COALESCE(SUM(qty),0) FROM marketplace_po_lines WHERE po_id = p.po_id)',
+};
+
+function buildPagination(query) {
+  const rawPage = query.page;
+  const rawSize = query.page_size;
+  if (rawSize === 'all' || (rawPage == null && rawSize == null)) {
+    return { paginated: false };
+  }
+  const page = Math.max(1, parseInt(rawPage, 10) || 1);
+  const allowed = [10, 25, 50, 100];
+  const requested = parseInt(rawSize, 10);
+  const page_size = allowed.includes(requested) ? requested : 25;
+  return { paginated: true, page, page_size, offset: (page - 1) * page_size };
+}
+
+function buildOrderBy(query, columnMap, defaultExpr = 'p.updated_at DESC') {
+  const key = query.sort_by;
+  const dir = String(query.sort_dir || '').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  if (key && columnMap[key]) return `${columnMap[key]} ${dir}`;
+  return defaultExpr;
+}
+
 async function list(req, res, next) {
   try {
     const { po_id, vendor, vendor_po_id, city, po_date, po_expiry_date, status } = req.query;
     const conditions = [];
     const args = [];
-    if (po_id) {
-      conditions.push('p.po_id LIKE ?');
-      args.push(`%${po_id}%`);
-    }
-    if (vendor && VALID_VENDORS.includes(vendor)) {
-      conditions.push('p.vendor = ?');
-      args.push(vendor);
-    }
-    if (vendor_po_id) {
-      conditions.push('p.vendor_po_id LIKE ?');
-      args.push(`%${vendor_po_id}%`);
-    }
-    if (city) {
-      conditions.push('p.city = ?');
-      args.push(city);
-    }
-    if (po_date) {
-      conditions.push('p.po_date = ?');
-      args.push(po_date);
-    }
-    if (po_expiry_date) {
-      conditions.push('p.po_expiry_date = ?');
-      args.push(po_expiry_date);
-    }
-    if (status && VALID_STATUSES.includes(status)) {
-      conditions.push('p.status = ?');
-      args.push(status);
-    }
+    if (po_id) { conditions.push('p.po_id LIKE ?'); args.push(`%${po_id}%`); }
+    if (vendor && VALID_VENDORS.includes(vendor)) { conditions.push('p.vendor = ?'); args.push(vendor); }
+    if (vendor_po_id) { conditions.push('p.vendor_po_id LIKE ?'); args.push(`%${vendor_po_id}%`); }
+    if (city) { conditions.push('p.city = ?'); args.push(city); }
+    if (po_date) { conditions.push('p.po_date = ?'); args.push(po_date); }
+    if (po_expiry_date) { conditions.push('p.po_expiry_date = ?'); args.push(po_expiry_date); }
+    if (status && VALID_STATUSES.includes(status)) { conditions.push('p.status = ?'); args.push(status); }
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
-    const { rows } = await db.execute({
-      sql: `
-        SELECT p.po_id, p.vendor, p.vendor_po_id, p.po_date, p.expected_delivery_date,
-               p.po_expiry_date, p.city, p.status, p.onboarded_by, p.updated_by, p.created_at, p.updated_at,
-               u.name AS created_by_name,
-               ob.name AS onboarded_by_name,
-               ub.name AS updated_by_name,
-               (SELECT COUNT(*) FROM marketplace_po_lines WHERE po_id = p.po_id) AS line_count,
-               (SELECT COALESCE(SUM(qty), 0) FROM marketplace_po_lines WHERE po_id = p.po_id) AS total_qty
-        FROM marketplace_pos p
-        LEFT JOIN users u  ON u.id  = p.created_by
-        LEFT JOIN users ob ON ob.id = p.onboarded_by
-        LEFT JOIN users ub ON ub.id = p.updated_by
-        ${where}
-        ORDER BY p.updated_at DESC
-      `,
-      args,
+
+    const orderBy = buildOrderBy(req.query, PO_SORT_COLUMNS);
+    const pag = buildPagination(req.query);
+
+    const baseSelect = `
+      SELECT p.po_id, p.vendor, p.vendor_po_id, p.po_date, p.expected_delivery_date,
+             p.po_expiry_date, p.city, p.status, p.onboarded_by, p.updated_by, p.created_at, p.updated_at,
+             u.name  AS created_by_name,
+             ob.name AS onboarded_by_name,
+             ub.name AS updated_by_name,
+             (SELECT COUNT(*)            FROM marketplace_po_lines WHERE po_id = p.po_id) AS line_count,
+             (SELECT COALESCE(SUM(qty),0) FROM marketplace_po_lines WHERE po_id = p.po_id) AS total_qty
+      FROM marketplace_pos p
+      LEFT JOIN users u  ON u.id  = p.created_by
+      LEFT JOIN users ob ON ob.id = p.onboarded_by
+      LEFT JOIN users ub ON ub.id = p.updated_by
+      ${where}
+      ORDER BY ${orderBy}
+    `;
+
+    if (!pag.paginated) {
+      const { rows } = await db.execute({ sql: baseSelect, args });
+      return res.json({ rows, total: rows.length, page: 1, page_size: rows.length });
+    }
+
+    const [{ rows: pageRows }, { rows: countRows }] = await Promise.all([
+      db.execute({ sql: `${baseSelect} LIMIT ? OFFSET ?`, args: [...args, pag.page_size, pag.offset] }),
+      db.execute({ sql: `SELECT COUNT(*) AS total FROM marketplace_pos p ${where}`, args }),
+    ]);
+    res.json({
+      rows: pageRows,
+      total: Number(countRows[0]?.total) || 0,
+      page: pag.page,
+      page_size: pag.page_size,
     });
-    res.json(rows);
   } catch (err) { next(err); }
 }
 
@@ -310,4 +340,4 @@ async function remove(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { parsePreview, list, getOne, create, update, remove };
+module.exports = { parsePreview, list, getOne, create, update, remove, buildPagination, buildOrderBy };

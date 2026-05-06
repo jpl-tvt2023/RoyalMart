@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Pencil, Trash2, FileText, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -6,6 +6,7 @@ import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Badge from '../../components/ui/Badge';
+import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { listPOs, deletePO } from '../../api/marketplacePO.api';
 import { formatDateTime } from '../../utils/formatters';
 import { INDIAN_CITIES } from '../../data/indianCities';
@@ -24,8 +25,8 @@ const COLUMNS = [
   { key: 'onboarded_by_name', label: 'Onboarded By' },
   { key: 'po_date', label: 'PO Date' },
   { key: 'po_expiry_date', label: 'Expiry' },
-  { key: 'line_count', label: 'Line Item', numeric: true },
-  { key: 'total_qty', label: 'Total Qty', numeric: true },
+  { key: 'line_count', label: 'Line Item' },
+  { key: 'total_qty', label: 'Total Qty' },
   { key: 'updated_at', label: 'Updated' },
   { key: 'updated_by_name', label: 'Last Updated By' },
 ];
@@ -49,49 +50,59 @@ const TONE_ROW = {
 export default function PurchaseOrdersList() {
   const navigate = useNavigate();
   const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('purchaseOrders', 25));
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
-  const load = (overrides) => {
-    const active = overrides ?? filters;
-    setLoading(true);
-    const params = {};
-    Object.entries(active).forEach(([k, v]) => {
+  const buildParams = useCallback((overrides) => {
+    const f = overrides?.filters ?? filters;
+    const s = overrides?.sort ?? sort;
+    const p = overrides?.page ?? page;
+    const ps = overrides?.pageSize ?? pageSize;
+    const params = { page: p, page_size: ps, sort_by: s.key, sort_dir: s.dir };
+    Object.entries(f).forEach(([k, v]) => {
       if (k === 'status' && v === 'All') return;
       if (v) params[k] = v;
     });
-    listPOs(params)
-      .then(setItems)
+    return params;
+  }, [filters, sort, page, pageSize]);
+
+  const load = useCallback((overrides) => {
+    setLoading(true);
+    listPOs(buildParams(overrides))
+      .then(res => { setItems(res.rows || []); setTotal(res.total || 0); })
       .catch(() => toast.error('Failed to load purchase orders'))
       .finally(() => setLoading(false));
-  };
-  useEffect(() => { load(EMPTY_FILTERS); /* eslint-disable-line */ }, []);
+  }, [buildParams]);
+
+  useEffect(() => { load(); }, [load]);
 
   const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
-  const onSearchKey = (e) => { if (e.key === 'Enter') load(); };
-  const clearFilters = () => { setFilters(EMPTY_FILTERS); load(EMPTY_FILTERS); };
+  const onSearchKey = (e) => { if (e.key === 'Enter') applySearch(); };
+  const applySearch = () => { setPage(1); load({ page: 1 }); };
+  const clearFilters = () => { setFilters(EMPTY_FILTERS); setPage(1); load({ filters: EMPTY_FILTERS, page: 1 }); };
 
   const toggleSort = (key) => {
-    setSort(s => s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });
+    setSort(s => {
+      const next = s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' };
+      setPage(1);
+      load({ sort: next, page: 1 });
+      return next;
+    });
   };
 
-  const sortedItems = useMemo(() => {
-    const col = COLUMNS.find(c => c.key === sort.key);
-    const numeric = col?.numeric;
-    const dir = sort.dir === 'asc' ? 1 : -1;
-    return [...items].sort((a, b) => {
-      const av = a[sort.key];
-      const bv = b[sort.key];
-      if (av == null && bv == null) return 0;
-      if (av == null) return 1;
-      if (bv == null) return -1;
-      if (numeric) return (Number(av) - Number(bv)) * dir;
-      return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' }) * dir;
-    });
-  }, [items, sort]);
+  const handlePageChange = (p) => { setPage(p); load({ page: p }); };
+  const handlePageSizeChange = (size) => {
+    setPageSize(size);
+    persistPageSize('purchaseOrders', size);
+    setPage(1);
+    load({ pageSize: size, page: 1 });
+  };
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -117,7 +128,7 @@ export default function PurchaseOrdersList() {
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[#003049]">Purchase Orders</h1>
-          <p className="text-gray-500 text-sm">{items.length} purchase order{items.length !== 1 ? 's' : ''}</p>
+          <p className="text-gray-500 text-sm">{total} purchase order{total !== 1 ? 's' : ''}</p>
         </div>
         <Button onClick={() => navigate('/purchase-orders/new')}><Plus size={16} />Add PO</Button>
       </div>
@@ -165,7 +176,7 @@ export default function PurchaseOrdersList() {
         </div>
         <div className="flex justify-end gap-2 mt-3">
           <Button variant="ghost" onClick={clearFilters}>Clear</Button>
-          <Button variant="outline" onClick={() => load()}>Search</Button>
+          <Button variant="outline" onClick={applySearch}>Search</Button>
         </div>
       </div>
 
@@ -189,7 +200,7 @@ export default function PurchaseOrdersList() {
                 [...Array(4)].map((_, i) => (
                   <tr key={i}><td colSpan={13} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
-              ) : sortedItems.map(po => {
+              ) : items.map(po => {
                 const tone = expiryTone(po);
                 const rowCls = tone ? TONE_ROW[tone] : 'hover:bg-gray-50';
                 return (
@@ -225,6 +236,13 @@ export default function PurchaseOrdersList() {
             <p className="text-center text-gray-400 py-8">No purchase orders match the current filters</p>
           )}
         </div>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={handlePageChange}
+          onPageSizeChange={handlePageSizeChange}
+        />
       </div>
 
       <ConfirmDialog

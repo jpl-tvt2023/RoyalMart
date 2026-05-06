@@ -17,7 +17,7 @@ const EMPTY_FORM = { name: '', unit: 'pcs', on_hand_qty: 0, safety_threshold: 0 
 export default function PackagingInventory() {
   const { canAccess } = useRBAC();
   const canWrite = canAccess('Admin', 'Owner');
-  const canQty = canAccess('Admin', 'Owner', 'Stocks_Team');
+  const canQty = canAccess('Admin', 'Owner', 'Warehouse_POC');
 
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
