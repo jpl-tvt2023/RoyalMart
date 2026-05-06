@@ -44,6 +44,24 @@ const COLUMNS_MASTER = [
 ];
 const COLUMNS_VENDOR = COLUMNS_MASTER.filter(c => c.key !== 'vendor');
 
+// Columns used for XLSX export. Excludes the audit columns shown on screen and
+// appends a deliberately blank "Material Dispatch" column for the warehouse to
+// fill in offline.
+const EXPORT_COLUMNS = [
+  { key: 'po_date',            label: 'Order Date' },
+  { key: 'po_id',              label: 'PO ID' },
+  { key: 'vendor',             label: 'Vendor' },
+  { key: 'vendor_po_id',       label: 'PO No.' },
+  { key: 'total_qty',          label: 'Quantity' },
+  { key: 'line_count',         label: 'SKU' },
+  { key: 'city',               label: 'Destination' },
+  { key: 'office_poc_name',    label: 'Office POC' },
+  { key: 'warehouse_poc_name', label: 'Warehouse POC' },
+  { key: 'status',             label: 'Status' },
+  { key: 'dispatch_date',      label: 'Dispatch Date' },
+  { key: null,                 label: 'Material Dispatch' },
+];
+
 export default function OrderSummaryList() {
   const { canAccess } = useRBAC();
   const canEdit = canAccess('Admin', 'Owner', 'Office_POC', 'PO_Executive');
@@ -218,10 +236,10 @@ export default function OrderSummaryList() {
         toast('No records to export');
         return;
       }
-      const headers = COLUMNS_MASTER.map(c => c.label);
-      const data = rows.map(r => COLUMNS_MASTER.map(c => {
+      const headers = EXPORT_COLUMNS.map(c => c.label);
+      const data = rows.map(r => EXPORT_COLUMNS.map(c => {
+        if (c.key == null) return '';
         const v = r[c.key];
-        if (c.key === 'updated_at') return v ? new Date(v).toISOString() : '';
         return v == null ? '' : v;
       }));
       const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
