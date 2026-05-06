@@ -14,15 +14,10 @@ import { INDIAN_CITIES } from '../../data/indianCities';
 const VENDORS = ['Scootsy', 'Zepto', 'Blinkit'];
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
-function todayLocal() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 const defaultFilters = () => ({
   po_id: '', vendor: '', vendor_po_id: '', city: '',
-  po_date_from: todayLocal(), po_date_to: todayLocal(),
-  po_expiry_date_from: todayLocal(), po_expiry_date_to: todayLocal(),
+  po_date_from: '', po_date_to: '',
+  po_expiry_date_from: '', po_expiry_date_to: '',
   status: 'Open',
 });
 
@@ -145,6 +140,14 @@ export default function PurchaseOrdersList() {
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-9 gap-3">
           <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
+            <select value={filters.status} onChange={e => setFilter('status', e.target.value)} className={inputCls}>
+              <option value="Open">Open</option>
+              <option value="Closed">Closed</option>
+              <option value="All">All</option>
+            </select>
+          </div>
+          <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">PO ID</label>
             <input value={filters.po_id} onChange={e => setFilter('po_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search PO ID..." className={inputCls} />
           </div>
@@ -181,14 +184,6 @@ export default function PurchaseOrdersList() {
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">PO Expiry To</label>
             <input type="date" value={filters.po_expiry_date_to} onChange={e => setFilter('po_expiry_date_to', e.target.value)} className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
-            <select value={filters.status} onChange={e => setFilter('status', e.target.value)} className={inputCls}>
-              <option value="Open">Open</option>
-              <option value="Closed">Closed</option>
-              <option value="All">All</option>
-            </select>
           </div>
         </div>
         <div className="flex justify-end gap-2 mt-3">

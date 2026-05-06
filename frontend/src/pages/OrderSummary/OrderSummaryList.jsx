@@ -21,14 +21,9 @@ const VENDOR_TABS = [
 
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
-function todayLocal() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 const defaultFilters = () => ({
   po_id: '', vendor_po_id: '', city: '',
-  po_date_from: todayLocal(), po_date_to: todayLocal(),
+  po_date_from: '', po_date_to: '',
   status: 'Open', office_poc: '', warehouse_poc: '',
 });
 
@@ -315,6 +310,14 @@ export default function OrderSummaryList() {
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-8 gap-3">
           <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
+            <select value={filters.status} onChange={e => setFilter('status', e.target.value)} className={inputCls}>
+              <option value="Open">Open</option>
+              <option value="Closed">Closed</option>
+              <option value="All">All</option>
+            </select>
+          </div>
+          <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">PO ID</label>
             <input value={filters.po_id} onChange={e => setFilter('po_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search PO ID..." className={inputCls} />
           </div>
@@ -351,14 +354,6 @@ export default function OrderSummaryList() {
               <option value="">All</option>
               <option value="unassigned">Unassigned</option>
               {warehousePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
-            <select value={filters.status} onChange={e => setFilter('status', e.target.value)} className={inputCls}>
-              <option value="Open">Open</option>
-              <option value="Closed">Closed</option>
-              <option value="All">All</option>
             </select>
           </div>
         </div>
