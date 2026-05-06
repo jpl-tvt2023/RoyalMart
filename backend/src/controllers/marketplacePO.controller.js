@@ -73,15 +73,22 @@ function buildOrderBy(query, columnMap, defaultExpr = 'p.updated_at DESC') {
 
 async function list(req, res, next) {
   try {
-    const { po_id, vendor, vendor_po_id, city, po_date, po_expiry_date, status } = req.query;
+    const {
+      po_id, vendor, vendor_po_id, city,
+      po_date_from, po_date_to,
+      po_expiry_date_from, po_expiry_date_to,
+      status,
+    } = req.query;
     const conditions = [];
     const args = [];
     if (po_id) { conditions.push('p.po_id LIKE ?'); args.push(`%${po_id}%`); }
     if (vendor && VALID_VENDORS.includes(vendor)) { conditions.push('p.vendor = ?'); args.push(vendor); }
     if (vendor_po_id) { conditions.push('p.vendor_po_id LIKE ?'); args.push(`%${vendor_po_id}%`); }
     if (city) { conditions.push('p.city = ?'); args.push(city); }
-    if (po_date) { conditions.push('p.po_date = ?'); args.push(po_date); }
-    if (po_expiry_date) { conditions.push('p.po_expiry_date = ?'); args.push(po_expiry_date); }
+    if (po_date_from) { conditions.push('p.po_date >= ?'); args.push(po_date_from); }
+    if (po_date_to)   { conditions.push('p.po_date <= ?'); args.push(po_date_to); }
+    if (po_expiry_date_from) { conditions.push('p.po_expiry_date >= ?'); args.push(po_expiry_date_from); }
+    if (po_expiry_date_to)   { conditions.push('p.po_expiry_date <= ?'); args.push(po_expiry_date_to); }
     if (status && VALID_STATUSES.includes(status)) { conditions.push('p.status = ?'); args.push(status); }
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 

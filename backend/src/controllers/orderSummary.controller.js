@@ -25,7 +25,8 @@ const SORT_COLUMNS = {
 async function list(req, res, next) {
   try {
     const {
-      po_id, vendor, vendor_po_id, city, po_date,
+      po_id, vendor, vendor_po_id, city,
+      po_date_from, po_date_to,
       status, office_poc, warehouse_poc,
     } = req.query;
 
@@ -35,7 +36,8 @@ async function list(req, res, next) {
     if (vendor && VALID_VENDORS.includes(vendor)) { conditions.push('p.vendor = ?'); args.push(vendor); }
     if (vendor_po_id) { conditions.push('p.vendor_po_id LIKE ?'); args.push(`%${vendor_po_id}%`); }
     if (city) { conditions.push('p.city = ?'); args.push(city); }
-    if (po_date) { conditions.push('p.po_date = ?'); args.push(po_date); }
+    if (po_date_from) { conditions.push('p.po_date >= ?'); args.push(po_date_from); }
+    if (po_date_to)   { conditions.push('p.po_date <= ?'); args.push(po_date_to); }
     if (status && VALID_STATUSES.includes(status)) { conditions.push('p.status = ?'); args.push(status); }
     if (office_poc === 'unassigned') {
       conditions.push('p.office_poc IS NULL');
@@ -101,7 +103,7 @@ async function updateOne(req, res, next) {
   try {
     const { poId } = req.params;
     const { rows: existing } = await db.execute({
-      sql: 'SELECT po_id, status, dispatch_date FROM marketplace_pos WHERE po_id = ?',
+      sql: 'SELECT po_id, status, dispatch_date, office_poc, warehouse_poc FROM marketplace_pos WHERE po_id = ?',
       args: [poId],
     });
     if (!existing.length) return res.status(404).json({ message: 'PO not found' });
