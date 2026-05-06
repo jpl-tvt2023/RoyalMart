@@ -4,7 +4,7 @@ const { allowRoles } = require('../middleware/rbac');
 const c = require('../controllers/teams.controller');
 
 const adminOnly = allowRoles('Admin');
-const canView   = allowRoles('Admin','Owner','Office_POC','Purchase_Team','Stocks_Team');
+const canView   = allowRoles('Admin','Owner','Office_POC','Purchase_Team','Warehouse_POC');
 
 router.get('/',                        auth, canView, c.list);
 router.post('/',                       auth, adminOnly, c.create);

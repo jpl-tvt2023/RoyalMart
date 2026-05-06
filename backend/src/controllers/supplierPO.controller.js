@@ -44,7 +44,7 @@ async function updateStatus(req, res, next) {
 
     const allowedByRole = {
       'Purchase_Team': ['In-Transit', 'Arrived'],
-      'Stocks_Team':   ['Received'],
+      'Warehouse_POC': ['Received'],
       'Admin':         ['In-Transit', 'Arrived', 'Received'],
       'Owner':         ['In-Transit', 'Arrived', 'Received'],
     };

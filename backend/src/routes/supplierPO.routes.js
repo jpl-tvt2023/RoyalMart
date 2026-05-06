@@ -3,9 +3,9 @@ const auth = require('../middleware/auth');
 const { allowRoles } = require('../middleware/rbac');
 const c = require('../controllers/supplierPO.controller');
 
-const canView   = allowRoles('Admin','Owner','Purchase_Team','Stocks_Team');
+const canView   = allowRoles('Admin','Owner','Purchase_Team','Warehouse_POC');
 const canCreate = allowRoles('Admin','Owner','Purchase_Team');
-const canUpdate = allowRoles('Admin','Owner','Purchase_Team','Stocks_Team');
+const canUpdate = allowRoles('Admin','Owner','Purchase_Team','Warehouse_POC');
 
 router.get('/',          auth, canView, c.list);
 router.post('/',         auth, canCreate, c.create);

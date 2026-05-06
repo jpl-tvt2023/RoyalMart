@@ -15,9 +15,10 @@ import PackagingInventory from './pages/packaging/PackagingInventory';
 import PurchaseOrdersList from './pages/PurchaseOrders/PurchaseOrdersList';
 import PurchaseOrderImport from './pages/PurchaseOrders/PurchaseOrderImport';
 import PurchaseOrderDetail from './pages/PurchaseOrders/PurchaseOrderDetail';
+import OrderSummaryList from './pages/OrderSummary/OrderSummaryList';
 import ProductList from './pages/products/ProductList';
 
-const ALL_ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Stocks_Team', 'PO_Executive'];
+const ALL_ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Warehouse_POC', 'PO_Executive'];
 const PO_ROLES = ['Admin', 'Owner', 'PO_Executive'];
 
 export default function App() {
@@ -62,11 +63,11 @@ export default function App() {
           } />
 
           <Route path="/restock" element={
-            <ProtectedRoute roles={['Admin', 'Owner', 'Purchase_Team', 'Stocks_Team']}><SupplierPOs /></ProtectedRoute>
+            <ProtectedRoute roles={['Admin', 'Owner', 'Purchase_Team', 'Warehouse_POC']}><SupplierPOs /></ProtectedRoute>
           } />
 
           <Route path="/packaging" element={
-            <ProtectedRoute roles={['Admin', 'Owner', 'Stocks_Team']}><PackagingInventory /></ProtectedRoute>
+            <ProtectedRoute roles={['Admin', 'Owner', 'Warehouse_POC']}><PackagingInventory /></ProtectedRoute>
           } />
 
           <Route path="/products" element={
@@ -81,6 +82,10 @@ export default function App() {
           } />
           <Route path="/purchase-orders/:poId" element={
             <ProtectedRoute roles={PO_ROLES}><PurchaseOrderDetail /></ProtectedRoute>
+          } />
+
+          <Route path="/order-summary" element={
+            <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'PO_Executive']}><OrderSummaryList /></ProtectedRoute>
           } />
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />

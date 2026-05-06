@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
 
-const VALID_ROLES = ['Admin','Owner','Office_POC','Purchase_Team','Stocks_Team','PO_Executive'];
+const VALID_ROLES = ['Admin','Owner','Office_POC','Purchase_Team','Warehouse_POC','PO_Executive'];
 
 function coerceUser(row) {
   return { ...row, is_first_login: !!row.is_first_login };
