@@ -14,7 +14,17 @@ import { INDIAN_CITIES } from '../../data/indianCities';
 const VENDORS = ['Scootsy', 'Zepto', 'Blinkit'];
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
-const EMPTY_FILTERS = { po_id: '', vendor: '', vendor_po_id: '', city: '', po_date: '', po_expiry_date: '', status: 'Open' };
+function todayLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+const defaultFilters = () => ({
+  po_id: '', vendor: '', vendor_po_id: '', city: '',
+  po_date_from: todayLocal(), po_date_to: todayLocal(),
+  po_expiry_date_from: todayLocal(), po_expiry_date_to: todayLocal(),
+  status: 'Open',
+});
 
 const COLUMNS = [
   { key: 'po_id', label: 'PO ID' },
@@ -27,8 +37,7 @@ const COLUMNS = [
   { key: 'po_expiry_date', label: 'Expiry' },
   { key: 'line_count', label: 'Line Item' },
   { key: 'total_qty', label: 'Total Qty' },
-  { key: 'updated_at', label: 'Updated' },
-  { key: 'updated_by_name', label: 'Last Updated By' },
+  { key: 'updated_at', label: 'Last Updated' },
 ];
 
 function expiryTone(po) {
@@ -52,7 +61,7 @@ export default function PurchaseOrdersList() {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [filters, setFilters] = useState(defaultFilters);
   const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('purchaseOrders', 25));
@@ -85,7 +94,7 @@ export default function PurchaseOrdersList() {
   const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
   const onSearchKey = (e) => { if (e.key === 'Enter') applySearch(); };
   const applySearch = () => { setPage(1); load({ page: 1 }); };
-  const clearFilters = () => { setFilters(EMPTY_FILTERS); setPage(1); load({ filters: EMPTY_FILTERS, page: 1 }); };
+  const clearFilters = () => { const f = defaultFilters(); setFilters(f); setPage(1); load({ filters: f, page: 1 }); };
 
   const toggleSort = (key) => {
     setSort(s => {
@@ -134,7 +143,7 @@ export default function PurchaseOrdersList() {
       </div>
 
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-9 gap-3">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">PO ID</label>
             <input value={filters.po_id} onChange={e => setFilter('po_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search PO ID..." className={inputCls} />
@@ -158,12 +167,20 @@ export default function PurchaseOrdersList() {
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">PO Date</label>
-            <input type="date" value={filters.po_date} onChange={e => setFilter('po_date', e.target.value)} className={inputCls} />
+            <label className="block text-xs font-medium text-gray-600 mb-1">PO Date From</label>
+            <input type="date" value={filters.po_date_from} onChange={e => setFilter('po_date_from', e.target.value)} className={inputCls} />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">PO Expiry Date</label>
-            <input type="date" value={filters.po_expiry_date} onChange={e => setFilter('po_expiry_date', e.target.value)} className={inputCls} />
+            <label className="block text-xs font-medium text-gray-600 mb-1">PO Date To</label>
+            <input type="date" value={filters.po_date_to} onChange={e => setFilter('po_date_to', e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">PO Expiry From</label>
+            <input type="date" value={filters.po_expiry_date_from} onChange={e => setFilter('po_expiry_date_from', e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">PO Expiry To</label>
+            <input type="date" value={filters.po_expiry_date_to} onChange={e => setFilter('po_expiry_date_to', e.target.value)} className={inputCls} />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
@@ -183,22 +200,22 @@ export default function PurchaseOrdersList() {
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
+            <thead className="sticky top-0 z-10 bg-gray-50">
+              <tr className="border-b border-gray-200">
                 {COLUMNS.map(col => (
-                  <th key={col.key} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">
+                  <th key={col.key} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50">
                     <button type="button" onClick={() => toggleSort(col.key)} className="inline-flex items-center gap-1 hover:text-[#003049]">
                       {col.label}<SortIcon colKey={col.key} />
                     </button>
                   </th>
                 ))}
-                <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Actions</th>
+                <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50">Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 [...Array(4)].map((_, i) => (
-                  <tr key={i}><td colSpan={13} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
+                  <tr key={i}><td colSpan={12} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
               ) : items.map(po => {
                 const tone = expiryTone(po);
@@ -219,8 +236,10 @@ export default function PurchaseOrdersList() {
                   <td className="px-4 py-3 text-gray-600">{po.po_expiry_date || '—'}</td>
                   <td className="px-4 py-3 font-semibold text-gray-800">{po.line_count}</td>
                   <td className="px-4 py-3 font-semibold text-gray-800">{po.total_qty ?? 0}</td>
-                  <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{formatDateTime(po.updated_at)}</td>
-                  <td className="px-4 py-3 text-gray-600">{po.updated_by_name || '—'}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <div className="text-gray-700">{po.updated_by_name || '—'}</div>
+                    <div className="text-xs text-gray-400">{formatDateTime(po.updated_at)}</div>
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1">
                       <Link to={`/purchase-orders/${po.po_id}`} title="View/Edit" className="p-1.5 rounded hover:bg-blue-50 text-blue-500"><Pencil size={14} /></Link>

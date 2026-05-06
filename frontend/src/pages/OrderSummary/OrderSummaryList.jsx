@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -21,12 +21,18 @@ const VENDOR_TABS = [
 
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
-const EMPTY_FILTERS = {
-  po_id: '', vendor_po_id: '', city: '', po_date: '',
-  status: 'Open', office_poc: '', warehouse_poc: '',
-};
+function todayLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
-// Columns shown on the Master tab include Vendor; per-vendor tabs hide it.
+const defaultFilters = () => ({
+  po_id: '', vendor_po_id: '', city: '',
+  po_date_from: todayLocal(), po_date_to: todayLocal(),
+  status: 'Open', office_poc: '', warehouse_poc: '',
+});
+
+// Server-side sort key for the merged "Last Updated" column.
 const COLUMNS_MASTER = [
   { key: 'po_date',            label: 'Order Date' },
   { key: 'po_id',              label: 'PO ID' },
@@ -39,14 +45,10 @@ const COLUMNS_MASTER = [
   { key: 'warehouse_poc_name', label: 'Warehouse POC' },
   { key: 'status',             label: 'Status' },
   { key: 'dispatch_date',      label: 'Dispatch Date' },
-  { key: 'updated_by_name',    label: 'Last Updated By' },
-  { key: 'updated_at',         label: 'Last Updated At' },
+  { key: 'updated_at',         label: 'Last Updated' },
 ];
 const COLUMNS_VENDOR = COLUMNS_MASTER.filter(c => c.key !== 'vendor');
 
-// Columns used for XLSX export. Excludes the audit columns shown on screen and
-// appends a deliberately blank "Material Dispatch" column for the warehouse to
-// fill in offline.
 const EXPORT_COLUMNS = [
   { key: 'po_date',            label: 'Order Date' },
   { key: 'po_id',              label: 'PO ID' },
@@ -67,7 +69,7 @@ export default function OrderSummaryList() {
   const canEdit = canAccess('Admin', 'Owner', 'Office_POC', 'PO_Executive');
 
   const [vendorTab, setVendorTab] = useState('');
-  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [filters, setFilters] = useState(defaultFilters);
   const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('orderSummary', 25));
@@ -79,7 +81,8 @@ export default function OrderSummaryList() {
   const [officePocs, setOfficePocs] = useState([]);
   const [warehousePocs, setWarehousePocs] = useState([]);
 
-  // Per-row dirty edits, keyed by po_id.
+  // Click-to-edit: only one row at a time. `edits` holds the user's pending changes.
+  const [editingRowId, setEditingRowId] = useState(null);
   const [edits, setEdits] = useState({});
   const [savingId, setSavingId] = useState(null);
 
@@ -128,13 +131,17 @@ export default function OrderSummaryList() {
       .catch(() => {});
   }, []);
 
-  // Reset row edits and selection when the row set changes (refetch / tab / filter).
-  useEffect(() => { setEdits({}); setSelected(new Set()); }, [items]);
+  // Reset edit + selection state when the row set changes (refetch / tab / filter).
+  useEffect(() => {
+    setEditingRowId(null);
+    setEdits({});
+    setSelected(new Set());
+  }, [items]);
 
   const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
   const onSearchKey = (e) => { if (e.key === 'Enter') applySearch(); };
   const applySearch = () => { setPage(1); load({ page: 1 }); };
-  const clearFilters = () => { setFilters(EMPTY_FILTERS); setPage(1); load({ filters: EMPTY_FILTERS, page: 1 }); };
+  const clearFilters = () => { const f = defaultFilters(); setFilters(f); setPage(1); load({ filters: f, page: 1 }); };
 
   const switchTab = (key) => {
     setVendorTab(key);
@@ -159,20 +166,32 @@ export default function OrderSummaryList() {
     load({ pageSize: size, page: 1 });
   };
 
-  // Resolve current value of a row's editable field, taking pending edits into account.
+  // ───── Edit mode ─────
   const valueOf = (po, key) => {
     const e = edits[po.po_id];
     return e && Object.prototype.hasOwnProperty.call(e, key) ? e[key] : po[key];
   };
-  const isDirty = (po) => !!edits[po.po_id];
   const setEdit = (poId, patch) => setEdits(prev => ({ ...prev, [poId]: { ...(prev[poId] || {}), ...patch } }));
-  const cancelEdit = (poId) => setEdits(prev => { const next = { ...prev }; delete next[poId]; return next; });
+  const enterEditMode = (poId) => {
+    if (!canEdit) return;
+    if (editingRowId && editingRowId !== poId) {
+      // Discard any pending changes on the previously-editing row.
+      setEdits(prev => { const n = { ...prev }; delete n[editingRowId]; return n; });
+    }
+    setEditingRowId(poId);
+  };
+  const cancelEdit = () => {
+    if (editingRowId) {
+      setEdits(prev => { const n = { ...prev }; delete n[editingRowId]; return n; });
+    }
+    setEditingRowId(null);
+  };
+  const onCellKeyDown = (e) => { if (e.key === 'Escape') cancelEdit(); };
 
   const saveRow = async (po) => {
-    const e = edits[po.po_id];
-    if (!e) return;
-    const nextStatus = e.status ?? po.status;
-    const nextDispatch = e.dispatch_date ?? po.dispatch_date;
+    const e = edits[po.po_id] || {};
+    const nextStatus = 'status' in e ? e.status : po.status;
+    const nextDispatch = 'dispatch_date' in e ? e.dispatch_date : po.dispatch_date;
     if (nextStatus === 'Closed' && !nextDispatch) {
       return toast.error('Dispatch date is required to close an order');
     }
@@ -182,17 +201,20 @@ export default function OrderSummaryList() {
       if ('office_poc' in e) payload.office_poc = e.office_poc === '' ? null : Number(e.office_poc);
       if ('warehouse_poc' in e) payload.warehouse_poc = e.warehouse_poc === '' ? null : Number(e.warehouse_poc);
       if ('status' in e) payload.status = e.status;
-      if ('dispatch_date' in e || ('status' in e && e.status === 'Open')) payload.dispatch_date = e.status === 'Open' ? null : (e.dispatch_date || null);
+      if ('dispatch_date' in e || ('status' in e && e.status === 'Open')) {
+        payload.dispatch_date = e.status === 'Open' ? null : (e.dispatch_date || null);
+      }
       await updateOrderSummary(po.po_id, payload);
       toast.success(`Saved ${po.po_id}`);
-      cancelEdit(po.po_id);
+      setEdits(prev => { const n = { ...prev }; delete n[po.po_id]; return n; });
+      setEditingRowId(null);
       load();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Save failed');
     } finally { setSavingId(null); }
   };
 
-  // Bulk
+  // ───── Bulk ─────
   const allSelected = items.length > 0 && items.every(po => selected.has(po.po_id));
   const toggleSelectAll = () => {
     if (allSelected) setSelected(new Set());
@@ -254,6 +276,7 @@ export default function OrderSummaryList() {
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 disabled:bg-gray-50 disabled:text-gray-400';
   const cellCls = 'w-full px-2 py-1 border border-gray-200 rounded text-sm bg-white focus:outline-none focus:ring-1 focus:ring-[#c1121f]/40 disabled:bg-gray-100 disabled:text-gray-400';
+  const editableCellCls = 'text-left w-full px-2 py-1 -mx-2 -my-1 rounded hover:bg-gray-100 cursor-pointer';
 
   const SortIcon = ({ colKey }) => {
     if (sort.key !== colKey) return <ArrowUpDown size={12} className="text-gray-300" />;
@@ -290,7 +313,7 @@ export default function OrderSummaryList() {
 
       {/* Filter bar */}
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-8 gap-3">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">PO ID</label>
             <input value={filters.po_id} onChange={e => setFilter('po_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search PO ID..." className={inputCls} />
@@ -307,8 +330,12 @@ export default function OrderSummaryList() {
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">PO Date</label>
-            <input type="date" value={filters.po_date} onChange={e => setFilter('po_date', e.target.value)} className={inputCls} />
+            <label className="block text-xs font-medium text-gray-600 mb-1">PO Date From</label>
+            <input type="date" value={filters.po_date_from} onChange={e => setFilter('po_date_from', e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">PO Date To</label>
+            <input type="date" value={filters.po_date_to} onChange={e => setFilter('po_date_to', e.target.value)} className={inputCls} />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Office POC</label>
@@ -385,10 +412,10 @@ export default function OrderSummaryList() {
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
+            <thead className="sticky top-0 z-10 bg-gray-50">
+              <tr className="border-b border-gray-200">
                 {canEdit && (
-                  <th className="px-3 py-3 w-10">
+                  <th className="px-3 py-3 w-10 bg-gray-50">
                     <input
                       type="checkbox"
                       checked={allSelected}
@@ -398,15 +425,13 @@ export default function OrderSummaryList() {
                   </th>
                 )}
                 {COLUMNS.map(col => (
-                  <th key={col.key} className="px-3 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">
+                  <th key={col.key} className="px-3 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50">
                     <button type="button" onClick={() => toggleSort(col.key)} className="inline-flex items-center gap-1 hover:text-[#003049]">
                       {col.label}<SortIcon colKey={col.key} />
                     </button>
                   </th>
                 ))}
-                {canEdit && (
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Save</th>
-                )}
+                {canEdit && <th className="px-3 py-3 w-20 bg-gray-50" />}
               </tr>
             </thead>
             <tbody>
@@ -419,13 +444,13 @@ export default function OrderSummaryList() {
                   </tr>
                 ))
               ) : items.map(po => {
+                const isEditing = editingRowId === po.po_id;
                 const editStatus = valueOf(po, 'status') || 'Open';
                 const editDispatch = valueOf(po, 'dispatch_date') || '';
                 const editOffice = valueOf(po, 'office_poc');
                 const editWarehouse = valueOf(po, 'warehouse_poc');
-                const dirty = isDirty(po);
                 return (
-                  <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? 'bg-amber-50/50' : 'hover:bg-gray-50'}`}>
+                  <tr key={po.po_id} className={`border-b border-gray-100 ${isEditing ? 'bg-amber-50/60' : 'hover:bg-gray-50'}`}>
                     {canEdit && (
                       <td className="px-3 py-2">
                         <input
@@ -448,44 +473,58 @@ export default function OrderSummaryList() {
                           return <td key={col.key} className="px-3 py-2 font-semibold text-gray-800">{po[col.key] ?? 0}</td>;
                         case 'city':
                           return <td key={col.key} className="px-3 py-2 text-gray-600 whitespace-nowrap">{po.city || '—'}</td>;
+
                         case 'office_poc_name':
                           return (
                             <td key={col.key} className="px-3 py-2">
-                              {canEdit ? (
+                              {isEditing ? (
                                 <select
                                   value={editOffice == null ? '' : String(editOffice)}
                                   onChange={e => setEdit(po.po_id, { office_poc: e.target.value })}
+                                  onKeyDown={onCellKeyDown}
+                                  autoFocus
                                   className={cellCls}
                                 >
                                   <option value="">— Unassigned —</option>
                                   {officePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
                                 </select>
+                              ) : canEdit ? (
+                                <button type="button" onClick={() => enterEditMode(po.po_id)} className={`${editableCellCls} text-gray-700`}>
+                                  {po.office_poc_name || <span className="text-gray-400">—</span>}
+                                </button>
                               ) : (
                                 <span className="text-gray-700">{po.office_poc_name || '—'}</span>
                               )}
                             </td>
                           );
+
                         case 'warehouse_poc_name':
                           return (
                             <td key={col.key} className="px-3 py-2">
-                              {canEdit ? (
+                              {isEditing ? (
                                 <select
                                   value={editWarehouse == null ? '' : String(editWarehouse)}
                                   onChange={e => setEdit(po.po_id, { warehouse_poc: e.target.value })}
+                                  onKeyDown={onCellKeyDown}
                                   className={cellCls}
                                 >
                                   <option value="">— Unassigned —</option>
                                   {warehousePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
                                 </select>
+                              ) : canEdit ? (
+                                <button type="button" onClick={() => enterEditMode(po.po_id)} className={`${editableCellCls} text-gray-700`}>
+                                  {po.warehouse_poc_name || <span className="text-gray-400">—</span>}
+                                </button>
                               ) : (
                                 <span className="text-gray-700">{po.warehouse_poc_name || '—'}</span>
                               )}
                             </td>
                           );
+
                         case 'status':
                           return (
                             <td key={col.key} className="px-3 py-2">
-                              {canEdit ? (
+                              {isEditing ? (
                                 <select
                                   value={editStatus}
                                   onChange={e => {
@@ -494,43 +533,59 @@ export default function OrderSummaryList() {
                                     if (v === 'Open') patch.dispatch_date = '';
                                     setEdit(po.po_id, patch);
                                   }}
+                                  onKeyDown={onCellKeyDown}
                                   className={cellCls}
                                 >
                                   <option value="Open">Open</option>
                                   <option value="Closed">Closed</option>
                                 </select>
+                              ) : canEdit ? (
+                                <button type="button" onClick={() => enterEditMode(po.po_id)} className={editableCellCls}>
+                                  <Badge color={STATUS_COLORS[po.status] || 'gray'}>{po.status || 'Open'}</Badge>
+                                </button>
                               ) : (
                                 <Badge color={STATUS_COLORS[po.status] || 'gray'}>{po.status || 'Open'}</Badge>
                               )}
                             </td>
                           );
+
                         case 'dispatch_date':
                           return (
                             <td key={col.key} className="px-3 py-2">
-                              {canEdit ? (
+                              {isEditing ? (
                                 <input
                                   type="date"
                                   value={editDispatch || ''}
                                   disabled={editStatus !== 'Closed'}
                                   onChange={e => setEdit(po.po_id, { dispatch_date: e.target.value })}
+                                  onKeyDown={onCellKeyDown}
                                   className={cellCls}
                                 />
+                              ) : canEdit ? (
+                                <button type="button" onClick={() => enterEditMode(po.po_id)} className={`${editableCellCls} text-gray-700`}>
+                                  {po.dispatch_date || <span className="text-gray-400">—</span>}
+                                </button>
                               ) : (
                                 <span className="text-gray-700">{po.dispatch_date || '—'}</span>
                               )}
                             </td>
                           );
-                        case 'updated_by_name':
-                          return <td key={col.key} className="px-3 py-2 text-gray-600">{po.updated_by_name || '—'}</td>;
+
                         case 'updated_at':
-                          return <td key={col.key} className="px-3 py-2 text-xs text-gray-400 whitespace-nowrap">{formatDateTime(po.updated_at)}</td>;
+                          return (
+                            <td key={col.key} className="px-3 py-2 whitespace-nowrap">
+                              <div className="text-gray-700">{po.updated_by_name || '—'}</div>
+                              <div className="text-xs text-gray-400">{formatDateTime(po.updated_at)}</div>
+                            </td>
+                          );
+
                         default:
                           return <td key={col.key} className="px-3 py-2">{po[col.key]}</td>;
                       }
                     })}
                     {canEdit && (
                       <td className="px-3 py-2 whitespace-nowrap">
-                        {dirty ? (
+                        {isEditing && (
                           <div className="flex items-center gap-1">
                             <button
                               type="button"
@@ -543,15 +598,13 @@ export default function OrderSummaryList() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => cancelEdit(po.po_id)}
-                              title="Cancel"
+                              onClick={cancelEdit}
+                              title="Cancel (Esc)"
                               className="p-1.5 rounded text-gray-500 hover:bg-gray-100"
                             >
                               <X size={14} />
                             </button>
                           </div>
-                        ) : (
-                          <span className="text-gray-300 text-xs">—</span>
                         )}
                       </td>
                     )}
