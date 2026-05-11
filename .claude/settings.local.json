@@ -18,7 +18,8 @@
       "Read(//d/My/ Projects/Royal/ Mart/ Portal/backend/src/routes/**)",
       "Read(//d/My/ Projects/Royal/ Mart/ Portal/frontend/src/pages/PurchaseOrders/**)",
       "Bash(node -e \"const {INDIAN_CITIES} = require\\('d:/My Projects/Royal Mart Portal/frontend/src/data/indianCities.js'.replace\\(/^/, ''\\).replace\\('.js',''\\)\\);\")",
-      "Bash(node -e \"require\\('./src/config/env'\\); const db = require\\('./src/config/db'\\); const seed = require\\('./src/seeds/03_cities.seed'\\); seed\\(db\\).then\\(\\(\\) => { console.log\\('done'\\); process.exit\\(0\\); }\\).catch\\(err => { console.error\\(err\\); process.exit\\(1\\); }\\);\")"
+      "Bash(node -e \"require\\('./src/config/env'\\); const db = require\\('./src/config/db'\\); const seed = require\\('./src/seeds/03_cities.seed'\\); seed\\(db\\).then\\(\\(\\) => { console.log\\('done'\\); process.exit\\(0\\); }\\).catch\\(err => { console.error\\(err\\); process.exit\\(1\\); }\\);\")",
+      "Bash(tasklist //FI \"IMAGENAME eq node.exe\" //FO CSV)"
     ]
   }
 }

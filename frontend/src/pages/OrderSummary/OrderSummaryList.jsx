@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import * as XLSX from 'xlsx';
-import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X, Truck } from 'lucide-react';
+import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
@@ -25,7 +25,7 @@ const defaultFilters = () => ({
   courier_id: '', has_tracking: '',
 });
 
-const BASE_COLUMNS_MASTER = [
+const COLUMNS_MASTER = [
   { key: 'po_date',            label: 'Order Date' },
   { key: 'po_id',              label: 'PO ID' },
   { key: 'vendor',             label: 'Vendor' },
@@ -37,23 +37,15 @@ const BASE_COLUMNS_MASTER = [
   { key: 'warehouse_poc_name', label: 'Warehouse POC' },
   { key: 'status',             label: 'Status' },
   { key: 'dispatch_date',      label: 'Dispatch Date' },
+  { key: 'courier_name',       label: 'Courier' },
+  { key: 'tracking_id',        label: 'Tracking ID' },
   { key: 'updated_at',         label: 'Last Updated' },
 ];
-const DISPATCH_COLUMNS = [
-  { key: 'courier_name', label: 'Courier' },
-  { key: 'tracking_id',  label: 'Tracking ID' },
-];
-
-const SHOW_DISPATCH_KEY = 'orderSummary.showDispatch';
+const COLUMNS_VENDOR = COLUMNS_MASTER.filter(c => c.key !== 'vendor');
 
 export default function OrderSummaryList() {
   const { canAccess } = useRBAC();
   const canEdit = canAccess('Admin', 'Owner', 'Office_POC', 'PO_Executive');
-
-  const [showDispatch, setShowDispatch] = useState(() => {
-    try { return localStorage.getItem(SHOW_DISPATCH_KEY) === '1'; }
-    catch { return false; }
-  });
 
   const [vendorTabs, setVendorTabs] = useState([{ key: '', label: 'Master' }]);
   const [vendorTab, setVendorTab] = useState('');
@@ -84,21 +76,7 @@ export default function OrderSummaryList() {
   const [exporting, setExporting] = useState(false);
   const [conflict, setConflict] = useState(null);
 
-  const COLUMNS = (() => {
-    const base = vendorTab ? BASE_COLUMNS_MASTER.filter(c => c.key !== 'vendor') : BASE_COLUMNS_MASTER;
-    if (!showDispatch) return base;
-    // Insert dispatch columns right after dispatch_date
-    const idx = base.findIndex(c => c.key === 'dispatch_date');
-    return [...base.slice(0, idx + 1), ...DISPATCH_COLUMNS, ...base.slice(idx + 1)];
-  })();
-
-  const toggleDispatch = () => {
-    setShowDispatch(prev => {
-      const next = !prev;
-      try { localStorage.setItem(SHOW_DISPATCH_KEY, next ? '1' : '0'); } catch { /* ignore */ }
-      return next;
-    });
-  };
+  const COLUMNS = vendorTab ? COLUMNS_VENDOR : COLUMNS_MASTER;
 
   const buildParams = useCallback((overrides = {}) => {
     const f = overrides.filters ?? filters;
@@ -248,7 +226,7 @@ export default function OrderSummaryList() {
         status: bulkStatus,
         dispatch_date: bulkStatus === 'Closed' ? bulkDispatchDate : null,
       };
-      if (showDispatch && bulkCourierId !== '') {
+      if (bulkCourierId !== '') {
         payload.courier_id = bulkCourierId === 'clear' ? null : Number(bulkCourierId);
       }
       await bulkUpdateOrderSummary(payload);
@@ -286,10 +264,8 @@ export default function OrderSummaryList() {
         { key: 'warehouse_poc_name', label: 'Warehouse POC' },
         { key: 'status',             label: 'Status' },
         { key: 'dispatch_date',      label: 'Dispatch Date' },
-        ...(showDispatch ? [
-          { key: 'courier_name', label: 'Courier' },
-          { key: 'tracking_id',  label: 'Tracking ID' },
-        ] : []),
+        { key: 'courier_name',       label: 'Courier' },
+        { key: 'tracking_id',        label: 'Tracking ID' },
         { key: null,                 label: 'Material Dispatch' },
       ];
       const headers = exportCols.map(c => c.label);
@@ -325,18 +301,9 @@ export default function OrderSummaryList() {
           <h1 className="text-2xl font-bold text-[#003049]">Order Summary</h1>
           <p className="text-gray-500 text-sm">{total} order{total !== 1 ? 's' : ''}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant={showDispatch ? 'secondary' : 'outline'}
-            onClick={toggleDispatch}
-            title={showDispatch ? 'Hide dispatch fields' : 'Show dispatch fields'}
-          >
-            <Truck size={16} />{showDispatch ? 'Hide dispatch' : 'Show dispatch'}
-          </Button>
-          <Button variant="outline" onClick={downloadXLSX} loading={exporting}>
-            <Download size={16} />Download XLSX
-          </Button>
-        </div>
+        <Button variant="outline" onClick={downloadXLSX} loading={exporting}>
+          <Download size={16} />Download XLSX
+        </Button>
       </div>
 
       {/* Vendor tabs */}
@@ -399,34 +366,30 @@ export default function OrderSummaryList() {
               {warehousePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select>
           </div>
-          {showDispatch && (
-            <>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Courier</label>
-                <select value={filters.courier_id} onChange={e => setFilter('courier_id', e.target.value)} className={inputCls}>
-                  <option value="">All couriers</option>
-                  <option value="unassigned">Unassigned</option>
-                  {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Has Tracking ID</label>
-                <select value={filters.has_tracking} onChange={e => setFilter('has_tracking', e.target.value)} className={inputCls}>
-                  <option value="">Any</option>
-                  <option value="yes">Yes</option>
-                  <option value="no">No</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch From</label>
-                <input type="date" value={filters.dispatch_date_from} onChange={e => setFilter('dispatch_date_from', e.target.value)} className={inputCls} />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch To</label>
-                <input type="date" value={filters.dispatch_date_to} onChange={e => setFilter('dispatch_date_to', e.target.value)} className={inputCls} />
-              </div>
-            </>
-          )}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Courier</label>
+            <select value={filters.courier_id} onChange={e => setFilter('courier_id', e.target.value)} className={inputCls}>
+              <option value="">All couriers</option>
+              <option value="unassigned">Unassigned</option>
+              {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Has Tracking ID</label>
+            <select value={filters.has_tracking} onChange={e => setFilter('has_tracking', e.target.value)} className={inputCls}>
+              <option value="">Any</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch From</label>
+            <input type="date" value={filters.dispatch_date_from} onChange={e => setFilter('dispatch_date_from', e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch To</label>
+            <input type="date" value={filters.dispatch_date_to} onChange={e => setFilter('dispatch_date_to', e.target.value)} className={inputCls} />
+          </div>
         </div>
         <div className="flex justify-end gap-2 mt-3">
           <Button variant="ghost" onClick={clearFilters}>Clear</Button>
@@ -456,20 +419,16 @@ export default function OrderSummaryList() {
             disabled={bulkStatus !== 'Closed'}
             className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[9rem] disabled:opacity-40 disabled:cursor-not-allowed"
           />
-          {showDispatch && (
-            <>
-              <label className="text-sm whitespace-nowrap">Courier</label>
-              <select
-                value={bulkCourierId}
-                onChange={e => setBulkCourierId(e.target.value)}
-                className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[9rem]"
-              >
-                <option value="">— no change —</option>
-                <option value="clear">— Clear —</option>
-                {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </>
-          )}
+          <label className="text-sm whitespace-nowrap">Courier</label>
+          <select
+            value={bulkCourierId}
+            onChange={e => setBulkCourierId(e.target.value)}
+            className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[9rem]"
+          >
+            <option value="">— no change —</option>
+            <option value="clear">— Clear —</option>
+            {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
           <Button
             onClick={applyBulk}
             disabled={bulkApplyDisabled}
