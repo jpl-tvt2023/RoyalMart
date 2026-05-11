@@ -1,7 +1,9 @@
 -- Dispatch tracking on marketplace_pos plus a small courier master.
 -- Tracking IDs may repeat within the same vendor but must NOT be shared
--- across different vendors; that rule is enforced in the application layer
--- because SQLite cannot express it as a simple table constraint.
+-- across different vendors. The migration runner splits on ASCII
+-- semicolons, so this file must keep them out of comments.
+-- The cross-vendor rule is enforced in the application layer because
+-- SQLite cannot express it as a simple table constraint.
 
 CREATE TABLE IF NOT EXISTS couriers (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
