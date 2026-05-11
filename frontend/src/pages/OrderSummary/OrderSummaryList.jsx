@@ -17,12 +17,14 @@ import { useRBAC } from '../../hooks/useRBAC';
 
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
+const todayISO = () => new Date().toISOString().slice(0, 10);
+
 const defaultFilters = () => ({
   po_id: '', city: '',
   po_date_from: '', po_date_to: '',
   dispatch_date_from: '', dispatch_date_to: '',
   status: 'Open', office_poc: '', warehouse_poc: '',
-  courier_id: '', has_tracking: '',
+  courier_id: '', has_tracking: '', tracking_id: '',
 });
 
 const COLUMNS_MASTER = [
@@ -181,12 +183,17 @@ export default function OrderSummaryList() {
       if ('office_poc' in e) payload.office_poc = e.office_poc === '' ? null : Number(e.office_poc);
       if ('warehouse_poc' in e) payload.warehouse_poc = e.warehouse_poc === '' ? null : Number(e.warehouse_poc);
       if ('status' in e) payload.status = e.status;
-      if ('dispatch_date' in e || ('status' in e && e.status === 'Open')) {
-        payload.dispatch_date = e.status === 'Open' ? null : (e.dispatch_date || null);
+      const reopening = 'status' in e && e.status === 'Open';
+      if ('dispatch_date' in e || reopening) {
+        payload.dispatch_date = reopening ? null : (e.dispatch_date || null);
       }
-      if ('courier_id' in e)  payload.courier_id  = e.courier_id === '' ? null : Number(e.courier_id);
-      if ('tracking_id' in e) payload.tracking_id = (e.tracking_id ?? '').trim() || null;
-      if (confirmDuplicate)   payload.confirm_duplicate_tracking = true;
+      if ('courier_id' in e || reopening) {
+        payload.courier_id = reopening ? null : (e.courier_id === '' || e.courier_id == null ? null : Number(e.courier_id));
+      }
+      if ('tracking_id' in e || reopening) {
+        payload.tracking_id = reopening ? null : ((e.tracking_id ?? '').trim() || null);
+      }
+      if (confirmDuplicate) payload.confirm_duplicate_tracking = true;
       await updateOrderSummary(po.po_id, payload);
       toast.success(`Saved ${po.po_id}`);
       cancelEdit(po.po_id);
@@ -195,9 +202,11 @@ export default function OrderSummaryList() {
     } catch (err) {
       const data = err.response?.data;
       if (err.response?.status === 409 && data?.severity === 'error' && data?.error === 'tracking_id_vendor_conflict') {
-        setConflict({ severity: 'error', po, trackingId: data.tracking_id, rows: data.conflicts || [] });
+        setConflict({ severity: 'error', po, trackingId: data.tracking_id, rows: data.conflicts || [], reason: 'vendor' });
+      } else if (err.response?.status === 409 && data?.severity === 'error' && data?.error === 'tracking_id_city_conflict') {
+        setConflict({ severity: 'error', po, trackingId: data.tracking_id, rows: data.conflicts || [], reason: 'city' });
       } else if (err.response?.status === 409 && data?.severity === 'warning' && data?.error === 'tracking_id_duplicate_same_vendor') {
-        setConflict({ severity: 'warning', po, trackingId: data.tracking_id, rows: data.duplicates || [] });
+        setConflict({ severity: 'warning', po, trackingId: data.tracking_id, rows: data.duplicates || [], reason: 'same' });
       } else {
         toast.error(data?.message || 'Save failed');
       }
@@ -336,6 +345,10 @@ export default function OrderSummaryList() {
             <input value={filters.po_id} onChange={e => setFilter('po_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search PO ID..." className={inputCls} />
           </div>
           <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Tracking ID</label>
+            <input value={filters.tracking_id} onChange={e => setFilter('tracking_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search tracking ID..." className={inputCls} />
+          </div>
+          <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">City</label>
             <select value={filters.city} onChange={e => setFilter('city', e.target.value)} className={inputCls}>
               <option value="">All cities</option>
@@ -415,6 +428,7 @@ export default function OrderSummaryList() {
           <input
             type="date"
             value={bulkDispatchDate}
+            max={todayISO()}
             onChange={e => setBulkDispatchDate(e.target.value)}
             disabled={bulkStatus !== 'Closed'}
             className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[9rem] disabled:opacity-40 disabled:cursor-not-allowed"
@@ -563,7 +577,11 @@ export default function OrderSummaryList() {
                                   onChange={e => {
                                     const v = e.target.value;
                                     const patch = { status: v };
-                                    if (v === 'Open') patch.dispatch_date = '';
+                                    if (v === 'Open') {
+                                      patch.dispatch_date = '';
+                                      patch.courier_id = '';
+                                      patch.tracking_id = '';
+                                    }
                                     setEdit(po.po_id, patch);
                                   }}
                                   onKeyDown={onKey}
@@ -585,6 +603,7 @@ export default function OrderSummaryList() {
                                 <input
                                   type="date"
                                   value={editDispatch || ''}
+                                  max={todayISO()}
                                   disabled={editStatus !== 'Closed'}
                                   onChange={e => setEdit(po.po_id, { dispatch_date: e.target.value })}
                                   onKeyDown={onKey}
@@ -602,6 +621,7 @@ export default function OrderSummaryList() {
                               {canEdit ? (
                                 <select
                                   value={editCourier == null ? '' : String(editCourier)}
+                                  disabled={editStatus !== 'Closed'}
                                   onChange={e => setEdit(po.po_id, { courier_id: e.target.value })}
                                   onKeyDown={onKey}
                                   className={cellCls}
@@ -625,6 +645,7 @@ export default function OrderSummaryList() {
                                 <input
                                   type="text"
                                   value={editTracking}
+                                  disabled={editStatus !== 'Closed'}
                                   onChange={e => setEdit(po.po_id, { tracking_id: e.target.value })}
                                   onKeyDown={onKey}
                                   placeholder="—"
@@ -694,11 +715,16 @@ export default function OrderSummaryList() {
       <Modal
         isOpen={!!conflict}
         onClose={() => setConflict(null)}
-        title={conflict?.severity === 'warning' ? 'Duplicate tracking ID on the same vendor' : 'Tracking ID conflict'}
+        title={
+          conflict?.severity === 'warning' ? 'Duplicate tracking ID on the same vendor'
+          : conflict?.reason === 'city'    ? 'Tracking ID already used for a different city'
+                                           : 'Tracking ID conflict'
+        }
         size="lg"
       >
         {conflict && (() => {
-          const isWarn = conflict.severity === 'warning';
+          const isWarn   = conflict.severity === 'warning';
+          const isCity   = conflict.reason === 'city';
           const wrapCls   = isWarn ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200';
           const rowCls    = isWarn ? 'bg-amber-50/60' : 'bg-red-50/60';
           const headerCls = isWarn ? 'bg-amber-100 text-amber-900' : 'bg-red-100 text-red-900';
@@ -708,11 +734,13 @@ export default function OrderSummaryList() {
               <p className={`text-sm ${accent} font-medium`}>
                 {isWarn
                   ? <>This tracking ID is already on another PO for vendor <span className="font-semibold">{conflict.po.vendor}</span>. Please verify it isn&apos;t a mistake — you can either edit it or save anyway.</>
+                  : isCity
+                  ? <>Tracking ID <span className="font-mono font-semibold">{conflict.trackingId}</span> is already used by the same vendor on a PO shipping to a different city. Use a different ID or correct the city.</>
                   : <>Tracking ID <span className="font-mono font-semibold">{conflict.trackingId}</span> is already used by a different vendor. Tracking IDs can repeat within the same vendor but must be unique across vendors.</>}
               </p>
               <p className="text-sm text-gray-700">
                 Editing <span className="font-mono font-semibold">{conflict.po.vendor_po_id || conflict.po.po_id}</span>
-                {' '}(vendor <span className="font-semibold">{conflict.po.vendor}</span>) with tracking ID <span className="font-mono font-semibold">{conflict.trackingId}</span>.
+                {' '}(vendor <span className="font-semibold">{conflict.po.vendor}</span>{conflict.po.city ? <>, city <span className="font-semibold">{conflict.po.city}</span></> : null}) with tracking ID <span className="font-mono font-semibold">{conflict.trackingId}</span>.
                 {' '}{isWarn ? 'Existing PO(s) using the same tracking ID:' : 'The following existing record(s) conflict:'}
               </p>
               <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
@@ -721,6 +749,7 @@ export default function OrderSummaryList() {
                     <tr>
                       <th className="px-3 py-2 text-left font-semibold">PO Number</th>
                       <th className="px-3 py-2 text-left font-semibold">Vendor</th>
+                      <th className="px-3 py-2 text-left font-semibold">City</th>
                       <th className="px-3 py-2 text-left font-semibold">Dispatch Date</th>
                       <th className="px-3 py-2 text-left font-semibold">Tracking ID</th>
                     </tr>
@@ -729,6 +758,7 @@ export default function OrderSummaryList() {
                     <tr className={`${rowCls} border-t border-gray-100`}>
                       <td className="px-3 py-2 font-mono text-xs">{conflict.po.vendor_po_id || conflict.po.po_id}</td>
                       <td className="px-3 py-2">{conflict.po.vendor}</td>
+                      <td className="px-3 py-2">{conflict.po.city || '—'}</td>
                       <td className="px-3 py-2 font-mono text-xs">{valueOf(conflict.po, 'dispatch_date') || '—'}</td>
                       <td className="px-3 py-2 font-mono text-xs">{conflict.trackingId} <span className="text-gray-400">(this edit)</span></td>
                     </tr>
@@ -736,6 +766,7 @@ export default function OrderSummaryList() {
                       <tr key={c.po_id} className={`${rowCls} border-t border-gray-100`}>
                         <td className="px-3 py-2 font-mono text-xs">{c.vendor_po_id || c.po_id}</td>
                         <td className="px-3 py-2">{c.vendor}</td>
+                        <td className="px-3 py-2">{c.city || '—'}</td>
                         <td className="px-3 py-2 font-mono text-xs">{c.dispatch_date || '—'}</td>
                         <td className="px-3 py-2 font-mono text-xs">{c.tracking_id}</td>
                       </tr>
