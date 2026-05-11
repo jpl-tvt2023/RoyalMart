@@ -30,7 +30,7 @@ async function list(req, res, next) {
       po_date_from, po_date_to,
       dispatch_date_from, dispatch_date_to,
       status, office_poc, warehouse_poc,
-      courier_id, has_tracking,
+      courier_id, has_tracking, tracking_id,
     } = req.query;
 
     const conditions = [];
@@ -64,6 +64,7 @@ async function list(req, res, next) {
     } else if (has_tracking === 'no') {
       conditions.push("(p.tracking_id IS NULL OR p.tracking_id = '')");
     }
+    if (tracking_id) { conditions.push('p.tracking_id LIKE ?'); args.push(`%${tracking_id}%`); }
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
     const orderBy = buildOrderBy(req.query, SORT_COLUMNS);
@@ -164,6 +165,9 @@ async function updateOne(req, res, next) {
       if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
         return res.status(400).json({ message: 'Invalid dispatch_date format (expected YYYY-MM-DD)' });
       }
+      if (d && d > new Date().toISOString().slice(0, 10)) {
+        return res.status(400).json({ message: 'Dispatch date cannot be in the future' });
+      }
       nextDispatchDate = d || null;
     }
 
@@ -215,15 +219,41 @@ async function updateOne(req, res, next) {
           });
         }
 
-        // 2) Same-vendor → soft warning. The client may override by re-sending
-        //    with confirm_duplicate_tracking: true.
+        // 2) Same vendor + different city (both non-null) → hard error.
+        //    Tracking IDs are tied to a physical shipment and cannot legitimately
+        //    serve two cities. Cannot be bypassed.
+        if (current.city) {
+          const { rows: cityConflict } = await db.execute({
+            sql: `SELECT po_id, vendor_po_id, vendor, city, dispatch_date, tracking_id
+                  FROM marketplace_pos
+                  WHERE tracking_id = ?
+                    AND vendor = ?
+                    AND po_id != ?
+                    AND city IS NOT NULL
+                    AND city != ?`,
+            args: [nextTrackingId, current.vendor, poId, current.city],
+          });
+          if (cityConflict.length) {
+            return res.status(409).json({
+              error: 'tracking_id_city_conflict',
+              severity: 'error',
+              message: 'Tracking ID is already used on a PO shipping to a different city for the same vendor.',
+              tracking_id: nextTrackingId,
+              conflicts: cityConflict,
+            });
+          }
+        }
+
+        // 3) Same vendor + same city (or either city null) → soft warning.
+        //    The client may override by re-sending with confirm_duplicate_tracking.
         const { rows: sameVendor } = await db.execute({
-          sql: `SELECT po_id, vendor_po_id, vendor, dispatch_date, tracking_id
+          sql: `SELECT po_id, vendor_po_id, vendor, city, dispatch_date, tracking_id
                 FROM marketplace_pos
                 WHERE tracking_id = ?
                   AND vendor = ?
-                  AND po_id != ?`,
-          args: [nextTrackingId, current.vendor, poId],
+                  AND po_id != ?
+                  AND (city = ? OR city IS NULL OR ? IS NULL)`,
+          args: [nextTrackingId, current.vendor, poId, current.city, current.city],
         });
         if (sameVendor.length) {
           if (!req.body.confirm_duplicate_tracking) {
@@ -293,6 +323,9 @@ async function bulkUpdate(req, res, next) {
     }
     if (hasDispatch && dispatch_date && !/^\d{4}-\d{2}-\d{2}$/.test(dispatch_date)) {
       return res.status(400).json({ message: 'Invalid dispatch_date format (expected YYYY-MM-DD)' });
+    }
+    if (dispatch_date && dispatch_date > new Date().toISOString().slice(0, 10)) {
+      return res.status(400).json({ message: 'Dispatch date cannot be in the future' });
     }
     if (hasStatus && status === 'Closed') {
       if (!dispatch_date || !/^\d{4}-\d{2}-\d{2}$/.test(dispatch_date)) {
