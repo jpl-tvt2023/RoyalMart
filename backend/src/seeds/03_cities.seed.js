@@ -1,4 +1,7 @@
-export const INDIAN_CITIES = [
+// One-shot seed for the cities master, lifted from the previous
+// frontend/src/data/indianCities.js hardcoded list. Idempotent via UNIQUE(name).
+
+const CITIES = [
   'Agartala', 'Agra', 'Ahmedabad', 'Ahmednagar', 'Aizawl', 'Ajmer', 'Akola', 'Aligarh',
   'Allahabad', 'Alwar', 'Ambala', 'Amravati', 'Amritsar', 'Anand', 'Anantapur', 'Ankleshwar',
   'Asansol', 'Aurangabad', 'Bangalore', 'Bareilly', 'Belgaum', 'Bellary', 'Bhagalpur',
@@ -21,4 +24,20 @@ export const INDIAN_CITIES = [
   'Thane', 'Thiruvananthapuram', 'Thoothukudi', 'Thrissur', 'Tiruchirappalli', 'Tirunelveli',
   'Tirupati', 'Tirupur', 'Udaipur', 'Ujjain', 'Vadodara', 'Varanasi', 'Vasai-Virar',
   'Vellore', 'Vijayawada', 'Visakhapatnam', 'Warangal',
-].sort((a, b) => a.localeCompare(b));
+];
+
+async function seed(db) {
+  let inserted = 0;
+  for (const name of CITIES) {
+    const { rows } = await db.execute({
+      sql: `INSERT INTO cities (name) VALUES (?)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id`,
+      args: [name],
+    });
+    if (rows.length) inserted++;
+  }
+  console.log(`  seeded cities: +${inserted} (skipped ${CITIES.length - inserted} existing)`);
+}
+
+module.exports = seed;

@@ -1,68 +1,61 @@
 import { useEffect, useState, useCallback } from 'react';
 import * as XLSX from 'xlsx';
-import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X } from 'lucide-react';
+import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X, Truck } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import Badge from '../../components/ui/Badge';
+import Modal from '../../components/ui/Modal';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { listOrderSummary, updateOrderSummary, bulkUpdateOrderSummary } from '../../api/orderSummary.api';
 import { getUsers } from '../../api/users.api';
+import { listVendors } from '../../api/vendors.api';
+import { listCities } from '../../api/cities.api';
+import { listCouriers } from '../../api/couriers.api';
 import { formatDateTime } from '../../utils/formatters';
-import { INDIAN_CITIES } from '../../data/indianCities';
 import { useRBAC } from '../../hooks/useRBAC';
-
-const VENDOR_TABS = [
-  { key: '',         label: 'Master' },
-  { key: 'Scootsy',  label: 'Scootsy' },
-  { key: 'Zepto',    label: 'Zepto' },
-  { key: 'Blinkit',  label: 'Blinkit' },
-];
 
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
 const defaultFilters = () => ({
   po_id: '', city: '',
   po_date_from: '', po_date_to: '',
+  dispatch_date_from: '', dispatch_date_to: '',
   status: 'Open', office_poc: '', warehouse_poc: '',
+  courier_id: '', has_tracking: '',
 });
 
-// Server-side sort key for the merged "Last Updated" column.
-const COLUMNS_MASTER = [
+const BASE_COLUMNS_MASTER = [
   { key: 'po_date',            label: 'Order Date' },
   { key: 'po_id',              label: 'PO ID' },
   { key: 'vendor',             label: 'Vendor' },
   { key: 'vendor_po_id',       label: 'PO No.' },
   { key: 'total_qty',          label: 'Quantity' },
   { key: 'line_count',         label: 'SKU' },
-  { key: 'city',               label: 'Destination' },
+  { key: 'city',               label: 'City' },
   { key: 'office_poc_name',    label: 'Office POC' },
   { key: 'warehouse_poc_name', label: 'Warehouse POC' },
   { key: 'status',             label: 'Status' },
   { key: 'dispatch_date',      label: 'Dispatch Date' },
   { key: 'updated_at',         label: 'Last Updated' },
 ];
-const COLUMNS_VENDOR = COLUMNS_MASTER.filter(c => c.key !== 'vendor');
-
-const EXPORT_COLUMNS = [
-  { key: 'po_date',            label: 'Order Date' },
-  { key: 'po_id',              label: 'PO ID' },
-  { key: 'vendor',             label: 'Vendor' },
-  { key: 'vendor_po_id',       label: 'PO No.' },
-  { key: 'total_qty',          label: 'Quantity' },
-  { key: 'line_count',         label: 'SKU' },
-  { key: 'city',               label: 'Destination' },
-  { key: 'office_poc_name',    label: 'Office POC' },
-  { key: 'warehouse_poc_name', label: 'Warehouse POC' },
-  { key: 'status',             label: 'Status' },
-  { key: 'dispatch_date',      label: 'Dispatch Date' },
-  { key: null,                 label: 'Material Dispatch' },
+const DISPATCH_COLUMNS = [
+  { key: 'courier_name', label: 'Courier' },
+  { key: 'tracking_id',  label: 'Tracking ID' },
 ];
+
+const SHOW_DISPATCH_KEY = 'orderSummary.showDispatch';
 
 export default function OrderSummaryList() {
   const { canAccess } = useRBAC();
   const canEdit = canAccess('Admin', 'Owner', 'Office_POC', 'PO_Executive');
 
+  const [showDispatch, setShowDispatch] = useState(() => {
+    try { return localStorage.getItem(SHOW_DISPATCH_KEY) === '1'; }
+    catch { return false; }
+  });
+
+  const [vendorTabs, setVendorTabs] = useState([{ key: '', label: 'Master' }]);
   const [vendorTab, setVendorTab] = useState('');
   const [filters, setFilters] = useState(defaultFilters);
   const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
@@ -75,21 +68,37 @@ export default function OrderSummaryList() {
 
   const [officePocs, setOfficePocs] = useState([]);
   const [warehousePocs, setWarehousePocs] = useState([]);
+  const [cities, setCities] = useState([]);
+  const [couriers, setCouriers] = useState([]);
+  const activeCouriers = couriers.filter(c => c.is_active);
 
-  // Per-row dirty edits, keyed by po_id. A row is in edit mode whenever it has
-  // an entry here (i.e. the user has touched any of its cells).
   const [edits, setEdits] = useState({});
   const [savingId, setSavingId] = useState(null);
 
-  // Bulk action state.
   const [selected, setSelected] = useState(new Set());
   const [bulkStatus, setBulkStatus] = useState('Closed');
   const [bulkDispatchDate, setBulkDispatchDate] = useState('');
+  const [bulkCourierId, setBulkCourierId] = useState('');
   const [bulkApplying, setBulkApplying] = useState(false);
 
   const [exporting, setExporting] = useState(false);
+  const [conflict, setConflict] = useState(null);
 
-  const COLUMNS = vendorTab ? COLUMNS_VENDOR : COLUMNS_MASTER;
+  const COLUMNS = (() => {
+    const base = vendorTab ? BASE_COLUMNS_MASTER.filter(c => c.key !== 'vendor') : BASE_COLUMNS_MASTER;
+    if (!showDispatch) return base;
+    // Insert dispatch columns right after dispatch_date
+    const idx = base.findIndex(c => c.key === 'dispatch_date');
+    return [...base.slice(0, idx + 1), ...DISPATCH_COLUMNS, ...base.slice(idx + 1)];
+  })();
+
+  const toggleDispatch = () => {
+    setShowDispatch(prev => {
+      const next = !prev;
+      try { localStorage.setItem(SHOW_DISPATCH_KEY, next ? '1' : '0'); } catch { /* ignore */ }
+      return next;
+    });
+  };
 
   const buildParams = useCallback((overrides = {}) => {
     const f = overrides.filters ?? filters;
@@ -124,9 +133,20 @@ export default function OrderSummaryList() {
         setWarehousePocs(users.filter(u => (u.roles || []).includes('Warehouse_POC')));
       })
       .catch(() => {});
+    listVendors()
+      .then(rows => {
+        const tabs = [{ key: '', label: 'Master' }, ...rows.filter(v => v.is_active).map(v => ({ key: v.name, label: v.name }))];
+        setVendorTabs(tabs);
+      })
+      .catch(() => {});
+    listCities()
+      .then(rows => setCities(rows.filter(c => c.is_active).map(c => c.name)))
+      .catch(() => {});
+    listCouriers()
+      .then(setCouriers)
+      .catch(() => {});
   }, []);
 
-  // Reset edit + selection state when the row set changes (refetch / tab / filter).
   useEffect(() => {
     setEdits({});
     setSelected(new Set());
@@ -160,10 +180,6 @@ export default function OrderSummaryList() {
     load({ pageSize: size, page: 1 });
   };
 
-  // ───── Edit mode ─────
-  // Cells are always-editable. A row becomes "dirty" the moment any of its
-  // controls is changed (entry exists in `edits`); Save/Cancel buttons render
-  // in the action column for dirty rows only.
   const valueOf = (po, key) => {
     const e = edits[po.po_id];
     return e && Object.prototype.hasOwnProperty.call(e, key) ? e[key] : po[key];
@@ -173,7 +189,7 @@ export default function OrderSummaryList() {
   const cancelEdit = (poId) => setEdits(prev => { const n = { ...prev }; delete n[poId]; return n; });
   const onCellKeyDown = (poId) => (e) => { if (e.key === 'Escape') cancelEdit(poId); };
 
-  const saveRow = async (po) => {
+  const saveRow = async (po, { confirmDuplicate = false } = {}) => {
     const e = edits[po.po_id];
     if (!e) return;
     const nextStatus = 'status' in e ? e.status : po.status;
@@ -190,16 +206,26 @@ export default function OrderSummaryList() {
       if ('dispatch_date' in e || ('status' in e && e.status === 'Open')) {
         payload.dispatch_date = e.status === 'Open' ? null : (e.dispatch_date || null);
       }
+      if ('courier_id' in e)  payload.courier_id  = e.courier_id === '' ? null : Number(e.courier_id);
+      if ('tracking_id' in e) payload.tracking_id = (e.tracking_id ?? '').trim() || null;
+      if (confirmDuplicate)   payload.confirm_duplicate_tracking = true;
       await updateOrderSummary(po.po_id, payload);
       toast.success(`Saved ${po.po_id}`);
       cancelEdit(po.po_id);
+      setConflict(null);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Save failed');
+      const data = err.response?.data;
+      if (err.response?.status === 409 && data?.severity === 'error' && data?.error === 'tracking_id_vendor_conflict') {
+        setConflict({ severity: 'error', po, trackingId: data.tracking_id, rows: data.conflicts || [] });
+      } else if (err.response?.status === 409 && data?.severity === 'warning' && data?.error === 'tracking_id_duplicate_same_vendor') {
+        setConflict({ severity: 'warning', po, trackingId: data.tracking_id, rows: data.duplicates || [] });
+      } else {
+        toast.error(data?.message || 'Save failed');
+      }
     } finally { setSavingId(null); }
   };
 
-  // ───── Bulk ─────
   const allSelected = items.length > 0 && items.every(po => selected.has(po.po_id));
   const toggleSelectAll = () => {
     if (allSelected) setSelected(new Set());
@@ -217,14 +243,19 @@ export default function OrderSummaryList() {
     if (bulkApplyDisabled) return;
     setBulkApplying(true);
     try {
-      await bulkUpdateOrderSummary({
+      const payload = {
         po_ids: Array.from(selected),
         status: bulkStatus,
         dispatch_date: bulkStatus === 'Closed' ? bulkDispatchDate : null,
-      });
+      };
+      if (showDispatch && bulkCourierId !== '') {
+        payload.courier_id = bulkCourierId === 'clear' ? null : Number(bulkCourierId);
+      }
+      await bulkUpdateOrderSummary(payload);
       toast.success(`Updated ${selected.size} order${selected.size !== 1 ? 's' : ''}`);
       setSelected(new Set());
       setBulkDispatchDate('');
+      setBulkCourierId('');
       load();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Bulk update failed');
@@ -243,8 +274,26 @@ export default function OrderSummaryList() {
         toast('No records to export');
         return;
       }
-      const headers = EXPORT_COLUMNS.map(c => c.label);
-      const data = rows.map(r => EXPORT_COLUMNS.map(c => {
+      const exportCols = [
+        { key: 'po_date',            label: 'Order Date' },
+        { key: 'po_id',              label: 'PO ID' },
+        { key: 'vendor',             label: 'Vendor' },
+        { key: 'vendor_po_id',       label: 'PO No.' },
+        { key: 'total_qty',          label: 'Quantity' },
+        { key: 'line_count',         label: 'SKU' },
+        { key: 'city',               label: 'City' },
+        { key: 'office_poc_name',    label: 'Office POC' },
+        { key: 'warehouse_poc_name', label: 'Warehouse POC' },
+        { key: 'status',             label: 'Status' },
+        { key: 'dispatch_date',      label: 'Dispatch Date' },
+        ...(showDispatch ? [
+          { key: 'courier_name', label: 'Courier' },
+          { key: 'tracking_id',  label: 'Tracking ID' },
+        ] : []),
+        { key: null,                 label: 'Material Dispatch' },
+      ];
+      const headers = exportCols.map(c => c.label);
+      const data = rows.map(r => exportCols.map(c => {
         if (c.key == null) return '';
         const v = r[c.key];
         return v == null ? '' : v;
@@ -276,14 +325,23 @@ export default function OrderSummaryList() {
           <h1 className="text-2xl font-bold text-[#003049]">Order Summary</h1>
           <p className="text-gray-500 text-sm">{total} order{total !== 1 ? 's' : ''}</p>
         </div>
-        <Button variant="outline" onClick={downloadXLSX} loading={exporting}>
-          <Download size={16} />Download XLSX
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant={showDispatch ? 'secondary' : 'outline'}
+            onClick={toggleDispatch}
+            title={showDispatch ? 'Hide dispatch fields' : 'Show dispatch fields'}
+          >
+            <Truck size={16} />{showDispatch ? 'Hide dispatch' : 'Show dispatch'}
+          </Button>
+          <Button variant="outline" onClick={downloadXLSX} loading={exporting}>
+            <Download size={16} />Download XLSX
+          </Button>
+        </div>
       </div>
 
       {/* Vendor tabs */}
       <div className="flex gap-1 mb-4 border-b border-gray-200">
-        {VENDOR_TABS.map(t => (
+        {vendorTabs.map(t => (
           <button
             key={t.key || 'master'}
             type="button"
@@ -297,7 +355,7 @@ export default function OrderSummaryList() {
 
       {/* Filter bar */}
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
             <select value={filters.status} onChange={e => setFilter('status', e.target.value)} className={inputCls}>
@@ -314,7 +372,7 @@ export default function OrderSummaryList() {
             <label className="block text-xs font-medium text-gray-600 mb-1">City</label>
             <select value={filters.city} onChange={e => setFilter('city', e.target.value)} className={inputCls}>
               <option value="">All cities</option>
-              {INDIAN_CITIES.map(c => <option key={c} value={c}>{c}</option>)}
+              {cities.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div>
@@ -341,6 +399,34 @@ export default function OrderSummaryList() {
               {warehousePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select>
           </div>
+          {showDispatch && (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Courier</label>
+                <select value={filters.courier_id} onChange={e => setFilter('courier_id', e.target.value)} className={inputCls}>
+                  <option value="">All couriers</option>
+                  <option value="unassigned">Unassigned</option>
+                  {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Has Tracking ID</label>
+                <select value={filters.has_tracking} onChange={e => setFilter('has_tracking', e.target.value)} className={inputCls}>
+                  <option value="">Any</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch From</label>
+                <input type="date" value={filters.dispatch_date_from} onChange={e => setFilter('dispatch_date_from', e.target.value)} className={inputCls} />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch To</label>
+                <input type="date" value={filters.dispatch_date_to} onChange={e => setFilter('dispatch_date_to', e.target.value)} className={inputCls} />
+              </div>
+            </>
+          )}
         </div>
         <div className="flex justify-end gap-2 mt-3">
           <Button variant="ghost" onClick={clearFilters}>Clear</Button>
@@ -370,6 +456,20 @@ export default function OrderSummaryList() {
             disabled={bulkStatus !== 'Closed'}
             className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[9rem] disabled:opacity-40 disabled:cursor-not-allowed"
           />
+          {showDispatch && (
+            <>
+              <label className="text-sm whitespace-nowrap">Courier</label>
+              <select
+                value={bulkCourierId}
+                onChange={e => setBulkCourierId(e.target.value)}
+                className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[9rem]"
+              >
+                <option value="">— no change —</option>
+                <option value="clear">— Clear —</option>
+                {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </>
+          )}
           <Button
             onClick={applyBulk}
             disabled={bulkApplyDisabled}
@@ -429,6 +529,8 @@ export default function OrderSummaryList() {
                 const editDispatch = valueOf(po, 'dispatch_date') || '';
                 const editOffice = valueOf(po, 'office_poc');
                 const editWarehouse = valueOf(po, 'warehouse_poc');
+                const editCourier  = valueOf(po, 'courier_id');
+                const editTracking = valueOf(po, 'tracking_id') ?? '';
                 const onKey = onCellKeyDown(po.po_id);
                 return (
                   <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? 'bg-amber-50/60' : 'hover:bg-gray-50'}`}>
@@ -535,6 +637,46 @@ export default function OrderSummaryList() {
                             </td>
                           );
 
+                        case 'courier_name':
+                          return (
+                            <td key={col.key} className="px-3 py-2">
+                              {canEdit ? (
+                                <select
+                                  value={editCourier == null ? '' : String(editCourier)}
+                                  onChange={e => setEdit(po.po_id, { courier_id: e.target.value })}
+                                  onKeyDown={onKey}
+                                  className={cellCls}
+                                >
+                                  <option value="">— Unassigned —</option>
+                                  {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                  {po.courier_id && !activeCouriers.some(c => c.id === po.courier_id) && po.courier_name && (
+                                    <option value={po.courier_id}>{po.courier_name} (inactive)</option>
+                                  )}
+                                </select>
+                              ) : (
+                                <span className="text-gray-700">{po.courier_name || '—'}</span>
+                              )}
+                            </td>
+                          );
+
+                        case 'tracking_id':
+                          return (
+                            <td key={col.key} className="px-3 py-2">
+                              {canEdit ? (
+                                <input
+                                  type="text"
+                                  value={editTracking}
+                                  onChange={e => setEdit(po.po_id, { tracking_id: e.target.value })}
+                                  onKeyDown={onKey}
+                                  placeholder="—"
+                                  className={`${cellCls} font-mono`}
+                                />
+                              ) : (
+                                <span className="text-gray-700 font-mono">{po.tracking_id || '—'}</span>
+                              )}
+                            </td>
+                          );
+
                         case 'updated_at':
                           return (
                             <td key={col.key} className="px-3 py-2 whitespace-nowrap">
@@ -589,6 +731,78 @@ export default function OrderSummaryList() {
           onPageSizeChange={handlePageSizeChange}
         />
       </div>
+
+      <Modal
+        isOpen={!!conflict}
+        onClose={() => setConflict(null)}
+        title={conflict?.severity === 'warning' ? 'Duplicate tracking ID on the same vendor' : 'Tracking ID conflict'}
+        size="lg"
+      >
+        {conflict && (() => {
+          const isWarn = conflict.severity === 'warning';
+          const wrapCls   = isWarn ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200';
+          const rowCls    = isWarn ? 'bg-amber-50/60' : 'bg-red-50/60';
+          const headerCls = isWarn ? 'bg-amber-100 text-amber-900' : 'bg-red-100 text-red-900';
+          const accent    = isWarn ? 'text-amber-700' : 'text-red-700';
+          return (
+            <div className={`space-y-4 -mx-6 -my-4 px-6 py-4 border-y ${wrapCls}`}>
+              <p className={`text-sm ${accent} font-medium`}>
+                {isWarn
+                  ? <>This tracking ID is already on another PO for vendor <span className="font-semibold">{conflict.po.vendor}</span>. Please verify it isn&apos;t a mistake — you can either edit it or save anyway.</>
+                  : <>Tracking ID <span className="font-mono font-semibold">{conflict.trackingId}</span> is already used by a different vendor. Tracking IDs can repeat within the same vendor but must be unique across vendors.</>}
+              </p>
+              <p className="text-sm text-gray-700">
+                Editing <span className="font-mono font-semibold">{conflict.po.vendor_po_id || conflict.po.po_id}</span>
+                {' '}(vendor <span className="font-semibold">{conflict.po.vendor}</span>) with tracking ID <span className="font-mono font-semibold">{conflict.trackingId}</span>.
+                {' '}{isWarn ? 'Existing PO(s) using the same tracking ID:' : 'The following existing record(s) conflict:'}
+              </p>
+              <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
+                <table className="w-full text-sm">
+                  <thead className={headerCls}>
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold">PO Number</th>
+                      <th className="px-3 py-2 text-left font-semibold">Vendor</th>
+                      <th className="px-3 py-2 text-left font-semibold">Dispatch Date</th>
+                      <th className="px-3 py-2 text-left font-semibold">Tracking ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className={`${rowCls} border-t border-gray-100`}>
+                      <td className="px-3 py-2 font-mono text-xs">{conflict.po.vendor_po_id || conflict.po.po_id}</td>
+                      <td className="px-3 py-2">{conflict.po.vendor}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{valueOf(conflict.po, 'dispatch_date') || '—'}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{conflict.trackingId} <span className="text-gray-400">(this edit)</span></td>
+                    </tr>
+                    {conflict.rows.map(c => (
+                      <tr key={c.po_id} className={`${rowCls} border-t border-gray-100`}>
+                        <td className="px-3 py-2 font-mono text-xs">{c.vendor_po_id || c.po_id}</td>
+                        <td className="px-3 py-2">{c.vendor}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{c.dispatch_date || '—'}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{c.tracking_id}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex justify-end gap-2">
+                {isWarn ? (
+                  <>
+                    <Button variant="ghost" onClick={() => setConflict(null)}>Edit Tracking ID</Button>
+                    <Button
+                      onClick={() => saveRow(conflict.po, { confirmDuplicate: true })}
+                      loading={savingId === conflict.po.po_id}
+                    >
+                      Save Anyway
+                    </Button>
+                  </>
+                ) : (
+                  <Button onClick={() => setConflict(null)}>Close</Button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
     </AppShell>
   );
 }

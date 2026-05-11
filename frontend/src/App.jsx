@@ -8,20 +8,16 @@ import ForcePasswordReset from './pages/ForcePasswordReset';
 import Dashboard from './pages/Dashboard';
 import UserManagement from './pages/admin/UserManagement';
 import TeamManagement from './pages/admin/TeamManagement';
-import SKUMaster from './pages/skus/SKUMaster';
-import InventoryDashboard from './pages/inventory/InventoryDashboard';
-import SupplierPOs from './pages/restock/SupplierPOs';
-import PackagingInventory from './pages/packaging/PackagingInventory';
 import PurchaseOrdersList from './pages/PurchaseOrders/PurchaseOrdersList';
 import PurchaseOrderImport from './pages/PurchaseOrders/PurchaseOrderImport';
 import PurchaseOrderDetail from './pages/PurchaseOrders/PurchaseOrderDetail';
 import OrderSummaryList from './pages/OrderSummary/OrderSummaryList';
-import DispatchSummaryList from './pages/DispatchSummary/DispatchSummaryList';
-import CourierMaster from './pages/Couriers/CourierMaster';
+import ConfigurationsPage from './pages/Configurations/ConfigurationsPage';
 import ProductList from './pages/products/ProductList';
 
 const ALL_ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Warehouse_POC', 'PO_Executive'];
 const PO_ROLES = ['Admin', 'Owner', 'PO_Executive'];
+const ADMIN_ONLY = ['Admin', 'Owner'];
 
 export default function App() {
   return (
@@ -49,27 +45,11 @@ export default function App() {
           } />
 
           <Route path="/admin/users" element={
-            <ProtectedRoute roles={['Admin', 'Owner']}><UserManagement /></ProtectedRoute>
+            <ProtectedRoute roles={ADMIN_ONLY}><UserManagement /></ProtectedRoute>
           } />
 
           <Route path="/admin/teams" element={
-            <ProtectedRoute roles={['Admin', 'Owner']}><TeamManagement /></ProtectedRoute>
-          } />
-
-          <Route path="/skus" element={
-            <ProtectedRoute roles={['Admin', 'Owner']}><SKUMaster /></ProtectedRoute>
-          } />
-
-          <Route path="/inventory" element={
-            <ProtectedRoute roles={ALL_ROLES}><InventoryDashboard /></ProtectedRoute>
-          } />
-
-          <Route path="/restock" element={
-            <ProtectedRoute roles={['Admin', 'Owner', 'Purchase_Team', 'Warehouse_POC']}><SupplierPOs /></ProtectedRoute>
-          } />
-
-          <Route path="/packaging" element={
-            <ProtectedRoute roles={['Admin', 'Owner', 'Warehouse_POC']}><PackagingInventory /></ProtectedRoute>
+            <ProtectedRoute roles={ADMIN_ONLY}><TeamManagement /></ProtectedRoute>
           } />
 
           <Route path="/products" element={
@@ -90,13 +70,14 @@ export default function App() {
             <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'PO_Executive']}><OrderSummaryList /></ProtectedRoute>
           } />
 
-          <Route path="/dispatch-summary" element={
-            <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Warehouse_POC', 'Purchase_Team', 'PO_Executive']}><DispatchSummaryList /></ProtectedRoute>
+          <Route path="/configurations" element={
+            <ProtectedRoute roles={ADMIN_ONLY}><ConfigurationsPage /></ProtectedRoute>
           } />
 
-          <Route path="/couriers" element={
-            <ProtectedRoute roles={['Admin', 'Owner']}><CourierMaster /></ProtectedRoute>
-          } />
+          {/* Legacy routes redirect to current ones */}
+          <Route path="/couriers"         element={<Navigate to="/configurations" replace />} />
+          <Route path="/dispatch-summary" element={<Navigate to="/order-summary"  replace />} />
+          <Route path="/skus"             element={<Navigate to="/products"       replace />} />
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />

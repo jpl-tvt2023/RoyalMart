@@ -9,23 +9,19 @@ async function list(req, res, next) {
 }
 
 async function create(req, res, next) {
-  const tx = await db.transaction('write');
   try {
     const { sku_code, name, hsn_code, fabric_type, gsm, color, safety_threshold } = req.body;
     if (!sku_code || !name) return res.status(400).json({ message: 'sku_code and name are required' });
 
-    const { rows } = await tx.execute({
+    const { rows } = await db.execute({
       sql: `INSERT INTO products (sku_code, name, hsn_code, fabric_type, gsm, color, safety_threshold)
             VALUES (?,?,?,?,?,?,?) RETURNING *`,
       args: [sku_code, name, hsn_code || null, fabric_type || null, gsm || null, color || null, safety_threshold || 0],
     });
     const product = rows[0];
-    await tx.execute({ sql: 'INSERT INTO inventory (sku_id) VALUES (?)', args: [product.id] });
-    await logAction({ client: tx, userId: req.user.id, actionType: 'SKU_CREATE', description: `Created SKU ${sku_code}: ${name}`, entityType: 'product', entityId: product.id });
-    await tx.commit();
+    await logAction({ userId: req.user.id, actionType: 'PRODUCT_CREATE', description: `Created product ${sku_code}: ${name}`, entityType: 'product', entityId: product.id });
     res.status(201).json(product);
   } catch (err) {
-    await tx.rollback();
     if (err.message && err.message.includes('UNIQUE constraint failed')) {
       return res.status(409).json({ message: 'SKU code already exists' });
     }
@@ -49,8 +45,8 @@ async function update(req, res, next) {
             WHERE id = ? RETURNING *`,
       args: [sku_code||null, name||null, hsn_code||null, fabric_type||null, gsm||null, color||null, safety_threshold??null, id],
     });
-    if (!rows.length) return res.status(404).json({ message: 'SKU not found' });
-    await logAction({ userId: req.user.id, actionType: 'SKU_UPDATE', description: `Updated SKU ${rows[0].sku_code}`, entityType: 'product', entityId: id });
+    if (!rows.length) return res.status(404).json({ message: 'Product not found' });
+    await logAction({ userId: req.user.id, actionType: 'PRODUCT_UPDATE', description: `Updated product ${rows[0].sku_code}`, entityType: 'product', entityId: id });
     res.json(rows[0]);
   } catch (err) {
     if (err.message && err.message.includes('UNIQUE constraint failed')) {
@@ -64,9 +60,9 @@ async function remove(req, res, next) {
   try {
     const { id } = req.params;
     const { rows } = await db.execute({ sql: 'DELETE FROM products WHERE id = ? RETURNING sku_code', args: [id] });
-    if (!rows.length) return res.status(404).json({ message: 'SKU not found' });
-    await logAction({ userId: req.user.id, actionType: 'SKU_DELETE', description: `Deleted SKU ${rows[0].sku_code}`, entityType: 'product', entityId: id });
-    res.json({ message: 'SKU deleted' });
+    if (!rows.length) return res.status(404).json({ message: 'Product not found' });
+    await logAction({ userId: req.user.id, actionType: 'PRODUCT_DELETE', description: `Deleted product ${rows[0].sku_code}`, entityType: 'product', entityId: id });
+    res.json({ message: 'Product deleted' });
   } catch (err) { next(err); }
 }
 

@@ -2,7 +2,6 @@ const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
 const { buildPagination, buildOrderBy } = require('./marketplacePO.controller');
 
-const VALID_VENDORS = ['Scootsy', 'Zepto', 'Blinkit'];
 const VALID_STATUSES = ['Open', 'Closed'];
 
 const SORT_COLUMNS = {
@@ -37,7 +36,7 @@ async function list(req, res, next) {
     const conditions = [];
     const args = [];
     if (po_id) { conditions.push('p.po_id LIKE ?'); args.push(`%${po_id}%`); }
-    if (vendor && VALID_VENDORS.includes(vendor)) { conditions.push('p.vendor = ?'); args.push(vendor); }
+    if (vendor) { conditions.push('p.vendor = ?'); args.push(vendor); }
     if (vendor_po_id) { conditions.push('p.vendor_po_id LIKE ?'); args.push(`%${vendor_po_id}%`); }
     if (city) { conditions.push('p.city = ?'); args.push(city); }
     if (po_date_from) { conditions.push('p.po_date >= ?'); args.push(po_date_from); }
