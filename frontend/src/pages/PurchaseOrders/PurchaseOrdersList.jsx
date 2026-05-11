@@ -8,10 +8,10 @@ import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Badge from '../../components/ui/Badge';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { listPOs, deletePO } from '../../api/marketplacePO.api';
+import { listVendors } from '../../api/vendors.api';
+import { listCities } from '../../api/cities.api';
 import { formatDateTime } from '../../utils/formatters';
-import { INDIAN_CITIES } from '../../data/indianCities';
 
-const VENDORS = ['Scootsy', 'Zepto', 'Blinkit'];
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
 const defaultFilters = () => ({
@@ -62,6 +62,17 @@ export default function PurchaseOrdersList() {
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('purchaseOrders', 25));
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [vendors, setVendors] = useState([]);
+  const [cities, setCities] = useState([]);
+
+  useEffect(() => {
+    listVendors()
+      .then(rows => setVendors(rows.filter(v => v.is_active).map(v => v.name)))
+      .catch(() => {});
+    listCities()
+      .then(rows => setCities(rows.filter(c => c.is_active).map(c => c.name)))
+      .catch(() => {});
+  }, []);
 
   const buildParams = useCallback((overrides) => {
     const f = overrides?.filters ?? filters;
@@ -155,7 +166,7 @@ export default function PurchaseOrdersList() {
             <label className="block text-xs font-medium text-gray-600 mb-1">Vendor</label>
             <select value={filters.vendor} onChange={e => setFilter('vendor', e.target.value)} className={inputCls}>
               <option value="">All vendors</option>
-              {VENDORS.map(v => <option key={v} value={v}>{v}</option>)}
+              {vendors.map(v => <option key={v} value={v}>{v}</option>)}
             </select>
           </div>
           <div>
@@ -166,7 +177,7 @@ export default function PurchaseOrdersList() {
             <label className="block text-xs font-medium text-gray-600 mb-1">City</label>
             <select value={filters.city} onChange={e => setFilter('city', e.target.value)} className={inputCls}>
               <option value="">All cities</option>
-              {INDIAN_CITIES.map(c => <option key={c} value={c}>{c}</option>)}
+              {cities.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div>

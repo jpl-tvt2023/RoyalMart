@@ -1,13 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Upload, Check, X, Pencil } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
+import Modal from '../../components/ui/Modal';
 import SummaryEditor from './SummaryEditor';
 import { parsePreview, commitPO } from '../../api/marketplacePO.api';
-
-const VENDORS = ['Scootsy', 'Zepto', 'Blinkit'];
+import { listVendors } from '../../api/vendors.api';
 
 export default function PurchaseOrderImport() {
   const navigate = useNavigate();
@@ -17,6 +17,14 @@ export default function PurchaseOrderImport() {
   const [summary, setSummary] = useState(null);
   const [mode, setMode] = useState(null); // 'pdf' | 'manual'
   const [committing, setCommitting] = useState(false);
+  const [vendors, setVendors] = useState([]);
+  const [parserMissing, setParserMissing] = useState(null);
+
+  useEffect(() => {
+    listVendors()
+      .then(rows => setVendors(rows.filter(v => v.is_active)))
+      .catch(() => {});
+  }, []);
 
   const handleParse = async (e) => {
     e.preventDefault();
@@ -37,7 +45,12 @@ export default function PurchaseOrderImport() {
       setMode('pdf');
       toast.success(`Parsed ${data.lines.length} line item${data.lines.length !== 1 ? 's' : ''}`);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Parse failed');
+      const data = err.response?.data;
+      if (data?.error === 'vendor_parser_not_implemented') {
+        setParserMissing({ vendor: data.vendor || vendor, message: data.message });
+      } else {
+        toast.error(data?.message || 'Parse failed');
+      }
     } finally { setParsing(false); }
   };
 
@@ -88,7 +101,7 @@ export default function PurchaseOrderImport() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Vendor</label>
             <select required value={vendor} onChange={e => setVendor(e.target.value)} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30">
               <option value="">Select vendor...</option>
-              {VENDORS.map(v => <option key={v} value={v}>{v}</option>)}
+              {vendors.map(v => <option key={v.id} value={v.name}>{v.name}{!v.has_parser ? ' (no parser yet)' : ''}</option>)}
             </select>
           </div>
           <div>
@@ -118,6 +131,27 @@ export default function PurchaseOrderImport() {
           </div>
         </div>
       )}
+
+      <Modal
+        isOpen={!!parserMissing}
+        onClose={() => setParserMissing(null)}
+        title="Parser not implemented"
+        size="md"
+      >
+        {parserMissing && (
+          <div className="space-y-4 -mx-6 -my-4 px-6 py-4 border-y bg-amber-50 border-amber-200">
+            <p className="text-sm text-amber-700 font-medium">
+              {parserMissing.message}
+            </p>
+            <p className="text-sm text-gray-700">
+              The vendor <span className="font-semibold">{parserMissing.vendor}</span> exists in the system but does not yet have a PDF parser implementation. Until a parser is added in code, POs for this vendor cannot be uploaded via PDF. You can still add the PO manually from this screen.
+            </p>
+            <div className="flex justify-end">
+              <Button onClick={() => setParserMissing(null)}>OK</Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </AppShell>
   );
 }

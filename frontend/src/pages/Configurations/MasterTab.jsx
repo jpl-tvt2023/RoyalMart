@@ -1,26 +1,28 @@
 import { useEffect, useState } from 'react';
 import { Plus, Pencil, Power } from 'lucide-react';
 import toast from 'react-hot-toast';
-import AppShell from '../../components/layout/AppShell';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
 import { useRBAC } from '../../hooks/useRBAC';
-import {
-  listCouriers,
-  createCourier,
-  updateCourier,
-  deleteCourier,
-} from '../../api/couriers.api';
+
+// Shared CRUD UI for any simple master with { id, name, is_active } shape.
+// Cities, Vendors, and Couriers all conform to it; Vendors adds an extra
+// read-only "Parser" column via the `extraColumn` prop.
 
 const EMPTY = { name: '', is_active: true };
 
-export default function CourierMaster() {
+export default function MasterTab({
+  label,
+  labelPlural,
+  listFn, createFn, updateFn, deleteFn,
+  extraColumn,
+}) {
   const { canAccess } = useRBAC();
   const canAdmin = canAccess('Admin', 'Owner');
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [modal, setModal] = useState(null); // 'add' | { type: 'edit', id }
+  const [modal, setModal] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -28,12 +30,12 @@ export default function CourierMaster() {
 
   const load = () => {
     setLoading(true);
-    listCouriers()
+    listFn()
       .then(setRows)
-      .catch(() => toast.error('Failed to load couriers'))
+      .catch(() => toast.error(`Failed to load ${labelPlural}`))
       .finally(() => setLoading(false));
   };
-  useEffect(load, []);
+  useEffect(load, [listFn]);
 
   const openAdd = () => { setForm(EMPTY); setFormError(''); setModal('add'); };
   const openEdit = (r) => {
@@ -50,11 +52,11 @@ export default function CourierMaster() {
     setFormError('');
     try {
       if (modal === 'add') {
-        await createCourier({ name });
-        toast.success('Courier added');
+        await createFn({ name });
+        toast.success(`${label} added`);
       } else {
-        await updateCourier(modal.id, { name, is_active: form.is_active });
-        toast.success('Courier updated');
+        await updateFn(modal.id, { name, is_active: form.is_active });
+        toast.success(`${label} updated`);
       }
       setModal(null);
       load();
@@ -68,8 +70,8 @@ export default function CourierMaster() {
   const toggleActive = async (r) => {
     setTogglingId(r.id);
     try {
-      if (r.is_active) await deleteCourier(r.id);
-      else await updateCourier(r.id, { is_active: true });
+      if (r.is_active) await deleteFn(r.id);
+      else await updateFn(r.id, { is_active: true });
       toast.success(r.is_active ? `"${r.name}" deactivated` : `"${r.name}" reactivated`);
       load();
     } catch (err) {
@@ -78,14 +80,11 @@ export default function CourierMaster() {
   };
 
   return (
-    <AppShell>
+    <>
       <div className="mb-4 flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-[#003049]">Couriers</h1>
-          <p className="text-gray-500 text-sm">{rows.length} courier{rows.length !== 1 ? 's' : ''}</p>
-        </div>
+        <p className="text-gray-500 text-sm">{rows.length} {labelPlural}</p>
         {canAdmin && (
-          <Button onClick={openAdd}><Plus size={16} />Add Courier</Button>
+          <Button onClick={openAdd}><Plus size={16} />Add {label}</Button>
         )}
       </div>
 
@@ -96,6 +95,9 @@ export default function CourierMaster() {
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="px-4 py-3 text-left font-semibold text-gray-600 w-16">#</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600">Name</th>
+                {extraColumn && (
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600 w-44">{extraColumn.header}</th>
+                )}
                 <th className="px-4 py-3 text-left font-semibold text-gray-600 w-32">Status</th>
                 {canAdmin && <th className="px-4 py-3 text-left font-semibold text-gray-600 w-32">Actions</th>}
               </tr>
@@ -103,12 +105,15 @@ export default function CourierMaster() {
             <tbody>
               {loading ? (
                 [...Array(4)].map((_, i) => (
-                  <tr key={i}><td colSpan={4} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
+                  <tr key={i}><td colSpan={canAdmin ? (extraColumn ? 5 : 4) : (extraColumn ? 4 : 3)} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
               ) : rows.map((r, idx) => (
                 <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3 font-mono text-xs text-gray-500">{idx + 1}</td>
                   <td className="px-4 py-3 text-gray-900 font-medium">{r.name}</td>
+                  {extraColumn && (
+                    <td className="px-4 py-3">{extraColumn.render(r)}</td>
+                  )}
                   <td className="px-4 py-3">
                     {r.is_active ? (
                       <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200">Active</span>
@@ -142,7 +147,7 @@ export default function CourierMaster() {
             </tbody>
           </table>
           {!loading && rows.length === 0 && (
-            <p className="text-center text-gray-400 py-8">No couriers yet</p>
+            <p className="text-center text-gray-400 py-8">No {labelPlural} yet</p>
           )}
         </div>
       </div>
@@ -150,7 +155,7 @@ export default function CourierMaster() {
       <Modal
         isOpen={!!modal}
         onClose={() => setModal(null)}
-        title={modal === 'add' ? 'Add Courier' : 'Edit Courier'}
+        title={modal === 'add' ? `Add ${label}` : `Edit ${label}`}
         size="sm"
       >
         <form onSubmit={handleSave} className="space-y-4">
@@ -161,7 +166,7 @@ export default function CourierMaster() {
               required
               value={form.name}
               onChange={e => { setForm(f => ({ ...f, name: e.target.value })); if (formError) setFormError(''); }}
-              placeholder="e.g. Delhivery"
+              placeholder={`e.g. ${label === 'City' ? 'Pune' : label === 'Vendor' ? 'Zomato' : 'Delhivery'}`}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]"
             />
             {formError && <p className="mt-1 text-xs text-red-600">{formError}</p>}
@@ -180,10 +185,10 @@ export default function CourierMaster() {
 
           <div className="flex gap-3 justify-end pt-2">
             <Button variant="ghost" type="button" onClick={() => setModal(null)}>Cancel</Button>
-            <Button type="submit" loading={saving}>{modal === 'add' ? 'Add Courier' : 'Save Changes'}</Button>
+            <Button type="submit" loading={saving}>{modal === 'add' ? `Add ${label}` : 'Save Changes'}</Button>
           </div>
         </form>
       </Modal>
-    </AppShell>
+    </>
   );
 }

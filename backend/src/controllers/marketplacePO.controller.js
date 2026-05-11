@@ -1,18 +1,34 @@
 const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
-const { parse } = require('../parsers/marketplacePO');
+const { parse, hasParser } = require('../parsers/marketplacePO');
 
-const VENDOR_PREFIX = { Scootsy: 'S', Zepto: 'Z', Blinkit: 'B' };
-const VALID_VENDORS = Object.keys(VENDOR_PREFIX);
 const VALID_STATUSES = ['Open', 'Closed'];
 
 function pad3(n) { return String(n).padStart(3, '0'); }
+function vendorPrefix(name) { return String(name || '').charAt(0).toUpperCase(); }
+
+async function lookupActiveVendor(name) {
+  if (!name) return null;
+  const { rows } = await db.execute({
+    sql: 'SELECT id, name, is_active, has_parser FROM vendors WHERE name = ?',
+    args: [name],
+  });
+  return rows[0] || null;
+}
 
 async function parsePreview(req, res, next) {
   try {
     const { vendor } = req.body;
-    if (!VALID_VENDORS.includes(vendor)) {
-      return res.status(400).json({ message: 'Invalid vendor. Must be Scootsy, Zepto, or Blinkit.' });
+    const v = await lookupActiveVendor(vendor);
+    if (!v || !v.is_active) {
+      return res.status(400).json({ message: 'Unknown vendor. Add it under Configurations first.' });
+    }
+    if (!hasParser(vendor)) {
+      return res.status(400).json({
+        error: 'vendor_parser_not_implemented',
+        message: `Currently there is no logic implemented for vendor "${vendor}". Please connect with your admin.`,
+        vendor,
+      });
     }
     if (!req.file || !req.file.buffer) {
       return res.status(400).json({ message: 'PDF file is required' });
@@ -82,7 +98,7 @@ async function list(req, res, next) {
     const conditions = [];
     const args = [];
     if (po_id) { conditions.push('p.po_id LIKE ?'); args.push(`%${po_id}%`); }
-    if (vendor && VALID_VENDORS.includes(vendor)) { conditions.push('p.vendor = ?'); args.push(vendor); }
+    if (vendor) { conditions.push('p.vendor = ?'); args.push(vendor); }
     if (vendor_po_id) { conditions.push('p.vendor_po_id LIKE ?'); args.push(`%${vendor_po_id}%`); }
     if (city) { conditions.push('p.city = ?'); args.push(city); }
     if (po_date_from) { conditions.push('p.po_date >= ?'); args.push(po_date_from); }
@@ -160,7 +176,7 @@ async function getOne(req, res, next) {
 
 function validatePayload(body) {
   const { vendor, vendor_po_id, po_date, po_expiry_date, lines } = body;
-  if (!VALID_VENDORS.includes(vendor)) return 'Invalid vendor';
+  if (!vendor || !String(vendor).trim()) return 'Invalid vendor';
   if (!vendor_po_id || !String(vendor_po_id).trim()) return 'vendor_po_id is required';
   if (!Array.isArray(lines) || lines.length === 0) return 'At least one line item is required';
   for (const ln of lines) {
@@ -178,6 +194,12 @@ async function create(req, res, next) {
     const err = validatePayload(req.body);
     if (err) return res.status(400).json({ message: err });
     const { vendor, vendor_po_id, po_date, po_expiry_date, city, lines } = req.body;
+
+    const v = await lookupActiveVendor(vendor);
+    if (!v || !v.is_active) {
+      return res.status(400).json({ message: 'Unknown vendor. Add it under Configurations first.' });
+    }
+
     const cleanVendorPoId = String(vendor_po_id).trim();
 
     const tx = await db.transaction('write');
@@ -206,7 +228,7 @@ async function create(req, res, next) {
           args: [vendor],
         });
         const nextSeq = (Number(maxRows[0]?.max_seq) || 0) + 1;
-        poId = `${VENDOR_PREFIX[vendor]}${pad3(nextSeq)}`;
+        poId = `${vendorPrefix(vendor)}${pad3(nextSeq)}`;
         await tx.execute({
           sql: `INSERT INTO marketplace_pos
                 (po_id, vendor, vendor_po_id, po_date, po_expiry_date, city, status, created_by, onboarded_by, updated_by)

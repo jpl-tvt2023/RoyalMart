@@ -25,29 +25,8 @@ async function seed(db) {
       args: [p.sku_code, p.name, p.hsn_code, p.fabric_type, p.gsm, p.color, p.safety_threshold],
     });
     if (rows.length > 0) {
-      await db.execute({
-        sql: 'INSERT INTO inventory (sku_id) VALUES (?) ON CONFLICT (sku_id) DO NOTHING',
-        args: [rows[0].id],
-      });
       console.log(`  seeded product: ${p.sku_code}`);
     }
-  }
-
-  const packaging = [
-    { name: 'Poly Bags (Small)', unit: 'pcs',   on_hand_qty: 0, safety_threshold: 500 },
-    { name: 'Poly Bags (Large)', unit: 'pcs',   on_hand_qty: 0, safety_threshold: 300 },
-    { name: 'Cardboard Boxes',   unit: 'pcs',   on_hand_qty: 0, safety_threshold: 100 },
-    { name: 'Product Labels',    unit: 'rolls',  on_hand_qty: 0, safety_threshold:  10 },
-  ];
-
-  for (const pkg of packaging) {
-    await db.execute({
-      sql: `INSERT INTO packaging_materials (name, unit, on_hand_qty, safety_threshold)
-            VALUES (?,?,?,?)
-            ON CONFLICT (name) DO NOTHING`,
-      args: [pkg.name, pkg.unit, pkg.on_hand_qty, pkg.safety_threshold],
-    });
-    console.log(`  seeded packaging: ${pkg.name}`);
   }
 }
 

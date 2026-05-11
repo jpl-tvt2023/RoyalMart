@@ -23,14 +23,12 @@ app.use(cookieParser());
 app.use('/api/auth',         require('./src/routes/auth.routes'));
 app.use('/api/users',        require('./src/routes/users.routes'));
 app.use('/api/teams',        require('./src/routes/teams.routes'));
-app.use('/api/skus',         require('./src/routes/skus.routes'));
-app.use('/api/inventory',    require('./src/routes/inventory.routes'));
-app.use('/api/supplier-pos', require('./src/routes/supplierPO.routes'));
-app.use('/api/packaging',    require('./src/routes/packaging.routes'));
+app.use('/api/products',     require('./src/routes/products.routes'));
 app.use('/api/marketplace-pos', require('./src/routes/marketplacePO.routes'));
 app.use('/api/order-summary', require('./src/routes/orderSummary.routes'));
 app.use('/api/product-vendor-codes', require('./src/routes/productVendorCodes.routes'));
 app.use('/api/couriers',     require('./src/routes/couriers.routes'));
+app.use('/api/configurations', require('./src/routes/configurations.routes'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 

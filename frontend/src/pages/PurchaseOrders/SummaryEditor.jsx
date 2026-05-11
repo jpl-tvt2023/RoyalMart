@@ -1,10 +1,15 @@
+import { useEffect, useState } from 'react';
 import { Trash2, Plus } from 'lucide-react';
 import Button from '../../components/ui/Button';
-import { INDIAN_CITIES } from '../../data/indianCities';
-
-const PO_STATUSES = ['Open', 'Closed'];
+import { listCities } from '../../api/cities.api';
 
 export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true, onboarderSlot = null }) {
+  const [cities, setCities] = useState([]);
+  useEffect(() => {
+    listCities()
+      .then(rows => setCities(rows.filter(c => c.is_active).map(c => c.name)))
+      .catch(() => {});
+  }, []);
   const set = (patch) => onChange({ ...value, ...patch });
   const lines = value.lines || [];
 
@@ -40,7 +45,7 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
         <Field label="City">
           <select value={value.city || ''} onChange={e => set({ city: e.target.value })} className={inputCls}>
             <option value="">Select city...</option>
-            {INDIAN_CITIES.map(c => <option key={c} value={c}>{c}</option>)}
+            {cities.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </Field>
         <Field label="Status">
