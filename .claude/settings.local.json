@@ -11,7 +11,9 @@
       "Bash(rm \"d:/My Projects/Royal Mart Portal/backend/src/parsers/marketplacePO/swiggy.js\")",
       "Bash(Get-ChildItem -Path \"d:\\\\My Projects\\\\Royal Mart Portal\" -Recurse -Directory -Depth 2)",
       "Bash(Select-Object -ExpandProperty FullName)",
-      "Bash(node -e \"require\\('./app'\\); console.log\\('OK app loads'\\)\")"
+      "Bash(node -e \"require\\('./app'\\); console.log\\('OK app loads'\\)\")",
+      "Bash(grep -E \"\\\\.sql$\")",
+      "Bash(grep -E \"\\\\.js$\")"
     ]
   }
 }

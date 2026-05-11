@@ -58,4 +58,14 @@ export const NAV_MAP = [
     path: '/order-summary',
     roles: [ROLES.ADMIN, ROLES.OWNER, ROLES.OFFICE_POC, ROLES.PURCHASE_TEAM, ROLES.PO_EXECUTIVE],
   },
+  {
+    label: 'Dispatch Summary',
+    path: '/dispatch-summary',
+    roles: [ROLES.ADMIN, ROLES.OWNER, ROLES.OFFICE_POC, ROLES.WAREHOUSE_POC, ROLES.PURCHASE_TEAM, ROLES.PO_EXECUTIVE],
+  },
+  {
+    label: 'Couriers',
+    path: '/couriers',
+    roles: [ROLES.ADMIN, ROLES.OWNER],
+  },
 ];
