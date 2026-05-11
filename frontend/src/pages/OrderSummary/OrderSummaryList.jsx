@@ -622,7 +622,12 @@ export default function OrderSummaryList() {
                                 <select
                                   value={editCourier == null ? '' : String(editCourier)}
                                   disabled={editStatus !== 'Closed'}
-                                  onChange={e => setEdit(po.po_id, { courier_id: e.target.value })}
+                                  onChange={e => {
+                                    const v = e.target.value;
+                                    const patch = { courier_id: v };
+                                    if (v === '') patch.tracking_id = '';
+                                    setEdit(po.po_id, patch);
+                                  }}
                                   onKeyDown={onKey}
                                   className={cellCls}
                                 >
@@ -645,7 +650,7 @@ export default function OrderSummaryList() {
                                 <input
                                   type="text"
                                   value={editTracking}
-                                  disabled={editStatus !== 'Closed'}
+                                  disabled={editStatus !== 'Closed' || editCourier == null || editCourier === ''}
                                   onChange={e => setEdit(po.po_id, { tracking_id: e.target.value })}
                                   onKeyDown={onKey}
                                   placeholder="—"

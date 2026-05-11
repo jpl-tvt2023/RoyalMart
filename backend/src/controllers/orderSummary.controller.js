@@ -122,7 +122,7 @@ async function updateOne(req, res, next) {
   try {
     const { poId } = req.params;
     const { rows: existing } = await db.execute({
-      sql: `SELECT po_id, vendor, status, dispatch_date, office_poc, warehouse_poc,
+      sql: `SELECT po_id, vendor, city, status, dispatch_date, office_poc, warehouse_poc,
                    courier_id, tracking_id
             FROM marketplace_pos WHERE po_id = ?`,
       args: [poId],
