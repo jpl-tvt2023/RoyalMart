@@ -16,6 +16,8 @@ import PurchaseOrdersList from './pages/PurchaseOrders/PurchaseOrdersList';
 import PurchaseOrderImport from './pages/PurchaseOrders/PurchaseOrderImport';
 import PurchaseOrderDetail from './pages/PurchaseOrders/PurchaseOrderDetail';
 import OrderSummaryList from './pages/OrderSummary/OrderSummaryList';
+import DispatchSummaryList from './pages/DispatchSummary/DispatchSummaryList';
+import CourierMaster from './pages/Couriers/CourierMaster';
 import ProductList from './pages/products/ProductList';
 
 const ALL_ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Warehouse_POC', 'PO_Executive'];
@@ -86,6 +88,14 @@ export default function App() {
 
           <Route path="/order-summary" element={
             <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'PO_Executive']}><OrderSummaryList /></ProtectedRoute>
+          } />
+
+          <Route path="/dispatch-summary" element={
+            <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Warehouse_POC', 'Purchase_Team', 'PO_Executive']}><DispatchSummaryList /></ProtectedRoute>
+          } />
+
+          <Route path="/couriers" element={
+            <ProtectedRoute roles={['Admin', 'Owner']}><CourierMaster /></ProtectedRoute>
           } />
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />

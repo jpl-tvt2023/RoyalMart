@@ -30,6 +30,7 @@ app.use('/api/packaging',    require('./src/routes/packaging.routes'));
 app.use('/api/marketplace-pos', require('./src/routes/marketplacePO.routes'));
 app.use('/api/order-summary', require('./src/routes/orderSummary.routes'));
 app.use('/api/product-vendor-codes', require('./src/routes/productVendorCodes.routes'));
+app.use('/api/couriers',     require('./src/routes/couriers.routes'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
