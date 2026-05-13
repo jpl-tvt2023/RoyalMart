@@ -270,11 +270,21 @@ async function updateOne(req, res, next) {
       }
     }
 
-    if (nextStatus === 'Closed' && !nextDispatchDate) {
-      return res.status(400).json({ message: 'Dispatch date is required to close an order' });
+    if (nextStatus === 'Closed') {
+      const missing = [];
+      if (!nextDispatchDate) missing.push('dispatch date');
+      if (nextCourierId == null) missing.push('courier');
+      if (!nextTrackingId) missing.push('tracking ID');
+      if (missing.length) {
+        return res.status(400).json({
+          message: `Cannot close order — missing: ${missing.join(', ')}`,
+        });
+      }
     }
     if (nextStatus === 'Open') {
       nextDispatchDate = null;
+      nextCourierId = null;
+      nextTrackingId = null;
     }
 
     const tx = await db.transaction('write');
@@ -305,49 +315,34 @@ async function updateOne(req, res, next) {
 
 async function bulkUpdate(req, res, next) {
   try {
-    const { po_ids, status, dispatch_date, courier_id } = req.body;
+    const { po_ids } = req.body;
     if (!Array.isArray(po_ids) || po_ids.length === 0) {
       return res.status(400).json({ message: 'po_ids is required (non-empty array)' });
     }
 
     const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
-    const hasStatus   = has('status');
-    const hasDispatch = has('dispatch_date');
-    const hasCourier  = has('courier_id');
-    if (!hasStatus && !hasDispatch && !hasCourier) {
-      return res.status(400).json({ message: 'Provide at least one of status, dispatch_date, courier_id' });
+    const hasOffice    = has('office_poc');
+    const hasWarehouse = has('warehouse_poc');
+    if (!hasOffice && !hasWarehouse) {
+      return res.status(400).json({ message: 'Provide at least one of office_poc, warehouse_poc' });
     }
 
-    if (hasStatus && !VALID_STATUSES.includes(status)) {
-      return res.status(400).json({ message: 'Invalid status' });
-    }
-    if (hasDispatch && dispatch_date && !/^\d{4}-\d{2}-\d{2}$/.test(dispatch_date)) {
-      return res.status(400).json({ message: 'Invalid dispatch_date format (expected YYYY-MM-DD)' });
-    }
-    if (dispatch_date && dispatch_date > new Date().toISOString().slice(0, 10)) {
-      return res.status(400).json({ message: 'Dispatch date cannot be in the future' });
-    }
-    if (hasStatus && status === 'Closed') {
-      if (!dispatch_date || !/^\d{4}-\d{2}-\d{2}$/.test(dispatch_date)) {
-        return res.status(400).json({ message: 'Dispatch date is required to close orders (YYYY-MM-DD)' });
+    let officePocValue = null;
+    if (hasOffice) {
+      const v = req.body.office_poc;
+      if (v != null) {
+        const ok = await userHasRole(v, 'Office_POC');
+        if (!ok) return res.status(400).json({ message: 'Selected user is not an Office_POC' });
+        officePocValue = Number(v);
       }
     }
-
-    let courierIdValue = null;
-    if (hasCourier) {
-      if (courier_id == null || courier_id === '') {
-        courierIdValue = null;
-      } else {
-        const n = Number(courier_id);
-        if (!Number.isInteger(n)) {
-          return res.status(400).json({ message: 'Invalid courier_id' });
-        }
-        const { rows: cr } = await db.execute({
-          sql: 'SELECT id FROM couriers WHERE id = ?',
-          args: [n],
-        });
-        if (!cr.length) return res.status(400).json({ message: 'Courier not found' });
-        courierIdValue = n;
+    let warehousePocValue = null;
+    if (hasWarehouse) {
+      const v = req.body.warehouse_poc;
+      if (v != null) {
+        const ok = await userHasRole(v, 'Warehouse_POC');
+        if (!ok) return res.status(400).json({ message: 'Selected user is not a Warehouse_POC' });
+        warehousePocValue = Number(v);
       }
     }
 
@@ -364,23 +359,13 @@ async function bulkUpdate(req, res, next) {
 
     const sets = [];
     const setArgs = [];
-    if (hasStatus) {
-      sets.push('status = ?');
-      setArgs.push(status);
-      // When closing, also stamp the dispatch_date. When re-opening, clear it.
-      if (status === 'Closed') {
-        sets.push('dispatch_date = ?');
-        setArgs.push(dispatch_date);
-      } else if (status === 'Open') {
-        sets.push('dispatch_date = NULL');
-      }
-    } else if (hasDispatch) {
-      sets.push('dispatch_date = ?');
-      setArgs.push(dispatch_date || null);
+    if (hasOffice) {
+      sets.push('office_poc = ?');
+      setArgs.push(officePocValue);
     }
-    if (hasCourier) {
-      sets.push('courier_id = ?');
-      setArgs.push(courierIdValue);
+    if (hasWarehouse) {
+      sets.push('warehouse_poc = ?');
+      setArgs.push(warehousePocValue);
     }
     sets.push('updated_by = ?', "updated_at = datetime('now')");
     setArgs.push(req.user.id);
@@ -393,14 +378,13 @@ async function bulkUpdate(req, res, next) {
       });
       const summary = po_ids.length <= 10 ? po_ids.join(',') : `${po_ids.length} orders`;
       const parts = [];
-      if (hasStatus) parts.push(`status=${status}`);
-      if (hasDispatch && !hasStatus) parts.push(`dispatch_date=${dispatch_date || '—'}`);
-      if (hasCourier) parts.push(`courier_id=${courierIdValue || '—'}`);
+      if (hasOffice) parts.push(`office_poc=${officePocValue ?? '—'}`);
+      if (hasWarehouse) parts.push(`warehouse_poc=${warehousePocValue ?? '—'}`);
       await logAction({
         client: tx,
         userId: req.user.id,
         actionType: 'ORDER_SUMMARY_BULK_UPDATE',
-        description: `Bulk-updated ${po_ids.length} orders (${parts.join(', ')}): ${summary}`,
+        description: `Bulk-reassigned ${po_ids.length} orders (${parts.join(', ')}): ${summary}`,
         entityType: 'marketplace_po',
       });
       await tx.commit();
