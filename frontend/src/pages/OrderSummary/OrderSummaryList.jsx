@@ -70,9 +70,8 @@ export default function OrderSummaryList() {
   const [savingId, setSavingId] = useState(null);
 
   const [selected, setSelected] = useState(new Set());
-  const [bulkStatus, setBulkStatus] = useState('Closed');
-  const [bulkDispatchDate, setBulkDispatchDate] = useState('');
-  const [bulkCourierId, setBulkCourierId] = useState('');
+  const [bulkOfficePoc, setBulkOfficePoc] = useState('');
+  const [bulkWarehousePoc, setBulkWarehousePoc] = useState('');
   const [bulkApplying, setBulkApplying] = useState(false);
 
   const [exporting, setExporting] = useState(false);
@@ -172,10 +171,16 @@ export default function OrderSummaryList() {
   const saveRow = async (po, { confirmDuplicate = false } = {}) => {
     const e = edits[po.po_id];
     if (!e) return;
-    const nextStatus = 'status' in e ? e.status : po.status;
+    const nextStatus   = 'status' in e ? e.status : po.status;
     const nextDispatch = 'dispatch_date' in e ? e.dispatch_date : po.dispatch_date;
-    if (nextStatus === 'Closed' && !nextDispatch) {
-      return toast.error('Dispatch date is required to close an order');
+    const nextCourier  = 'courier_id'    in e ? e.courier_id    : po.courier_id;
+    const nextTracking = 'tracking_id'   in e ? e.tracking_id   : po.tracking_id;
+    if (nextStatus === 'Closed') {
+      const missing = [];
+      if (!nextDispatch) missing.push('dispatch date');
+      if (nextCourier == null || nextCourier === '') missing.push('courier');
+      if (!String(nextTracking ?? '').trim()) missing.push('tracking ID');
+      if (missing.length) return toast.error(`Cannot close — missing: ${missing.join(', ')}`);
     }
     setSavingId(po.po_id);
     try {
@@ -225,24 +230,23 @@ export default function OrderSummaryList() {
   });
   const bulkApplyDisabled = selected.size === 0
     || bulkApplying
-    || (bulkStatus === 'Closed' && !bulkDispatchDate);
+    || (bulkOfficePoc === '' && bulkWarehousePoc === '');
   const applyBulk = async () => {
     if (bulkApplyDisabled) return;
     setBulkApplying(true);
     try {
-      const payload = {
-        po_ids: Array.from(selected),
-        status: bulkStatus,
-        dispatch_date: bulkStatus === 'Closed' ? bulkDispatchDate : null,
-      };
-      if (bulkCourierId !== '') {
-        payload.courier_id = bulkCourierId === 'clear' ? null : Number(bulkCourierId);
+      const payload = { po_ids: Array.from(selected) };
+      if (bulkOfficePoc !== '') {
+        payload.office_poc = bulkOfficePoc === 'clear' ? null : Number(bulkOfficePoc);
+      }
+      if (bulkWarehousePoc !== '') {
+        payload.warehouse_poc = bulkWarehousePoc === 'clear' ? null : Number(bulkWarehousePoc);
       }
       await bulkUpdateOrderSummary(payload);
       toast.success(`Updated ${selected.size} order${selected.size !== 1 ? 's' : ''}`);
       setSelected(new Set());
-      setBulkDispatchDate('');
-      setBulkCourierId('');
+      setBulkOfficePoc('');
+      setBulkWarehousePoc('');
       load();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Bulk update failed');
@@ -380,6 +384,14 @@ export default function OrderSummaryList() {
             </select>
           </div>
           <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch From</label>
+            <input type="date" value={filters.dispatch_date_from} onChange={e => setFilter('dispatch_date_from', e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch To</label>
+            <input type="date" value={filters.dispatch_date_to} onChange={e => setFilter('dispatch_date_to', e.target.value)} className={inputCls} />
+          </div>
+          <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Courier</label>
             <select value={filters.courier_id} onChange={e => setFilter('courier_id', e.target.value)} className={inputCls}>
               <option value="">All couriers</option>
@@ -395,14 +407,6 @@ export default function OrderSummaryList() {
               <option value="no">No</option>
             </select>
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch From</label>
-            <input type="date" value={filters.dispatch_date_from} onChange={e => setFilter('dispatch_date_from', e.target.value)} className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch To</label>
-            <input type="date" value={filters.dispatch_date_to} onChange={e => setFilter('dispatch_date_to', e.target.value)} className={inputCls} />
-          </div>
         </div>
         <div className="flex justify-end gap-2 mt-3">
           <Button variant="ghost" onClick={clearFilters}>Clear</Button>
@@ -415,39 +419,31 @@ export default function OrderSummaryList() {
         <div className="bg-[#003049] text-white rounded-xl px-4 py-3 mb-3 flex items-center gap-3 flex-wrap sticky top-2 z-20 shadow">
           <span className="font-medium whitespace-nowrap">{selected.size} selected</span>
           <span className="text-white/40">·</span>
-          <label className="text-sm whitespace-nowrap">Set status</label>
+          <label className="text-sm whitespace-nowrap">Office POC</label>
           <select
-            value={bulkStatus}
-            onChange={e => setBulkStatus(e.target.value)}
-            className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[7rem]"
-          >
-            <option value="Open">Open</option>
-            <option value="Closed">Closed</option>
-          </select>
-          <label className="text-sm whitespace-nowrap">Dispatch</label>
-          <input
-            type="date"
-            value={bulkDispatchDate}
-            max={todayISO()}
-            onChange={e => setBulkDispatchDate(e.target.value)}
-            disabled={bulkStatus !== 'Closed'}
-            className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[9rem] disabled:opacity-40 disabled:cursor-not-allowed"
-          />
-          <label className="text-sm whitespace-nowrap">Courier</label>
-          <select
-            value={bulkCourierId}
-            onChange={e => setBulkCourierId(e.target.value)}
-            className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[9rem]"
+            value={bulkOfficePoc}
+            onChange={e => setBulkOfficePoc(e.target.value)}
+            className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[10rem]"
           >
             <option value="">— no change —</option>
-            <option value="clear">— Clear —</option>
-            {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            <option value="clear">— Unassign —</option>
+            {officePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+          <label className="text-sm whitespace-nowrap">Warehouse POC</label>
+          <select
+            value={bulkWarehousePoc}
+            onChange={e => setBulkWarehousePoc(e.target.value)}
+            className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[10rem]"
+          >
+            <option value="">— no change —</option>
+            <option value="clear">— Unassign —</option>
+            {warehousePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
           <Button
             onClick={applyBulk}
             disabled={bulkApplyDisabled}
             loading={bulkApplying}
-            title={bulkStatus === 'Closed' && !bulkDispatchDate ? 'Dispatch date is required to close orders' : undefined}
+            title={bulkOfficePoc === '' && bulkWarehousePoc === '' ? 'Pick an Office POC or Warehouse POC value to apply' : undefined}
           >
             Apply
           </Button>
