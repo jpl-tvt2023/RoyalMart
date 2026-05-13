@@ -10,7 +10,7 @@ import { useRBAC } from '../../hooks/useRBAC';
 
 export default function TeamManagement() {
   const { canAccess } = useRBAC();
-  const isAdmin = canAccess('Admin');
+  const isAdmin = canAccess('Admin', 'Owner');
   const [teams, setTeams] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState({});

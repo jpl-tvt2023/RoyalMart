@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
+const { userQualifiesAs } = require('../services/userRoles.service');
 const { parse, hasParser } = require('../parsers/marketplacePO');
 
 const VALID_STATUSES = ['Open', 'Closed'];
@@ -294,12 +295,8 @@ async function update(req, res, next) {
         args: [onbId],
       });
       if (!u.length) return res.status(400).json({ message: 'Onboarder user not found' });
-      const { rows: rr } = await db.execute({
-        sql: 'SELECT role FROM user_roles WHERE user_id = ?',
-        args: [onbId],
-      });
-      if (!rr.some(r => r.role === 'PO_Executive')) {
-        return res.status(400).json({ message: 'Onboarder must be a PO_Executive' });
+      if (!(await userQualifiesAs(onbId, 'PO_Executive'))) {
+        return res.status(400).json({ message: 'Onboarder must be a PO_Executive (or Admin/Owner)' });
       }
       newOnboardedBy = onbId;
     }

@@ -8,6 +8,7 @@ import SummaryEditor from './SummaryEditor';
 import { getPO, updatePO } from '../../api/marketplacePO.api';
 import { getUsers } from '../../api/users.api';
 import { useAuth } from '../../context/AuthContext';
+import { qualifiesAs } from '../../hooks/useRBAC';
 
 export default function PurchaseOrderDetail() {
   const { poId } = useParams();
@@ -39,7 +40,7 @@ export default function PurchaseOrderDetail() {
   useEffect(() => {
     if (!canReassign) return;
     getUsers()
-      .then(r => setPoExecutives(r.data.filter(u => (u.roles || []).includes('PO_Executive'))))
+      .then(r => setPoExecutives(r.data.filter(u => qualifiesAs(u, 'PO_Executive'))))
       .catch(() => {});
   }, [canReassign]);
 
