@@ -556,4 +556,91 @@ async function bulkUpdate(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, updateOne, bulkUpdate };
+async function countsByVendor(req, res, next) {
+  try {
+    const {
+      po_id, vendor_po_id, city,
+      po_date_from, po_date_to,
+      dispatch_date_from, dispatch_date_to,
+      status, office_poc, warehouse_poc,
+      courier_id, has_tracking, tracking_id,
+      bill_no,
+      grn_status,
+      appointment_date_from, appointment_date_to,
+    } = req.query;
+
+    const conditions = [];
+    const args = [];
+    if (po_id) { conditions.push('p.po_id LIKE ?'); args.push(`%${po_id}%`); }
+    if (vendor_po_id) { conditions.push('p.vendor_po_id LIKE ?'); args.push(`%${vendor_po_id}%`); }
+    if (city) { conditions.push('p.city = ?'); args.push(city); }
+    if (po_date_from) { conditions.push('p.po_date >= ?'); args.push(po_date_from); }
+    if (po_date_to)   { conditions.push('p.po_date <= ?'); args.push(po_date_to); }
+    if (dispatch_date_from) { conditions.push('p.dispatch_date >= ?'); args.push(dispatch_date_from); }
+    if (dispatch_date_to)   { conditions.push('p.dispatch_date <= ?'); args.push(dispatch_date_to); }
+    if (status && VALID_STATUSES.includes(status)) { conditions.push('p.status = ?'); args.push(status); }
+    if (office_poc === 'unassigned') {
+      conditions.push('p.office_poc IS NULL');
+    } else if (office_poc) {
+      conditions.push('p.office_poc = ?'); args.push(Number(office_poc));
+    }
+    if (warehouse_poc === 'unassigned') {
+      conditions.push('p.warehouse_poc IS NULL');
+    } else if (warehouse_poc) {
+      conditions.push('p.warehouse_poc = ?'); args.push(Number(warehouse_poc));
+    }
+    if (courier_id === 'unassigned') {
+      conditions.push('p.courier_id IS NULL');
+    } else if (courier_id) {
+      conditions.push('p.courier_id = ?'); args.push(Number(courier_id));
+    }
+    if (has_tracking === 'yes') {
+      conditions.push("p.tracking_id IS NOT NULL AND p.tracking_id != ''");
+    } else if (has_tracking === 'no') {
+      conditions.push("(p.tracking_id IS NULL OR p.tracking_id = '')");
+    }
+    if (tracking_id) { conditions.push('p.tracking_id LIKE ?'); args.push(`%${tracking_id}%`); }
+    if (bill_no) { conditions.push('p.bill_no LIKE ?'); args.push(`%${bill_no}%`); }
+    if (grn_status && grn_status !== 'All' && GRN_STATUS_FILTER_VALUES.includes(grn_status)) {
+      conditions.push(`${COMPUTED_GRN_STATUS_SQL} = ?`);
+      args.push(grn_status);
+    }
+    if (appointment_date_from) { conditions.push('p.appointment_date >= ?'); args.push(appointment_date_from); }
+    if (appointment_date_to)   { conditions.push('p.appointment_date <= ?'); args.push(appointment_date_to); }
+    const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const { rows } = await db.execute({
+      sql: `SELECT p.vendor, COUNT(*) AS count
+            FROM marketplace_pos p
+            ${where}
+            GROUP BY p.vendor`,
+      args,
+    });
+    const counts = {};
+    for (const r of rows) counts[r.vendor] = Number(r.count) || 0;
+    res.json({ counts });
+  } catch (err) { next(err); }
+}
+
+async function grnAppointments(req, res, next) {
+  try {
+    const { date } = req.query;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ message: 'date is required (YYYY-MM-DD)' });
+    }
+    const { rows } = await db.execute({
+      sql: `SELECT vendor,
+                   COUNT(*) AS total,
+                   COALESCE(SUM(CASE WHEN ${COMPUTED_GRN_STATUS_SQL} = 'Delivered - GRN Received' THEN 1 ELSE 0 END), 0) AS fulfilled
+            FROM marketplace_pos p
+            WHERE appointment_date = ?
+              AND vendor IN ('Blinkit', 'Scootsy', 'Zepto')
+            GROUP BY vendor
+            ORDER BY vendor`,
+      args: [date],
+    });
+    res.json({ date, rows });
+  } catch (err) { next(err); }
+}
+
+module.exports = { list, updateOne, bulkUpdate, countsByVendor, grnAppointments };
