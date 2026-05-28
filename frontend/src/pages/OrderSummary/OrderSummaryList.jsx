@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -27,6 +28,15 @@ const defaultFilters = () => ({
   courier_id: '', has_tracking: '', tracking_id: '',
 });
 
+const seededFiltersFromURL = (params) => {
+  const base = defaultFilters();
+  if (!params) return base;
+  for (const [k, v] of params.entries()) {
+    if (k in base && v) base[k] = v;
+  }
+  return base;
+};
+
 const COLUMNS_MASTER = [
   { key: 'po_date',            label: 'Order Date' },
   { key: 'po_id',              label: 'PO ID' },
@@ -49,9 +59,10 @@ export default function OrderSummaryList() {
   const { canAccess } = useRBAC();
   const canEdit = canAccess('Admin', 'Owner', 'Office_POC', 'PO_Executive');
 
+  const [searchParams] = useSearchParams();
   const [vendorTabs, setVendorTabs] = useState([{ key: '', label: 'Master' }]);
-  const [vendorTab, setVendorTab] = useState('');
-  const [filters, setFilters] = useState(defaultFilters);
+  const [vendorTab, setVendorTab] = useState(() => searchParams.get('vendor') || '');
+  const [filters, setFilters] = useState(() => seededFiltersFromURL(searchParams));
   const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('orderSummary', 25));
@@ -103,6 +114,13 @@ export default function OrderSummaryList() {
   }, [buildParams]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (searchParams.toString() === '') return;
+    setFilters(seededFiltersFromURL(searchParams));
+    setVendorTab(searchParams.get('vendor') || '');
+    setPage(1);
+  }, [searchParams]);
 
   useEffect(() => {
     getUsers()

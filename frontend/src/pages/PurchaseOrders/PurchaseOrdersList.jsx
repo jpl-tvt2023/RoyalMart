@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Pencil, Trash2, FileText, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
@@ -20,6 +20,15 @@ const defaultFilters = () => ({
   po_expiry_date_from: '', po_expiry_date_to: '',
   status: 'Open',
 });
+
+const seededFiltersFromURL = (params) => {
+  const base = defaultFilters();
+  if (!params) return base;
+  for (const [k, v] of params.entries()) {
+    if (k in base && v) base[k] = v;
+  }
+  return base;
+};
 
 const COLUMNS = [
   { key: 'po_id', label: 'PO ID' },
@@ -53,10 +62,11 @@ const TONE_ROW = {
 
 export default function PurchaseOrdersList() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState(defaultFilters);
+  const [filters, setFilters] = useState(() => seededFiltersFromURL(searchParams));
   const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('purchaseOrders', 25));
@@ -73,6 +83,12 @@ export default function PurchaseOrdersList() {
       .then(rows => setCities(rows.filter(c => c.is_active).map(c => c.name)))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (searchParams.toString() === '') return;
+    setFilters(seededFiltersFromURL(searchParams));
+    setPage(1);
+  }, [searchParams]);
 
   const buildParams = useCallback((overrides) => {
     const f = overrides?.filters ?? filters;
