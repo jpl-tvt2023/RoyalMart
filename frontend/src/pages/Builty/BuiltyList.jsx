@@ -6,7 +6,7 @@ import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import Modal from '../../components/ui/Modal';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
-import { listOrderSummary, updateOrderSummary } from '../../api/orderSummary.api';
+import { listOrderSummary, updateOrderSummary, getOrderSummaryCountsByVendor } from '../../api/orderSummary.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { formatDateTime } from '../../utils/formatters';
@@ -58,7 +58,7 @@ export default function BuiltyList() {
 
   const [vendorTab, setVendorTab] = useState('Blinkit');
   const [filters, setFilters] = useState(defaultFilters);
-  const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
+  const [sort, setSort] = useState({ key: 'po_id', dir: 'desc' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('builty', 25));
 
@@ -68,6 +68,7 @@ export default function BuiltyList() {
 
   const [cities, setCities] = useState([]);
   const [couriers, setCouriers] = useState([]);
+  const [vendorCounts, setVendorCounts] = useState({ Blinkit: 0, Scootsy: 0, Zepto: 0 });
   const activeCouriers = couriers.filter(c => c.is_active);
   const [edits, setEdits] = useState({});
   const [savingId, setSavingId] = useState(null);
@@ -96,7 +97,24 @@ export default function BuiltyList() {
       .finally(() => setLoading(false));
   }, [buildParams]);
 
+  const loadCounts = useCallback((overrideFilters) => {
+    const f = overrideFilters ?? filters;
+    const params = {};
+    Object.entries(f).forEach(([k, val]) => {
+      if (k === 'status' && val === 'All') return;
+      if (val) params[k] = val;
+    });
+    getOrderSummaryCountsByVendor(params)
+      .then(res => setVendorCounts({
+        Blinkit: res.counts?.Blinkit || 0,
+        Scootsy: res.counts?.Scootsy || 0,
+        Zepto:   res.counts?.Zepto   || 0,
+      }))
+      .catch(() => {});
+  }, [filters]);
+
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadCounts(); }, [loadCounts]);
 
   useEffect(() => {
     listCities()
@@ -208,10 +226,7 @@ export default function BuiltyList() {
   return (
     <AppShell>
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-[#003049]">Builty</h1>
-          <p className="text-gray-500 text-sm">{total} order{total !== 1 ? 's' : ''} · {vendorTab}</p>
-        </div>
+        <h1 className="text-2xl font-bold text-[#003049]">Builty</h1>
         <Button variant="outline" onClick={downloadXLSX} loading={exporting}>
           <Download size={16} />Download XLSX
         </Button>
@@ -225,7 +240,7 @@ export default function BuiltyList() {
             onClick={() => switchTab(t.key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${vendorTab === t.key ? 'border-[#c1121f] text-[#c1121f]' : 'border-transparent text-gray-500 hover:text-[#003049]'}`}
           >
-            {t.label}
+            {t.label} <span className="ml-1 text-gray-400">({vendorCounts[t.key] ?? 0})</span>
           </button>
         ))}
       </div>

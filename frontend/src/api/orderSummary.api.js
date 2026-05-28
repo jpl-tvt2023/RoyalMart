@@ -14,3 +14,8 @@ export async function bulkUpdateOrderSummary(payload) {
   const { data } = await api.patch('/order-summary/bulk', payload);
   return data;
 }
+
+export async function getOrderSummaryCountsByVendor(params = {}) {
+  const { data } = await api.get('/order-summary/counts-by-vendor', { params });
+  return data;
+}
