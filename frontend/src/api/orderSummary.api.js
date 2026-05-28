@@ -19,3 +19,8 @@ export async function getOrderSummaryCountsByVendor(params = {}) {
   const { data } = await api.get('/order-summary/counts-by-vendor', { params });
   return data;
 }
+
+export async function getGrnAppointmentsByDate(date) {
+  const { data } = await api.get('/order-summary/grn-appointments', { params: { date } });
+  return data;
+}

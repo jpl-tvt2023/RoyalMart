@@ -8,6 +8,7 @@ const canWrite = allowRoles('Admin', 'Owner', 'Office_POC', 'Warehouse_POC', 'Pu
 
 router.get('/',                   auth, canView,  c.list);
 router.get('/counts-by-vendor',   auth, canView,  c.countsByVendor);
+router.get('/grn-appointments',   auth, canView,  c.grnAppointments);
 router.patch('/bulk',             auth, canWrite, c.bulkUpdate);
 router.patch('/:poId',            auth, canWrite, c.updateOne);
 

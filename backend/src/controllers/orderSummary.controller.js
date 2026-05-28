@@ -622,4 +622,25 @@ async function countsByVendor(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, updateOne, bulkUpdate, countsByVendor };
+async function grnAppointments(req, res, next) {
+  try {
+    const { date } = req.query;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ message: 'date is required (YYYY-MM-DD)' });
+    }
+    const { rows } = await db.execute({
+      sql: `SELECT vendor,
+                   COUNT(*) AS total,
+                   COALESCE(SUM(CASE WHEN ${COMPUTED_GRN_STATUS_SQL} = 'Delivered - GRN Received' THEN 1 ELSE 0 END), 0) AS fulfilled
+            FROM marketplace_pos p
+            WHERE appointment_date = ?
+              AND vendor IN ('Blinkit', 'Scootsy', 'Zepto')
+            GROUP BY vendor
+            ORDER BY vendor`,
+      args: [date],
+    });
+    res.json({ date, rows });
+  } catch (err) { next(err); }
+}
+
+module.exports = { list, updateOne, bulkUpdate, countsByVendor, grnAppointments };
