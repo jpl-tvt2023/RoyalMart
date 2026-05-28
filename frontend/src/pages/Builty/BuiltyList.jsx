@@ -8,6 +8,7 @@ import Modal from '../../components/ui/Modal';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { listOrderSummary, updateOrderSummary } from '../../api/orderSummary.api';
 import { listCities } from '../../api/cities.api';
+import { listCouriers } from '../../api/couriers.api';
 import { formatDateTime } from '../../utils/formatters';
 import { useRBAC } from '../../hooks/useRBAC';
 
@@ -17,11 +18,23 @@ const VENDOR_TABS = [
   { key: 'Zepto',   label: 'Zepto' },
 ];
 
+const isoLocal = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+const defaultPoDateFrom = () => {
+  const t = new Date();
+  return isoLocal(new Date(t.getFullYear(), t.getMonth() - 2, 1));
+};
+const defaultPoDateTo = () => isoLocal(new Date());
+
 const defaultFilters = () => ({
-  po_id: '', city: '',
-  po_date_from: '', po_date_to: '',
-  dispatch_date_from: '', dispatch_date_to: '',
-  status: 'All', tracking_id: '', bill_no: '',
+  po_date_from: defaultPoDateFrom(),
+  po_date_to:   defaultPoDateTo(),
+  city:         '',
+  courier_id:   '',
 });
 
 const COLUMNS = [
@@ -54,6 +67,8 @@ export default function BuiltyList() {
   const [loading, setLoading] = useState(true);
 
   const [cities, setCities] = useState([]);
+  const [couriers, setCouriers] = useState([]);
+  const activeCouriers = couriers.filter(c => c.is_active);
   const [edits, setEdits] = useState({});
   const [savingId, setSavingId] = useState(null);
   const [exporting, setExporting] = useState(false);
@@ -87,12 +102,14 @@ export default function BuiltyList() {
     listCities()
       .then(rows => setCities(rows.filter(c => c.is_active).map(c => c.name)))
       .catch(() => {});
+    listCouriers()
+      .then(setCouriers)
+      .catch(() => {});
   }, []);
 
   useEffect(() => { setEdits({}); }, [items]);
 
   const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
-  const onSearchKey = (e) => { if (e.key === 'Enter') applySearch(); };
   const applySearch = () => { setPage(1); load({ page: 1 }); };
   const clearFilters = () => { const f = defaultFilters(); setFilters(f); setPage(1); load({ filters: f, page: 1 }); };
 
@@ -214,26 +231,14 @@ export default function BuiltyList() {
       </div>
 
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
-            <select value={filters.status} onChange={e => setFilter('status', e.target.value)} className={inputCls}>
-              <option value="All">All</option>
-              <option value="Open">Open</option>
-              <option value="Closed">Closed</option>
-            </select>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Order Date From</label>
+            <input type="date" value={filters.po_date_from} onChange={e => setFilter('po_date_from', e.target.value)} className={inputCls} />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">PO ID</label>
-            <input value={filters.po_id} onChange={e => setFilter('po_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search PO ID..." className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Tracking ID</label>
-            <input value={filters.tracking_id} onChange={e => setFilter('tracking_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search tracking..." className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Bill no</label>
-            <input value={filters.bill_no} onChange={e => setFilter('bill_no', e.target.value)} onKeyDown={onSearchKey} placeholder="Search bill no..." className={inputCls} />
+            <label className="block text-xs font-medium text-gray-600 mb-1">Order Date To</label>
+            <input type="date" value={filters.po_date_to} onChange={e => setFilter('po_date_to', e.target.value)} className={inputCls} />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">City</label>
@@ -243,20 +248,12 @@ export default function BuiltyList() {
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">PO Date From</label>
-            <input type="date" value={filters.po_date_from} onChange={e => setFilter('po_date_from', e.target.value)} className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">PO Date To</label>
-            <input type="date" value={filters.po_date_to} onChange={e => setFilter('po_date_to', e.target.value)} className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch From</label>
-            <input type="date" value={filters.dispatch_date_from} onChange={e => setFilter('dispatch_date_from', e.target.value)} className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch To</label>
-            <input type="date" value={filters.dispatch_date_to} onChange={e => setFilter('dispatch_date_to', e.target.value)} className={inputCls} />
+            <label className="block text-xs font-medium text-gray-600 mb-1">Courier</label>
+            <select value={filters.courier_id} onChange={e => setFilter('courier_id', e.target.value)} className={inputCls}>
+              <option value="">All couriers</option>
+              <option value="unassigned">Unassigned</option>
+              {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
           </div>
         </div>
         <div className="flex justify-end gap-2 mt-3">
