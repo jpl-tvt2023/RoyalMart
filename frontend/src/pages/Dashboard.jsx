@@ -59,8 +59,12 @@ function StatCard({ to, label, value, icon: Icon, color, sub }) {
   );
 }
 
+const GRN_VENDORS = ['Blinkit', 'Scootsy', 'Zepto'];
+
 function GrnAppointmentTable({ title, date, rows, navigate }) {
-  const totals = rows.reduce(
+  const byVendor = Object.fromEntries((rows || []).map(r => [r.vendor, r]));
+  const fullRows = GRN_VENDORS.map(v => byVendor[v] || { vendor: v, total: 0, fulfilled: 0 });
+  const totals = fullRows.reduce(
     (acc, r) => ({ total: acc.total + Number(r.total || 0), fulfilled: acc.fulfilled + Number(r.fulfilled || 0) }),
     { total: 0, fulfilled: 0 }
   );
@@ -88,9 +92,7 @@ function GrnAppointmentTable({ title, date, rows, navigate }) {
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 ? (
-            <tr><td colSpan={4} className="px-3 py-4 text-center text-gray-400">No appointments</td></tr>
-          ) : rows.map(r => {
+          {fullRows.map(r => {
             const total = Number(r.total || 0);
             const fulfilled = Number(r.fulfilled || 0);
             const pending = total - fulfilled;
@@ -108,16 +110,14 @@ function GrnAppointmentTable({ title, date, rows, navigate }) {
             );
           })}
         </tbody>
-        {rows.length > 0 && (
-          <tfoot className="bg-gray-50">
-            <tr className="border-t border-gray-200">
-              <td className="px-3 py-2 font-semibold text-[#003049]">Total</td>
-              <td className="px-3 py-2 font-bold">{totals.total}</td>
-              <td className="px-3 py-2 font-bold text-green-700">{totals.fulfilled}</td>
-              <td className="px-3 py-2 font-bold text-amber-700">{totals.total - totals.fulfilled}</td>
-            </tr>
-          </tfoot>
-        )}
+        <tfoot className="bg-gray-50">
+          <tr className="border-t border-gray-200">
+            <td className="px-3 py-2 font-semibold text-[#003049]">Total</td>
+            <td className="px-3 py-2 font-bold">{totals.total}</td>
+            <td className="px-3 py-2 font-bold text-green-700">{totals.fulfilled}</td>
+            <td className="px-3 py-2 font-bold text-amber-700">{totals.total - totals.fulfilled}</td>
+          </tr>
+        </tfoot>
       </table>
     </div>
   );
