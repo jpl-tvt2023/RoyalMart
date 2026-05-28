@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X } from 'lucide-react';
+import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X, ChevronDown, ChevronUp } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
@@ -63,6 +63,7 @@ export default function OrderSummaryList() {
   const [vendorTabs, setVendorTabs] = useState([{ key: '', label: 'Master' }]);
   const [vendorTab, setVendorTab] = useState(() => searchParams.get('vendor') || '');
   const [filters, setFilters] = useState(() => seededFiltersFromURL(searchParams));
+  const [showMore, setShowMore] = useState(false);
   const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('orderSummary', 25));
@@ -117,10 +118,20 @@ export default function OrderSummaryList() {
 
   useEffect(() => {
     if (searchParams.toString() === '') return;
-    setFilters(seededFiltersFromURL(searchParams));
+    const seeded = seededFiltersFromURL(searchParams);
+    setFilters(seeded);
     setVendorTab(searchParams.get('vendor') || '');
     setPage(1);
+    const DEFAULTS = defaultFilters();
+    const hasNonStatusFilter = Object.entries(seeded).some(([k, v]) => k !== 'status' && v !== DEFAULTS[k]);
+    if (hasNonStatusFilter) setShowMore(true);
   }, [searchParams]);
+
+  const DEFAULTS = defaultFilters();
+  const hiddenActiveCount = Object.entries(filters).reduce((n, [k, v]) => {
+    if (k === 'status') return n;
+    return v !== DEFAULTS[k] ? n + 1 : n;
+  }, 0);
 
   useEffect(() => {
     getUsers()
@@ -353,8 +364,8 @@ export default function OrderSummaryList() {
 
       {/* Filter bar */}
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          <div>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="w-full sm:w-56">
             <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
             <select value={filters.status} onChange={e => setFilter('status', e.target.value)} className={inputCls}>
               <option value="Open">Open</option>
@@ -362,70 +373,87 @@ export default function OrderSummaryList() {
               <option value="All">All</option>
             </select>
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">PO ID</label>
-            <input value={filters.po_id} onChange={e => setFilter('po_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search PO ID..." className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Tracking ID</label>
-            <input value={filters.tracking_id} onChange={e => setFilter('tracking_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search tracking ID..." className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">City</label>
-            <select value={filters.city} onChange={e => setFilter('city', e.target.value)} className={inputCls}>
-              <option value="">All cities</option>
-              {cities.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">PO Date From</label>
-            <input type="date" value={filters.po_date_from} onChange={e => setFilter('po_date_from', e.target.value)} className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">PO Date To</label>
-            <input type="date" value={filters.po_date_to} onChange={e => setFilter('po_date_to', e.target.value)} className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Office POC</label>
-            <select value={filters.office_poc} onChange={e => setFilter('office_poc', e.target.value)} className={inputCls}>
-              <option value="">All</option>
-              <option value="unassigned">Unassigned</option>
-              {officePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Warehouse POC</label>
-            <select value={filters.warehouse_poc} onChange={e => setFilter('warehouse_poc', e.target.value)} className={inputCls}>
-              <option value="">All</option>
-              <option value="unassigned">Unassigned</option>
-              {warehousePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch From</label>
-            <input type="date" value={filters.dispatch_date_from} onChange={e => setFilter('dispatch_date_from', e.target.value)} className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch To</label>
-            <input type="date" value={filters.dispatch_date_to} onChange={e => setFilter('dispatch_date_to', e.target.value)} className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Courier</label>
-            <select value={filters.courier_id} onChange={e => setFilter('courier_id', e.target.value)} className={inputCls}>
-              <option value="">All couriers</option>
-              <option value="unassigned">Unassigned</option>
-              {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Has Tracking ID</label>
-            <select value={filters.has_tracking} onChange={e => setFilter('has_tracking', e.target.value)} className={inputCls}>
-              <option value="">Any</option>
-              <option value="yes">Yes</option>
-              <option value="no">No</option>
-            </select>
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowMore(s => !s)}
+            className="ml-auto inline-flex items-center gap-1 text-sm font-medium text-[#003049] hover:text-[#c1121f] transition-colors"
+          >
+            {showMore ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            {showMore ? 'Less filters' : 'More filters'}
+            {!showMore && hiddenActiveCount > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-full text-xs bg-[#c1121f] text-white">{hiddenActiveCount}</span>
+            )}
+          </button>
         </div>
+
+        {showMore && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 mt-3 pt-3 border-t border-gray-100">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">PO ID</label>
+              <input value={filters.po_id} onChange={e => setFilter('po_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search PO ID..." className={inputCls} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Tracking ID</label>
+              <input value={filters.tracking_id} onChange={e => setFilter('tracking_id', e.target.value)} onKeyDown={onSearchKey} placeholder="Search tracking ID..." className={inputCls} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">City</label>
+              <select value={filters.city} onChange={e => setFilter('city', e.target.value)} className={inputCls}>
+                <option value="">All cities</option>
+                {cities.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">PO Date From</label>
+              <input type="date" value={filters.po_date_from} onChange={e => setFilter('po_date_from', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">PO Date To</label>
+              <input type="date" value={filters.po_date_to} onChange={e => setFilter('po_date_to', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Office POC</label>
+              <select value={filters.office_poc} onChange={e => setFilter('office_poc', e.target.value)} className={inputCls}>
+                <option value="">All</option>
+                <option value="unassigned">Unassigned</option>
+                {officePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Warehouse POC</label>
+              <select value={filters.warehouse_poc} onChange={e => setFilter('warehouse_poc', e.target.value)} className={inputCls}>
+                <option value="">All</option>
+                <option value="unassigned">Unassigned</option>
+                {warehousePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch From</label>
+              <input type="date" value={filters.dispatch_date_from} onChange={e => setFilter('dispatch_date_from', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Dispatch To</label>
+              <input type="date" value={filters.dispatch_date_to} onChange={e => setFilter('dispatch_date_to', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Courier</label>
+              <select value={filters.courier_id} onChange={e => setFilter('courier_id', e.target.value)} className={inputCls}>
+                <option value="">All couriers</option>
+                <option value="unassigned">Unassigned</option>
+                {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Has Tracking ID</label>
+              <select value={filters.has_tracking} onChange={e => setFilter('has_tracking', e.target.value)} className={inputCls}>
+                <option value="">Any</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </div>
+          </div>
+        )}
+
         <div className="flex justify-end gap-2 mt-3">
           <Button variant="ghost" onClick={clearFilters}>Clear</Button>
           <Button variant="outline" onClick={applySearch}>Search</Button>
