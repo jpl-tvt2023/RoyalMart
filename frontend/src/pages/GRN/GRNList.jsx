@@ -25,7 +25,15 @@ const GRN_STATUS_OPTIONS = [
   'Delivered - GRN Pending',
   'Delivered - GRN Received',
 ];
-const STATUS_FILTER_OPTIONS = ['All', 'Yet to Dispatch', ...GRN_STATUS_OPTIONS];
+const STATUS_FILTER_OPTIONS = [
+  'All',
+  'Pending',
+  'Yet to Dispatch',
+  'Out For Delivery',
+  'Returned to Vendor',
+  'Delivered - GRN Pending',
+  'Delivered - GRN Received',
+];
 
 const STATUS_COLORS = {
   'Yet to Dispatch':          'gray',
@@ -60,6 +68,7 @@ const buildColumns = (vendorTab) => [
   { key: 'grn_number',          label: 'GRN Number' },
   { key: 'discrepancy_qty',     label: 'Discrepancy Qty' },
   { key: 'discrepancy_number',  label: 'Discrepancy Number' },
+  { key: 'note',                label: 'Note' },
 ];
 
 export default function GRNList() {
@@ -162,6 +171,7 @@ export default function GRNList() {
     const e = edits[po.po_id];
     if (!e) return;
     const nextGrnStatus = 'grn_status' in e ? e.grn_status : po.grn_status;
+    const nextGrnDate   = 'grn_date' in e ? e.grn_date : po.grn_date;
     const nextGrnQty    = 'grn_qty' in e ? e.grn_qty : po.grn_qty;
     const nextDiscQty   = 'discrepancy_qty' in e ? e.discrepancy_qty : po.discrepancy_qty;
     const nextGrnNo     = 'grn_number' in e ? e.grn_number : po.grn_number;
@@ -171,6 +181,9 @@ export default function GRNList() {
       const poQty = Number(po.total_qty || 0);
       const gq = nextGrnQty == null || nextGrnQty === '' ? null : Number(nextGrnQty);
       const dq = nextDiscQty == null || nextDiscQty === '' ? null : Number(nextDiscQty);
+      if (!String(nextGrnDate || '').trim()) {
+        return toast.error('GRN Date is required');
+      }
       if (gq == null || dq == null) {
         return toast.error('GRN Qty and Discrepancy Qty are required');
       }
@@ -198,6 +211,7 @@ export default function GRNList() {
       if ('grn_number'         in e) payload.grn_number         = cleanStr(e.grn_number);
       if ('discrepancy_qty'    in e) payload.discrepancy_qty    = cleanInt(e.discrepancy_qty);
       if ('discrepancy_number' in e) payload.discrepancy_number = cleanStr(e.discrepancy_number);
+      if ('note'               in e) payload.note               = cleanStr(e.note);
       await updateOrderSummary(po.po_id, payload);
       toast.success(`Saved ${po.po_id}`);
       cancelEdit(po.po_id);
@@ -342,8 +356,8 @@ export default function GRNList() {
                 const editGrnNo   = valueOf(po, 'grn_number') ?? '';
                 const editDiscQty = valueOf(po, 'discrepancy_qty');
                 const editDiscNo  = valueOf(po, 'discrepancy_number') ?? '';
+                const editNote    = valueOf(po, 'note') ?? '';
                 const displayStatus = editStatus || po.computed_grn_status;
-                const isYetToDispatch = displayStatus === 'Yet to Dispatch';
                 const isDGR = displayStatus === 'Delivered - GRN Received';
                 const discQtyNum = editDiscQty == null || editDiscQty === '' ? 0 : Number(editDiscQty);
                 const onKey = onCellKeyDown(po.po_id);
@@ -519,13 +533,30 @@ export default function GRNList() {
                               )}
                             </td>
                           );
+                        case 'note':
+                          return (
+                            <td key={col.key} className="px-3 py-2 min-w-[16rem]">
+                              {canEdit ? (
+                                <input
+                                  type="text"
+                                  value={editNote}
+                                  onChange={e => setEdit(po.po_id, { note: e.target.value })}
+                                  onKeyDown={onKey}
+                                  placeholder="Add a comment..."
+                                  className={cellCls}
+                                />
+                              ) : (
+                                <span className="text-gray-700">{po.note || '—'}</span>
+                              )}
+                            </td>
+                          );
                         default:
                           return <td key={col.key} className="px-3 py-2">{po[col.key]}</td>;
                       }
                     })}
                     {canEdit && (
                       <td className="px-3 py-2 whitespace-nowrap">
-                        {dirty && !isYetToDispatch && (
+                        {dirty && (
                           <div className="flex items-center gap-1">
                             <button
                               type="button"

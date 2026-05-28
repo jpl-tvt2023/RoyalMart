@@ -36,6 +36,7 @@ const SORT_COLUMNS = {
   grn_number:          'p.grn_number',
   discrepancy_qty:     'p.discrepancy_qty',
   discrepancy_number:  'p.discrepancy_number',
+  note:                'p.note',
   computed_grn_status: COMPUTED_GRN_STATUS_SQL,
   courier_name:        'cr.name',
   updated_at:          'p.updated_at',
@@ -111,6 +112,7 @@ async function list(req, res, next) {
              p.party_name, p.bill_no,
              p.appointment_date, p.asn, p.grn_status, p.grn_date,
              p.grn_qty, p.grn_number, p.discrepancy_qty, p.discrepancy_number,
+             p.note,
              ${COMPUTED_GRN_STATUS_SQL} AS computed_grn_status,
              p.updated_by, p.updated_at,
              op.name AS office_poc_name,
@@ -153,7 +155,7 @@ async function updateOne(req, res, next) {
       sql: `SELECT po_id, vendor, city, status, dispatch_date, office_poc, warehouse_poc,
                    courier_id, tracking_id, bill_no,
                    appointment_date, asn, grn_status, grn_date, grn_qty, grn_number,
-                   discrepancy_qty, discrepancy_number
+                   discrepancy_qty, discrepancy_number, note
             FROM marketplace_pos WHERE po_id = ?`,
       args: [poId],
     });
@@ -330,6 +332,7 @@ async function updateOne(req, res, next) {
     let nextGrnNumber          = current.grn_number;
     let nextDiscrepancyQty     = current.discrepancy_qty;
     let nextDiscrepancyNumber  = current.discrepancy_number;
+    let nextNote               = current.note;
 
     const parseDateField = (val, label) => {
       if (val == null || String(val).trim() === '') return null;
@@ -385,6 +388,10 @@ async function updateOne(req, res, next) {
       if (has('grn_number'))          nextGrnNumber         = parseAlphanumeric(req.body.grn_number, 'grn_number');
       if (has('discrepancy_qty'))     nextDiscrepancyQty    = parseNonNegInt(req.body.discrepancy_qty, 'discrepancy_qty');
       if (has('discrepancy_number'))  nextDiscrepancyNumber = parseAlphanumeric(req.body.discrepancy_number, 'discrepancy_number');
+      if (has('note')) {
+        const n = req.body.note;
+        nextNote = (n == null || String(n).trim() === '') ? null : String(n).trim();
+      }
     } catch (e) {
       if (e.statusCode === 400) return res.status(400).json({ message: e.message });
       throw e;
@@ -396,6 +403,9 @@ async function updateOne(req, res, next) {
         args: [poId],
       });
       const poQty = Number(qtyRows[0]?.po_qty || 0);
+      if (!nextGrnDate) {
+        return res.status(400).json({ message: 'GRN Date is required when status is "Delivered - GRN Received"' });
+      }
       if (nextGrnQty == null || nextDiscrepancyQty == null) {
         return res.status(400).json({ message: 'GRN Qty and Discrepancy Qty are required when status is "Delivered - GRN Received"' });
       }
@@ -436,12 +446,14 @@ async function updateOne(req, res, next) {
                   courier_id = ?, tracking_id = ?, bill_no = ?,
                   appointment_date = ?, asn = ?, grn_status = ?, grn_date = ?,
                   grn_qty = ?, grn_number = ?, discrepancy_qty = ?, discrepancy_number = ?,
+                  note = ?,
                   updated_by = ?, updated_at = datetime('now')
               WHERE po_id = ?`,
         args: [
           officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, nextBillNo,
           nextAppointmentDate, nextAsn, nextGrnStatus, nextGrnDate,
           nextGrnQty, nextGrnNumber, nextDiscrepancyQty, nextDiscrepancyNumber,
+          nextNote,
           req.user.id, poId,
         ],
       });
@@ -449,7 +461,7 @@ async function updateOne(req, res, next) {
         client: tx,
         userId: req.user.id,
         actionType: 'ORDER_SUMMARY_UPDATE',
-        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
+        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}, note=${nextNote ? '"' + nextNote.slice(0, 60) + (nextNote.length > 60 ? '…' : '') + '"' : '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
         entityType: 'marketplace_po',
       });
       await tx.commit();
