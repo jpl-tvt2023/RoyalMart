@@ -5,25 +5,45 @@ const { buildPagination, buildOrderBy } = require('./marketplacePO.controller');
 
 const VALID_STATUSES = ['Open', 'Closed'];
 
+const COMPUTED_GRN_STATUS_SQL =
+  "COALESCE(p.grn_status, CASE WHEN p.status = 'Closed' THEN 'Pending' ELSE 'Yet to Dispatch' END)";
+
+const GRN_STATUS_OPTIONS = [
+  'Pending',
+  'Out For Delivery',
+  'Returned to Vendor',
+  'Delivered - GRN Pending',
+  'Delivered - GRN Received',
+];
+const GRN_STATUS_FILTER_VALUES = ['Yet to Dispatch', ...GRN_STATUS_OPTIONS];
+
 const SORT_COLUMNS = {
-  po_id:              'p.po_id',
-  vendor:             'p.vendor',
-  vendor_po_id:       'p.vendor_po_id',
-  city:               'p.city',
-  status:             'p.status',
-  po_date:            'p.po_date',
-  po_expiry_date:     'p.po_expiry_date',
-  dispatch_date:      'p.dispatch_date',
-  tracking_id:        'p.tracking_id',
-  bill_no:            'p.bill_no',
-  party_name:         'p.party_name',
-  courier_name:       'cr.name',
-  updated_at:         'p.updated_at',
-  office_poc_name:    'op.name',
-  warehouse_poc_name: 'wp.name',
-  updated_by_name:    'ub.name',
-  line_count:         '(SELECT COUNT(*)            FROM marketplace_po_lines WHERE po_id = p.po_id)',
-  total_qty:          '(SELECT COALESCE(SUM(qty),0) FROM marketplace_po_lines WHERE po_id = p.po_id)',
+  po_id:               'p.po_id',
+  vendor:              'p.vendor',
+  vendor_po_id:        'p.vendor_po_id',
+  city:                'p.city',
+  status:              'p.status',
+  po_date:             'p.po_date',
+  po_expiry_date:      'p.po_expiry_date',
+  dispatch_date:       'p.dispatch_date',
+  tracking_id:         'p.tracking_id',
+  bill_no:             'p.bill_no',
+  party_name:          'p.party_name',
+  appointment_date:    'p.appointment_date',
+  asn:                 'p.asn',
+  grn_date:            'p.grn_date',
+  grn_qty:             'p.grn_qty',
+  grn_number:          'p.grn_number',
+  discrepancy_qty:     'p.discrepancy_qty',
+  discrepancy_number:  'p.discrepancy_number',
+  computed_grn_status: COMPUTED_GRN_STATUS_SQL,
+  courier_name:        'cr.name',
+  updated_at:          'p.updated_at',
+  office_poc_name:     'op.name',
+  warehouse_poc_name:  'wp.name',
+  updated_by_name:     'ub.name',
+  line_count:          '(SELECT COUNT(*)            FROM marketplace_po_lines WHERE po_id = p.po_id)',
+  total_qty:           '(SELECT COALESCE(SUM(qty),0) FROM marketplace_po_lines WHERE po_id = p.po_id)',
 };
 
 async function list(req, res, next) {
@@ -35,6 +55,8 @@ async function list(req, res, next) {
       status, office_poc, warehouse_poc,
       courier_id, has_tracking, tracking_id,
       bill_no,
+      grn_status,
+      appointment_date_from, appointment_date_to,
     } = req.query;
 
     const conditions = [];
@@ -70,6 +92,12 @@ async function list(req, res, next) {
     }
     if (tracking_id) { conditions.push('p.tracking_id LIKE ?'); args.push(`%${tracking_id}%`); }
     if (bill_no) { conditions.push('p.bill_no LIKE ?'); args.push(`%${bill_no}%`); }
+    if (grn_status && grn_status !== 'All' && GRN_STATUS_FILTER_VALUES.includes(grn_status)) {
+      conditions.push(`${COMPUTED_GRN_STATUS_SQL} = ?`);
+      args.push(grn_status);
+    }
+    if (appointment_date_from) { conditions.push('p.appointment_date >= ?'); args.push(appointment_date_from); }
+    if (appointment_date_to)   { conditions.push('p.appointment_date <= ?'); args.push(appointment_date_to); }
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
     const orderBy = buildOrderBy(req.query, SORT_COLUMNS);
@@ -81,6 +109,9 @@ async function list(req, res, next) {
              p.office_poc, p.warehouse_poc,
              p.courier_id, p.tracking_id,
              p.party_name, p.bill_no,
+             p.appointment_date, p.asn, p.grn_status, p.grn_date,
+             p.grn_qty, p.grn_number, p.discrepancy_qty, p.discrepancy_number,
+             ${COMPUTED_GRN_STATUS_SQL} AS computed_grn_status,
              p.updated_by, p.updated_at,
              op.name AS office_poc_name,
              wp.name AS warehouse_poc_name,
@@ -120,7 +151,9 @@ async function updateOne(req, res, next) {
     const { poId } = req.params;
     const { rows: existing } = await db.execute({
       sql: `SELECT po_id, vendor, city, status, dispatch_date, office_poc, warehouse_poc,
-                   courier_id, tracking_id, bill_no
+                   courier_id, tracking_id, bill_no,
+                   appointment_date, asn, grn_status, grn_date, grn_qty, grn_number,
+                   discrepancy_qty, discrepancy_number
             FROM marketplace_pos WHERE po_id = ?`,
       args: [poId],
     });
@@ -289,6 +322,95 @@ async function updateOne(req, res, next) {
       }
     }
 
+    let nextAppointmentDate    = current.appointment_date;
+    let nextAsn                = current.asn;
+    let nextGrnStatus          = current.grn_status;
+    let nextGrnDate            = current.grn_date;
+    let nextGrnQty             = current.grn_qty;
+    let nextGrnNumber          = current.grn_number;
+    let nextDiscrepancyQty     = current.discrepancy_qty;
+    let nextDiscrepancyNumber  = current.discrepancy_number;
+
+    const parseDateField = (val, label) => {
+      if (val == null || String(val).trim() === '') return null;
+      const s = String(val).trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+        const err = new Error(`Invalid ${label} format (expected YYYY-MM-DD)`);
+        err.statusCode = 400;
+        throw err;
+      }
+      return s;
+    };
+    const parseNonNegInt = (val, label) => {
+      if (val == null || val === '') return null;
+      const n = Number(val);
+      if (!Number.isInteger(n) || n < 0) {
+        const err = new Error(`${label} must be a non-negative integer`);
+        err.statusCode = 400;
+        throw err;
+      }
+      return n;
+    };
+    const parseAlphanumeric = (val, label) => {
+      if (val == null || String(val).trim() === '') return null;
+      const s = String(val).trim();
+      if (!/^[A-Za-z0-9-]+$/.test(s)) {
+        const err = new Error(`${label} must be alphanumeric (dashes allowed)`);
+        err.statusCode = 400;
+        throw err;
+      }
+      return s;
+    };
+
+    try {
+      if (has('appointment_date')) nextAppointmentDate = parseDateField(req.body.appointment_date, 'appointment_date');
+      if (has('asn')) {
+        const a = req.body.asn;
+        nextAsn = (a == null || String(a).trim() === '') ? null : String(a).trim();
+      }
+      if (has('grn_status')) {
+        const g = req.body.grn_status;
+        if (g == null || g === '') {
+          nextGrnStatus = null;
+        } else if (!GRN_STATUS_OPTIONS.includes(g)) {
+          return res.status(400).json({ message: `Invalid grn_status. Allowed: ${GRN_STATUS_OPTIONS.join(', ')}` });
+        } else if (current.status !== 'Closed') {
+          return res.status(400).json({ message: 'Cannot set a GRN status — the PO has not been dispatched yet' });
+        } else {
+          nextGrnStatus = g;
+        }
+      }
+      if (has('grn_date'))            nextGrnDate           = parseDateField(req.body.grn_date, 'grn_date');
+      if (has('grn_qty'))             nextGrnQty            = parseNonNegInt(req.body.grn_qty, 'grn_qty');
+      if (has('grn_number'))          nextGrnNumber         = parseAlphanumeric(req.body.grn_number, 'grn_number');
+      if (has('discrepancy_qty'))     nextDiscrepancyQty    = parseNonNegInt(req.body.discrepancy_qty, 'discrepancy_qty');
+      if (has('discrepancy_number'))  nextDiscrepancyNumber = parseAlphanumeric(req.body.discrepancy_number, 'discrepancy_number');
+    } catch (e) {
+      if (e.statusCode === 400) return res.status(400).json({ message: e.message });
+      throw e;
+    }
+
+    if (nextGrnStatus === 'Delivered - GRN Received') {
+      const { rows: qtyRows } = await db.execute({
+        sql: 'SELECT COALESCE(SUM(qty),0) AS po_qty FROM marketplace_po_lines WHERE po_id = ?',
+        args: [poId],
+      });
+      const poQty = Number(qtyRows[0]?.po_qty || 0);
+      if (nextGrnQty == null || nextDiscrepancyQty == null) {
+        return res.status(400).json({ message: 'GRN Qty and Discrepancy Qty are required when status is "Delivered - GRN Received"' });
+      }
+      if (nextGrnQty + nextDiscrepancyQty !== poQty) {
+        return res.status(400).json({ message: `GRN Qty + Discrepancy Qty must equal PO Qty (${poQty})` });
+      }
+      if (!nextGrnNumber) {
+        return res.status(400).json({ message: 'GRN Number is required' });
+      }
+      if (nextDiscrepancyQty > 0 && !nextDiscrepancyNumber) {
+        return res.status(400).json({ message: 'Discrepancy Number is required when Discrepancy Qty > 0' });
+      }
+      if (nextDiscrepancyQty === 0) nextDiscrepancyNumber = null;
+    }
+
     if (nextStatus === 'Closed') {
       const missing = [];
       if (!nextDispatchDate) missing.push('dispatch date');
@@ -312,15 +434,22 @@ async function updateOne(req, res, next) {
         sql: `UPDATE marketplace_pos
               SET office_poc = ?, warehouse_poc = ?, status = ?, dispatch_date = ?,
                   courier_id = ?, tracking_id = ?, bill_no = ?,
+                  appointment_date = ?, asn = ?, grn_status = ?, grn_date = ?,
+                  grn_qty = ?, grn_number = ?, discrepancy_qty = ?, discrepancy_number = ?,
                   updated_by = ?, updated_at = datetime('now')
               WHERE po_id = ?`,
-        args: [officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, nextBillNo, req.user.id, poId],
+        args: [
+          officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, nextBillNo,
+          nextAppointmentDate, nextAsn, nextGrnStatus, nextGrnDate,
+          nextGrnQty, nextGrnNumber, nextDiscrepancyQty, nextDiscrepancyNumber,
+          req.user.id, poId,
+        ],
       });
       await logAction({
         client: tx,
         userId: req.user.id,
         actionType: 'ORDER_SUMMARY_UPDATE',
-        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
+        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
         entityType: 'marketplace_po',
       });
       await tx.commit();

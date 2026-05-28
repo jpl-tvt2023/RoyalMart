@@ -13,6 +13,7 @@ import PurchaseOrderImport from './pages/PurchaseOrders/PurchaseOrderImport';
 import PurchaseOrderDetail from './pages/PurchaseOrders/PurchaseOrderDetail';
 import OrderSummaryList from './pages/OrderSummary/OrderSummaryList';
 import BuiltyList from './pages/Builty/BuiltyList';
+import GRNList from './pages/GRN/GRNList';
 import ConfigurationsPage from './pages/Configurations/ConfigurationsPage';
 import ProductList from './pages/products/ProductList';
 
@@ -73,6 +74,10 @@ export default function App() {
 
           <Route path="/builty" element={
             <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'PO_Executive']}><BuiltyList /></ProtectedRoute>
+          } />
+
+          <Route path="/grn" element={
+            <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'PO_Executive']}><GRNList /></ProtectedRoute>
           } />
 
           <Route path="/configurations" element={
