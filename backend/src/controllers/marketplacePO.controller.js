@@ -194,7 +194,8 @@ async function create(req, res, next) {
   try {
     const err = validatePayload(req.body);
     if (err) return res.status(400).json({ message: err });
-    const { vendor, vendor_po_id, po_date, po_expiry_date, city, lines } = req.body;
+    const { vendor, vendor_po_id, po_date, po_expiry_date, city, lines, party_name } = req.body;
+    const cleanPartyName = party_name == null ? null : (String(party_name).trim() || null);
 
     const v = await lookupActiveVendor(vendor);
     if (!v || !v.is_active) {
@@ -216,10 +217,10 @@ async function create(req, res, next) {
         poId = existing[0].po_id;
         await tx.execute({
           sql: `UPDATE marketplace_pos
-                SET po_date = ?, po_expiry_date = ?, city = ?,
+                SET po_date = ?, po_expiry_date = ?, city = ?, party_name = ?,
                     updated_by = ?, updated_at = datetime('now')
                 WHERE po_id = ?`,
-          args: [po_date || null, po_expiry_date || null, city || null, req.user.id, poId],
+          args: [po_date || null, po_expiry_date || null, city || null, cleanPartyName, req.user.id, poId],
         });
       } else {
         isNew = true;
@@ -232,9 +233,9 @@ async function create(req, res, next) {
         poId = `${vendorPrefix(vendor)}${pad3(nextSeq)}`;
         await tx.execute({
           sql: `INSERT INTO marketplace_pos
-                (po_id, vendor, vendor_po_id, po_date, po_expiry_date, city, status, created_by, onboarded_by, updated_by)
-                VALUES (?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`,
-          args: [poId, vendor, cleanVendorPoId, po_date || null, po_expiry_date || null, city || null, req.user.id, req.user.id, req.user.id],
+                (po_id, vendor, vendor_po_id, po_date, po_expiry_date, city, party_name, status, created_by, onboarded_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`,
+          args: [poId, vendor, cleanVendorPoId, po_date || null, po_expiry_date || null, city || null, cleanPartyName, req.user.id, req.user.id, req.user.id],
         });
       }
 

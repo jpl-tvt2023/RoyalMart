@@ -1,5 +1,6 @@
 const pdf = require('pdf-parse');
 const { parseIndianDate } = require('./dates');
+const { extractShipToParty } = require('./address');
 
 function fieldByLine(lines, label) {
   for (let i = 0; i < lines.length; i++) {
@@ -105,7 +106,8 @@ async function parseBlinkit(buffer) {
     }
   }
 
-  return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, lines };
+  const party_name = extractShipToParty(flat);
+  return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, party_name, lines };
 }
 
 module.exports = parseBlinkit;

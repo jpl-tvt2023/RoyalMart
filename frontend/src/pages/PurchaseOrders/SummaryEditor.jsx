@@ -36,6 +36,9 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
         <Field label="Vendor PO No.">
           <input value={value.vendor_po_id || ''} onChange={e => set({ vendor_po_id: e.target.value })} className={inputCls} />
         </Field>
+        <Field label="Party Name (Ship-To, parsed)">
+          <input value={value.party_name || ''} onChange={e => set({ party_name: e.target.value })} placeholder="—" className={inputCls} />
+        </Field>
         <Field label="PO Date">
           <input type="date" value={value.po_date || ''} onChange={e => set({ po_date: e.target.value })} className={inputCls} />
         </Field>

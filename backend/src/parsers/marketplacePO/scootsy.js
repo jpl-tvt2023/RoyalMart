@@ -1,5 +1,6 @@
 const pdf = require('pdf-parse');
 const { parseIndianDate } = require('./dates');
+const { extractShipToParty } = require('./address');
 
 // Scootsy POs render labels and values on separate lines, e.g.
 //   "PO No :"
@@ -102,7 +103,8 @@ async function parseScootsy(buffer) {
     i = j;
   }
 
-  return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, lines };
+  const party_name = extractShipToParty(flatLines);
+  return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, party_name, lines };
 }
 
 module.exports = parseScootsy;

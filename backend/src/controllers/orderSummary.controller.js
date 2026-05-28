@@ -15,6 +15,8 @@ const SORT_COLUMNS = {
   po_expiry_date:     'p.po_expiry_date',
   dispatch_date:      'p.dispatch_date',
   tracking_id:        'p.tracking_id',
+  bill_no:            'p.bill_no',
+  party_name:         'p.party_name',
   courier_name:       'cr.name',
   updated_at:         'p.updated_at',
   office_poc_name:    'op.name',
@@ -32,6 +34,7 @@ async function list(req, res, next) {
       dispatch_date_from, dispatch_date_to,
       status, office_poc, warehouse_poc,
       courier_id, has_tracking, tracking_id,
+      bill_no,
     } = req.query;
 
     const conditions = [];
@@ -66,6 +69,7 @@ async function list(req, res, next) {
       conditions.push("(p.tracking_id IS NULL OR p.tracking_id = '')");
     }
     if (tracking_id) { conditions.push('p.tracking_id LIKE ?'); args.push(`%${tracking_id}%`); }
+    if (bill_no) { conditions.push('p.bill_no LIKE ?'); args.push(`%${bill_no}%`); }
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
     const orderBy = buildOrderBy(req.query, SORT_COLUMNS);
@@ -76,6 +80,7 @@ async function list(req, res, next) {
              p.city, p.status, p.dispatch_date,
              p.office_poc, p.warehouse_poc,
              p.courier_id, p.tracking_id,
+             p.party_name, p.bill_no,
              p.updated_by, p.updated_at,
              op.name AS office_poc_name,
              wp.name AS warehouse_poc_name,
@@ -115,7 +120,7 @@ async function updateOne(req, res, next) {
     const { poId } = req.params;
     const { rows: existing } = await db.execute({
       sql: `SELECT po_id, vendor, city, status, dispatch_date, office_poc, warehouse_poc,
-                   courier_id, tracking_id
+                   courier_id, tracking_id, bill_no
             FROM marketplace_pos WHERE po_id = ?`,
       args: [poId],
     });
@@ -262,6 +267,28 @@ async function updateOne(req, res, next) {
       }
     }
 
+    let nextBillNo = current.bill_no;
+    if (has('bill_no')) {
+      const b = req.body.bill_no;
+      nextBillNo = (b == null || String(b).trim() === '') ? null : String(b).trim();
+      if (nextBillNo && !/^[A-Za-z0-9-]+$/.test(nextBillNo)) {
+        return res.status(400).json({ message: 'Bill no must be alphanumeric (dashes allowed)' });
+      }
+      if (nextBillNo && nextBillNo !== current.bill_no) {
+        const { rows: dup } = await db.execute({
+          sql: 'SELECT po_id, vendor, vendor_po_id FROM marketplace_pos WHERE bill_no = ? AND po_id != ?',
+          args: [nextBillNo, poId],
+        });
+        if (dup.length) {
+          return res.status(409).json({
+            error: 'bill_no_duplicate',
+            message: `Bill no "${nextBillNo}" is already used on PO ${dup[0].po_id}`,
+            conflicts: dup,
+          });
+        }
+      }
+    }
+
     if (nextStatus === 'Closed') {
       const missing = [];
       if (!nextDispatchDate) missing.push('dispatch date');
@@ -284,16 +311,16 @@ async function updateOne(req, res, next) {
       await tx.execute({
         sql: `UPDATE marketplace_pos
               SET office_poc = ?, warehouse_poc = ?, status = ?, dispatch_date = ?,
-                  courier_id = ?, tracking_id = ?,
+                  courier_id = ?, tracking_id = ?, bill_no = ?,
                   updated_by = ?, updated_at = datetime('now')
               WHERE po_id = ?`,
-        args: [officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, req.user.id, poId],
+        args: [officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, nextBillNo, req.user.id, poId],
       });
       await logAction({
         client: tx,
         userId: req.user.id,
         actionType: 'ORDER_SUMMARY_UPDATE',
-        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
+        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
         entityType: 'marketplace_po',
       });
       await tx.commit();

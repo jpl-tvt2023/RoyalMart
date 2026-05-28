@@ -12,6 +12,7 @@ import PurchaseOrdersList from './pages/PurchaseOrders/PurchaseOrdersList';
 import PurchaseOrderImport from './pages/PurchaseOrders/PurchaseOrderImport';
 import PurchaseOrderDetail from './pages/PurchaseOrders/PurchaseOrderDetail';
 import OrderSummaryList from './pages/OrderSummary/OrderSummaryList';
+import BuiltyList from './pages/Builty/BuiltyList';
 import ConfigurationsPage from './pages/Configurations/ConfigurationsPage';
 import ProductList from './pages/products/ProductList';
 
@@ -68,6 +69,10 @@ export default function App() {
 
           <Route path="/order-summary" element={
             <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'PO_Executive']}><OrderSummaryList /></ProtectedRoute>
+          } />
+
+          <Route path="/builty" element={
+            <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'PO_Executive']}><BuiltyList /></ProtectedRoute>
           } />
 
           <Route path="/configurations" element={
