@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -52,6 +53,19 @@ const defaultFilters = () => ({
   courier_id:             '',
 });
 
+const seededFiltersFromURL = (params) => {
+  const base = defaultFilters();
+  if (!params) return base;
+  for (const [k, v] of params.entries()) {
+    if (k in base && v) base[k] = v;
+  }
+  return base;
+};
+const seededVendorTabFromURL = (params) => {
+  const v = params?.get('vendor');
+  return ['Blinkit', 'Scootsy', 'Zepto'].includes(v) ? v : 'Blinkit';
+};
+
 const buildColumns = (vendorTab) => [
   { key: 'po_date',             label: 'Builty Date' },
   { key: 'tracking_id',         label: 'Tracking' },
@@ -75,8 +89,9 @@ export default function GRNList() {
   const { canAccess } = useRBAC();
   const canEdit = canAccess('Admin', 'Owner', 'Office_POC', 'PO_Executive');
 
-  const [vendorTab, setVendorTab] = useState('Blinkit');
-  const [filters, setFilters] = useState(defaultFilters);
+  const [searchParams] = useSearchParams();
+  const [vendorTab, setVendorTab] = useState(() => seededVendorTabFromURL(searchParams));
+  const [filters, setFilters] = useState(() => seededFiltersFromURL(searchParams));
   const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('grn', 25));
@@ -117,6 +132,13 @@ export default function GRNList() {
   }, [buildParams]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (searchParams.toString() === '') return;
+    setFilters(seededFiltersFromURL(searchParams));
+    setVendorTab(seededVendorTabFromURL(searchParams));
+    setPage(1);
+  }, [searchParams]);
 
   useEffect(() => {
     listCities()

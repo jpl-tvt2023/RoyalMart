@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import AppShell from '../components/layout/AppShell';
 import { listPOs } from '../api/marketplacePO.api';
 import { listOrderSummary, getGrnAppointmentsByDate } from '../api/orderSummary.api';
@@ -26,16 +26,26 @@ const addDaysISO = (n) => {
 };
 const yesterdayLabel = () => (new Date().getDay() === 1 ? 'Saturday' : 'Yesterday');
 
+const TH_POS      = { warn: 25, alert: 50 };
+const TH_ORDERS   = { warn: 25, alert: 50 };
+const TH_AWAITING = { warn: 10, alert: 25 };
+const thresholdColor = (n, t) => {
+  if (n >= t.alert) return 'red';
+  if (n >= t.warn)  return 'yellow';
+  return 'navy';
+};
+
 function StatCard({ to, label, value, icon: Icon, color, sub }) {
   const colors = {
-    navy:  'bg-[#003049]/5 border-[#003049]/20 text-[#003049]',
-    red:   'bg-red-50 border-red-200 text-red-700',
-    amber: 'bg-amber-50 border-amber-200 text-amber-700',
+    navy:   'bg-[#003049]/5 border-[#003049]/20 text-[#003049]',
+    red:    'bg-red-50 border-red-200 text-red-700',
+    amber:  'bg-amber-50 border-amber-200 text-amber-700',
+    yellow: 'bg-yellow-50 border-yellow-200 text-yellow-800',
   };
   return (
     <Link
       to={to}
-      className={`rounded-xl border p-5 flex items-start gap-4 transition-shadow hover:shadow-sm ${colors[color]}`}
+      className={`rounded-xl border p-5 flex items-start gap-4 transition-shadow hover:shadow-sm ${colors[color] || colors.navy}`}
     >
       <div className="p-2.5 rounded-lg bg-white/70 shadow-sm">
         <Icon size={22} />
@@ -49,11 +59,20 @@ function StatCard({ to, label, value, icon: Icon, color, sub }) {
   );
 }
 
-function GrnAppointmentTable({ title, date, rows }) {
+function GrnAppointmentTable({ title, date, rows, navigate }) {
   const totals = rows.reduce(
     (acc, r) => ({ total: acc.total + Number(r.total || 0), fulfilled: acc.fulfilled + Number(r.fulfilled || 0) }),
     { total: 0, fulfilled: 0 }
   );
+  const goToVendor = (vendor) => {
+    const qs = new URLSearchParams({
+      vendor,
+      appointment_date_from: date,
+      appointment_date_to:   date,
+      grn_status:            'All',
+    }).toString();
+    navigate(`/grn?${qs}`);
+  };
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-100 text-sm font-medium text-[#003049]">
@@ -76,7 +95,11 @@ function GrnAppointmentTable({ title, date, rows }) {
             const fulfilled = Number(r.fulfilled || 0);
             const pending = total - fulfilled;
             return (
-              <tr key={r.vendor} className="border-t border-gray-100">
+              <tr
+                key={r.vendor}
+                onClick={() => goToVendor(r.vendor)}
+                className="border-t border-gray-100 cursor-pointer hover:bg-gray-50"
+              >
                 <td className="px-3 py-2">{r.vendor}</td>
                 <td className="px-3 py-2 font-semibold text-gray-800">{total}</td>
                 <td className="px-3 py-2 text-green-700">{fulfilled}</td>
@@ -102,6 +125,7 @@ function GrnAppointmentTable({ title, date, rows }) {
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const { canAccess } = useRBAC();
   const canSeeGRN    = canAccess('Admin', 'Owner', 'Office_POC', 'Warehouse_POC');
   const canSeeExpiry = canAccess('Admin', 'Owner', 'Purchase_Team', 'PO_Executive');
@@ -150,27 +174,27 @@ export default function Dashboard() {
         <>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <StatCard
-              to="/purchase-orders"
+              to="/purchase-orders?status=Open"
               label="Open POs"
               value={state.openPOs ?? 0}
               icon={FileText}
-              color="navy"
+              color={thresholdColor(state.openPOs ?? 0, TH_POS)}
               sub="View purchase orders"
             />
             <StatCard
-              to="/order-summary"
+              to="/order-summary?status=Open"
               label="Open Orders"
               value={state.openOrders ?? 0}
               icon={ClipboardList}
-              color="amber"
+              color={thresholdColor(state.openOrders ?? 0, TH_ORDERS)}
               sub="View order summary"
             />
             <StatCard
-              to="/order-summary"
+              to="/order-summary?has_tracking=no"
               label="Awaiting Dispatch"
               value={state.awaitingDispatch ?? 0}
               icon={Truck}
-              color="red"
+              color={thresholdColor(state.awaitingDispatch ?? 0, TH_AWAITING)}
               sub="No tracking ID yet"
             />
           </div>
@@ -180,19 +204,19 @@ export default function Dashboard() {
               <h2 className="text-base font-semibold text-[#003049] mb-3">PO Expiry</h2>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <StatCard
-                  to="/purchase-orders"
+                  to={`/purchase-orders?status=Open&po_expiry_date_from=${todayStr}&po_expiry_date_to=${in7Str}`}
                   label="Expiring in 7 days"
                   value={state.expiry7 ?? 0}
                   icon={CalendarClock}
-                  color="amber"
+                  color="red"
                   sub="Open POs only"
                 />
                 <StatCard
-                  to="/purchase-orders"
+                  to={`/purchase-orders?status=Open&po_expiry_date_from=${todayStr}&po_expiry_date_to=${in15Str}`}
                   label="Expiring in 15 days"
                   value={state.expiry15 ?? 0}
                   icon={CalendarClock}
-                  color="red"
+                  color="yellow"
                   sub="Open POs only"
                 />
               </div>
@@ -203,8 +227,8 @@ export default function Dashboard() {
             <section className="mt-6">
               <h2 className="text-base font-semibold text-[#003049] mb-3">GRN Appointment Summary</h2>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <GrnAppointmentTable title="Today" date={todayStr} rows={state.grnToday ?? []} />
-                <GrnAppointmentTable title={yesterdayLabel()} date={yestStr} rows={state.grnYesterday ?? []} />
+                <GrnAppointmentTable title="Today" date={todayStr} rows={state.grnToday ?? []} navigate={navigate} />
+                <GrnAppointmentTable title={yesterdayLabel()} date={yestStr} rows={state.grnYesterday ?? []} navigate={navigate} />
               </div>
             </section>
           )}
