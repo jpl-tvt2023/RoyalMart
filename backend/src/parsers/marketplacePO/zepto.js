@@ -1,5 +1,6 @@
 const pdf = require('pdf-parse');
 const { parseIndianDate } = require('./dates');
+const { extractShipToParty } = require('./address');
 
 function fieldByLine(lines, label) {
   const re = new RegExp('^\\s*' + label + '\\s*:\\s*(.+)$', 'i');
@@ -100,7 +101,8 @@ async function parseZepto(buffer) {
     i = j;
   }
 
-  return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, lines };
+  const party_name = extractShipToParty(flatLines);
+  return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, party_name, lines };
 }
 
 module.exports = parseZepto;

@@ -19,7 +19,8 @@
       "Read(//d/My/ Projects/Royal/ Mart/ Portal/frontend/src/pages/PurchaseOrders/**)",
       "Bash(node -e \"const {INDIAN_CITIES} = require\\('d:/My Projects/Royal Mart Portal/frontend/src/data/indianCities.js'.replace\\(/^/, ''\\).replace\\('.js',''\\)\\);\")",
       "Bash(node -e \"require\\('./src/config/env'\\); const db = require\\('./src/config/db'\\); const seed = require\\('./src/seeds/03_cities.seed'\\); seed\\(db\\).then\\(\\(\\) => { console.log\\('done'\\); process.exit\\(0\\); }\\).catch\\(err => { console.error\\(err\\); process.exit\\(1\\); }\\);\")",
-      "Bash(tasklist //FI \"IMAGENAME eq node.exe\" //FO CSV)"
+      "Bash(tasklist //FI \"IMAGENAME eq node.exe\" //FO CSV)",
+      "Bash(node -e \"const{createClient}=require\\('@libsql/client'\\);require\\('dotenv'\\).config\\(\\);const db=createClient\\({url:process.env.TURSO_DATABASE_URL||'file:./local.db',authToken:process.env.TURSO_AUTH_TOKEN}\\);\\(async\\(\\)=>{const r=await db.execute\\(\\\\\"PRAGMA table_info\\(marketplace_pos\\)\\\\\"\\);for\\(const c of r.rows\\){if\\(c.name==='party_name'||c.name==='bill_no'\\)console.log\\(c.name,c.type\\);}const i=await db.execute\\(\\\\\"PRAGMA index_list\\(marketplace_pos\\)\\\\\"\\);for\\(const x of i.rows\\){if\\(String\\(x.name\\).includes\\('bill_no'\\)\\)console.log\\('index:',x.name\\);}db.close\\(\\);}\\)\\(\\);\")"
     ]
   }
 }

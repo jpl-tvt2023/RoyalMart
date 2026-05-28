@@ -40,6 +40,7 @@ export default function PurchaseOrderImport() {
         po_expiry_date: data.po_expiry_date || '',
         city: '',
         status: 'Open',
+        party_name: data.party_name || '',
         lines: data.lines || [],
       });
       setMode('pdf');
@@ -63,6 +64,7 @@ export default function PurchaseOrderImport() {
       po_expiry_date: '',
       city: '',
       status: 'Open',
+      party_name: '',
       lines: [{ line_no: 1, item_code: '', qty: 1 }],
     });
     setMode('manual');
