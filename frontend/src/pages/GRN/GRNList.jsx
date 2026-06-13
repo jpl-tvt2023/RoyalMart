@@ -557,7 +557,7 @@ export default function GRNList() {
                           );
                         case 'note':
                           return (
-                            <td key={col.key} className="px-3 py-2 min-w-[16rem]">
+                            <td key={col.key} className="px-3 py-2">
                               {canEdit ? (
                                 <input
                                   type="text"

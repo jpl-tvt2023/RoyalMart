@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import AppShell from '../components/layout/AppShell';
 import { listPOs } from '../api/marketplacePO.api';
 import { listOrderSummary, getGrnAppointmentsByDate } from '../api/orderSummary.api';
-import { ClipboardList, FileText, Truck, CalendarClock } from 'lucide-react';
+import { ClipboardList, Truck, CalendarClock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useRBAC } from '../hooks/useRBAC';
 
@@ -26,7 +26,6 @@ const addDaysISO = (n) => {
 };
 const yesterdayLabel = () => (new Date().getDay() === 1 ? 'Saturday' : 'Yesterday');
 
-const TH_POS      = { warn: 25, alert: 50 };
 const TH_ORDERS   = { warn: 25, alert: 50 };
 const TH_AWAITING = { warn: 10, alert: 25 };
 const thresholdColor = (n, t) => {
@@ -35,7 +34,7 @@ const thresholdColor = (n, t) => {
   return 'navy';
 };
 
-function StatCard({ to, label, value, icon: Icon, color, sub }) {
+function StatCard({ to, label, value, icon: Icon, color }) {
   const colors = {
     navy:   'bg-[#003049]/5 border-[#003049]/20 text-[#003049]',
     red:    'bg-red-50 border-red-200 text-red-700',
@@ -45,15 +44,14 @@ function StatCard({ to, label, value, icon: Icon, color, sub }) {
   return (
     <Link
       to={to}
-      className={`rounded-xl border p-5 flex items-start gap-4 transition-shadow hover:shadow-sm ${colors[color] || colors.navy}`}
+      className={`rounded-xl border p-3 flex items-center gap-3 transition-shadow hover:shadow-sm ${colors[color] || colors.navy}`}
     >
-      <div className="p-2.5 rounded-lg bg-white/70 shadow-sm">
-        <Icon size={22} />
+      <div className="p-1.5 rounded-lg bg-white/70 shadow-sm shrink-0">
+        <Icon size={16} />
       </div>
-      <div>
-        <p className="text-2xl font-bold leading-tight">{value}</p>
-        <p className="text-sm font-medium opacity-80">{label}</p>
-        {sub && <p className="text-xs opacity-60 mt-0.5">{sub}</p>}
+      <div className="min-w-0">
+        <p className="text-lg font-bold leading-none">{value}</p>
+        <p className="text-xs font-medium opacity-80 mt-1 truncate">{label}</p>
       </div>
     </Link>
   );
@@ -79,46 +77,48 @@ function GrnAppointmentTable({ title, date, rows, navigate }) {
   };
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-100 text-sm font-medium text-[#003049]">
+      <div className="px-3 py-2 border-b border-gray-100 text-xs font-medium text-[#003049]">
         {title} <span className="text-gray-400 font-normal">· {date}</span>
       </div>
-      <table className="w-full text-sm">
-        <thead className="bg-gray-50">
-          <tr>
-            <th className="px-3 py-2 text-left font-semibold text-gray-600">Platform</th>
-            <th className="px-3 py-2 text-left font-semibold text-gray-600">Total</th>
-            <th className="px-3 py-2 text-left font-semibold text-gray-600">Fulfilled</th>
-            <th className="px-3 py-2 text-left font-semibold text-gray-600">Pending</th>
-          </tr>
-        </thead>
-        <tbody>
-          {fullRows.map(r => {
-            const total = Number(r.total || 0);
-            const fulfilled = Number(r.fulfilled || 0);
-            const pending = total - fulfilled;
-            return (
-              <tr
-                key={r.vendor}
-                onClick={() => goToVendor(r.vendor)}
-                className="border-t border-gray-100 cursor-pointer hover:bg-gray-50"
-              >
-                <td className="px-3 py-2">{r.vendor}</td>
-                <td className="px-3 py-2 font-semibold text-gray-800">{total}</td>
-                <td className="px-3 py-2 text-green-700">{fulfilled}</td>
-                <td className="px-3 py-2 text-amber-700">{pending}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-        <tfoot className="bg-gray-50">
-          <tr className="border-t border-gray-200">
-            <td className="px-3 py-2 font-semibold text-[#003049]">Total</td>
-            <td className="px-3 py-2 font-bold">{totals.total}</td>
-            <td className="px-3 py-2 font-bold text-green-700">{totals.fulfilled}</td>
-            <td className="px-3 py-2 font-bold text-amber-700">{totals.total - totals.fulfilled}</td>
-          </tr>
-        </tfoot>
-      </table>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-600">Platform</th>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-600">Total</th>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-600">Fulfilled</th>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-600">Pending</th>
+            </tr>
+          </thead>
+          <tbody>
+            {fullRows.map(r => {
+              const total = Number(r.total || 0);
+              const fulfilled = Number(r.fulfilled || 0);
+              const pending = total - fulfilled;
+              return (
+                <tr
+                  key={r.vendor}
+                  onClick={() => goToVendor(r.vendor)}
+                  className="border-t border-gray-100 cursor-pointer hover:bg-gray-50"
+                >
+                  <td className="px-2 py-1.5">{r.vendor}</td>
+                  <td className="px-2 py-1.5 font-semibold text-gray-800">{total}</td>
+                  <td className="px-2 py-1.5 text-green-700">{fulfilled}</td>
+                  <td className="px-2 py-1.5 text-amber-700">{pending}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot className="bg-gray-50">
+            <tr className="border-t border-gray-200">
+              <td className="px-2 py-1.5 font-semibold text-[#003049]">Total</td>
+              <td className="px-2 py-1.5 font-bold">{totals.total}</td>
+              <td className="px-2 py-1.5 font-bold text-green-700">{totals.fulfilled}</td>
+              <td className="px-2 py-1.5 font-bold text-amber-700">{totals.total - totals.fulfilled}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
     </div>
   );
 }
@@ -140,7 +140,6 @@ export default function Dashboard() {
 
   useEffect(() => {
     const calls = [];
-    calls.push(listPOs({ status: 'Open', page: 1, page_size: 10 }).then(r => ['openPOs', r.total ?? 0]).catch(() => ['openPOs', 0]));
     calls.push(listOrderSummary({ status: 'Open', page: 1, page_size: 10 }).then(r => ['openOrders', r.total ?? 0]).catch(() => ['openOrders', 0]));
     calls.push(listOrderSummary({ has_tracking: 'no', page: 1, page_size: 10 }).then(r => ['awaitingDispatch', r.total ?? 0]).catch(() => ['awaitingDispatch', 0]));
 
@@ -165,29 +164,20 @@ export default function Dashboard() {
       </div>
 
       {loading ? (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="rounded-xl border bg-gray-100 animate-pulse h-28" />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="rounded-xl border bg-gray-100 animate-pulse h-16" />
           ))}
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <StatCard
-              to="/purchase-orders?status=Open"
-              label="Open POs"
-              value={state.openPOs ?? 0}
-              icon={FileText}
-              color={thresholdColor(state.openPOs ?? 0, TH_POS)}
-              sub="View purchase orders"
-            />
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <StatCard
               to="/order-summary?status=Open"
               label="Open Orders"
               value={state.openOrders ?? 0}
               icon={ClipboardList}
               color={thresholdColor(state.openOrders ?? 0, TH_ORDERS)}
-              sub="View order summary"
             />
             <StatCard
               to="/order-summary?has_tracking=no"
@@ -195,21 +185,15 @@ export default function Dashboard() {
               value={state.awaitingDispatch ?? 0}
               icon={Truck}
               color={thresholdColor(state.awaitingDispatch ?? 0, TH_AWAITING)}
-              sub="No tracking ID yet"
             />
-          </div>
-
-          {canSeeExpiry && (
-            <section className="mt-6">
-              <h2 className="text-base font-semibold text-[#003049] mb-3">PO Expiry</h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {canSeeExpiry && (
+              <>
                 <StatCard
                   to={`/purchase-orders?status=Open&po_expiry_date_from=${todayStr}&po_expiry_date_to=${in7Str}`}
                   label="Expiring in 7 days"
                   value={state.expiry7 ?? 0}
                   icon={CalendarClock}
                   color="red"
-                  sub="Open POs only"
                 />
                 <StatCard
                   to={`/purchase-orders?status=Open&po_expiry_date_from=${todayStr}&po_expiry_date_to=${in15Str}`}
@@ -217,16 +201,15 @@ export default function Dashboard() {
                   value={state.expiry15 ?? 0}
                   icon={CalendarClock}
                   color="yellow"
-                  sub="Open POs only"
                 />
-              </div>
-            </section>
-          )}
+              </>
+            )}
+          </div>
 
           {canSeeGRN && (
             <section className="mt-6">
-              <h2 className="text-base font-semibold text-[#003049] mb-3">GRN Appointment Summary</h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <h2 className="text-sm font-semibold text-[#003049] mb-2">GRN Appointment Summary</h2>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                 <GrnAppointmentTable title="Today" date={todayStr} rows={state.grnToday ?? []} navigate={navigate} />
                 <GrnAppointmentTable title={yesterdayLabel()} date={yestStr} rows={state.grnYesterday ?? []} navigate={navigate} />
               </div>

@@ -349,17 +349,19 @@ export default function OrderSummaryList() {
       </div>
 
       {/* Vendor tabs */}
-      <div className="flex gap-1 mb-4 border-b border-gray-200">
-        {vendorTabs.map(t => (
-          <button
-            key={t.key || 'master'}
-            type="button"
-            onClick={() => switchTab(t.key)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${vendorTab === t.key ? 'border-[#c1121f] text-[#c1121f]' : 'border-transparent text-gray-500 hover:text-[#003049]'}`}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="overflow-x-auto mb-4 border-b border-gray-200">
+        <div className="flex gap-1 whitespace-nowrap">
+          {vendorTabs.map(t => (
+            <button
+              key={t.key || 'master'}
+              type="button"
+              onClick={() => switchTab(t.key)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${vendorTab === t.key ? 'border-[#c1121f] text-[#c1121f]' : 'border-transparent text-gray-500 hover:text-[#003049]'}`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Filter bar */}
@@ -462,44 +464,46 @@ export default function OrderSummaryList() {
 
       {/* Bulk action bar */}
       {canEdit && selected.size > 0 && (
-        <div className="bg-[#003049] text-white rounded-xl px-4 py-3 mb-3 flex items-center gap-3 flex-wrap sticky top-2 z-20 shadow">
-          <span className="font-medium whitespace-nowrap">{selected.size} selected</span>
-          <span className="text-white/40">·</span>
-          <label className="text-sm whitespace-nowrap">Office POC</label>
-          <select
-            value={bulkOfficePoc}
-            onChange={e => setBulkOfficePoc(e.target.value)}
-            className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[10rem]"
-          >
-            <option value="">— no change —</option>
-            <option value="clear">— Unassign —</option>
-            {officePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
-          <label className="text-sm whitespace-nowrap">Warehouse POC</label>
-          <select
-            value={bulkWarehousePoc}
-            onChange={e => setBulkWarehousePoc(e.target.value)}
-            className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[10rem]"
-          >
-            <option value="">— no change —</option>
-            <option value="clear">— Unassign —</option>
-            {warehousePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
-          <Button
-            onClick={applyBulk}
-            disabled={bulkApplyDisabled}
-            loading={bulkApplying}
-            title={bulkOfficePoc === '' && bulkWarehousePoc === '' ? 'Pick an Office POC or Warehouse POC value to apply' : undefined}
-          >
-            Apply
-          </Button>
-          <button
-            type="button"
-            onClick={() => setSelected(new Set())}
-            className="text-white/80 hover:text-white text-sm underline whitespace-nowrap"
-          >
-            Clear selection
-          </button>
+        <div className="bg-[#003049] text-white rounded-xl px-4 py-3 mb-3 overflow-x-auto sticky top-2 z-20 shadow">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="font-medium whitespace-nowrap">{selected.size} selected</span>
+            <span className="text-white/40 hidden sm:inline">·</span>
+            <label className="text-sm whitespace-nowrap hidden sm:inline">Office POC</label>
+            <select
+              value={bulkOfficePoc}
+              onChange={e => setBulkOfficePoc(e.target.value)}
+              className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[8rem]"
+            >
+              <option value="">— Office POC —</option>
+              <option value="clear">— Unassign —</option>
+              {officePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+            <label className="text-sm whitespace-nowrap hidden sm:inline">Warehouse POC</label>
+            <select
+              value={bulkWarehousePoc}
+              onChange={e => setBulkWarehousePoc(e.target.value)}
+              className="px-2 py-1.5 rounded text-sm text-[#003049] bg-white border border-white/20 min-w-[8rem]"
+            >
+              <option value="">— Warehouse POC —</option>
+              <option value="clear">— Unassign —</option>
+              {warehousePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+            <Button
+              onClick={applyBulk}
+              disabled={bulkApplyDisabled}
+              loading={bulkApplying}
+              title={bulkOfficePoc === '' && bulkWarehousePoc === '' ? 'Pick an Office POC or Warehouse POC value to apply' : undefined}
+            >
+              Apply
+            </Button>
+            <button
+              type="button"
+              onClick={() => setSelected(new Set())}
+              className="text-white/80 hover:text-white text-sm underline whitespace-nowrap"
+            >
+              Clear selection
+            </button>
+          </div>
         </div>
       )}
 
