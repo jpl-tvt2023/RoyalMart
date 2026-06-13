@@ -6,6 +6,7 @@ import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Badge from '../../components/ui/Badge';
+import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { listPOs, deletePO } from '../../api/marketplacePO.api';
 import { listVendors } from '../../api/vendors.api';
@@ -59,6 +60,12 @@ const TONE_ROW = {
   expired: 'bg-red-200/70 hover:bg-red-300/70',
   soon: 'bg-amber-200/70 hover:bg-amber-300/70',
 };
+
+// Derived from TONE_ROW (base colour only) so the legend never drifts from the rows.
+const EXPIRY_LEGEND = [
+  { swatch: TONE_ROW.expired.split(' ')[0], label: 'PO expired' },
+  { swatch: TONE_ROW.soon.split(' ')[0], label: 'Expiring soon (≤2 days)' },
+];
 
 export default function PurchaseOrdersList() {
   const navigate = useNavigate();
@@ -218,6 +225,8 @@ export default function PurchaseOrdersList() {
           <Button variant="outline" onClick={applySearch}>Search</Button>
         </div>
       </div>
+
+      <Legend items={EXPIRY_LEGEND} className="mb-2" />
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">

@@ -29,7 +29,9 @@
       "Bash(rm -f verify.db)",
       "Bash(export TURSO_DATABASE_URL=\"file:./verify.db\")",
       "Bash(curl -s -D - -o /dev/null http://localhost:5099/api/health)",
-      "Bash(curl -s http://localhost:5099/api/health)"
+      "Bash(curl -s http://localhost:5099/api/health)",
+      "Bash(npx eslint *)",
+      "Bash(echo \"=== EXIT: $? ===\")"
     ]
   }
 }

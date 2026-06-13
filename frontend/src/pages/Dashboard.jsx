@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import AppShell from '../components/layout/AppShell';
+import Legend from '../components/ui/Legend';
 import { listPOs } from '../api/marketplacePO.api';
 import { listOrderSummary, getGrnAppointmentsByDate } from '../api/orderSummary.api';
 import { ClipboardList, Truck, CalendarClock } from 'lucide-react';
@@ -33,6 +34,13 @@ const thresholdColor = (n, t) => {
   if (n >= t.warn)  return 'yellow';
   return 'navy';
 };
+
+// Explains the workload colour coding on the stat cards.
+const THRESHOLD_LEGEND = [
+  { swatch: 'bg-[#003049]/20', label: 'Normal' },
+  { swatch: 'bg-yellow-200',   label: 'Warning — building up' },
+  { swatch: 'bg-red-200',      label: 'High — needs attention' },
+];
 
 function StatCard({ to, label, value, icon: Icon, color }) {
   const colors = {
@@ -205,6 +213,8 @@ export default function Dashboard() {
               </>
             )}
           </div>
+
+          <Legend items={THRESHOLD_LEGEND} className="mt-3" />
 
           {canSeeGRN && (
             <section className="mt-6">
