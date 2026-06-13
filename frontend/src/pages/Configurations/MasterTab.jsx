@@ -93,13 +93,13 @@ export default function MasterTab({
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="px-4 py-3 text-left font-semibold text-gray-600 w-16">#</th>
+                <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">#</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600">Name</th>
                 {extraColumn && (
-                  <th className="px-4 py-3 text-left font-semibold text-gray-600 w-44">{extraColumn.header}</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{extraColumn.header}</th>
                 )}
-                <th className="px-4 py-3 text-left font-semibold text-gray-600 w-32">Status</th>
-                {canAdmin && <th className="px-4 py-3 text-left font-semibold text-gray-600 w-32">Actions</th>}
+                <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Status</th>
+                {canAdmin && <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Actions</th>}
               </tr>
             </thead>
             <tbody>

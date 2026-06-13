@@ -142,7 +142,7 @@ export default function TeamManagement() {
                   ))}
                 </div>
                 {isAdmin && (
-                  <div className="flex gap-2 mt-3">
+                  <div className="flex gap-2 mt-3 flex-wrap">
                     <input
                       type="text"
                       value={newMember[team.id] || ''}

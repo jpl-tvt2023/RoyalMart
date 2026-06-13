@@ -162,7 +162,7 @@ export default function UserManagement() {
           )}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Roles <span className="text-gray-400 font-normal">(pick one or more)</span></label>
-            <div className="grid grid-cols-2 gap-2 p-3 border border-gray-200 rounded-lg">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-3 border border-gray-200 rounded-lg">
               {ROLES.map(r => (
                 <label key={r} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
                   <input
