@@ -1,10 +1,20 @@
 require('./src/config/env');
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const errorHandler = require('./src/middleware/errorHandler');
+const { globalLimiter } = require('./src/middleware/rateLimit');
 
 const app = express();
+
+// Behind Vercel / a reverse proxy: needed for Secure/SameSite=None cookies and
+// for rate limiters to see the real client IP rather than the proxy's.
+app.set('trust proxy', 1);
+
+// Security headers (nosniff, frameguard, referrer-policy, HSTS, etc.).
+// The SPA document's CSP is set on the static host (frontend/vercel.json).
+app.use(helmet());
 
 const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
   .split(',')
@@ -17,8 +27,9 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json());
+app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
+app.use(globalLimiter);
 
 app.use('/api/auth',         require('./src/routes/auth.routes'));
 app.use('/api/users',        require('./src/routes/users.routes'));

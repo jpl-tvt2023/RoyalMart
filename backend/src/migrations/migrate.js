@@ -15,6 +15,9 @@ function splitSQL(sql) {
 
 async function migrate() {
   try {
+    // Enforce FKs during migrations (no-op inside a transaction, so set it first).
+    await db.execute('PRAGMA foreign_keys = ON');
+
     await db.execute(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         filename   TEXT PRIMARY KEY,
