@@ -1,7 +1,9 @@
 const bcrypt = require('bcryptjs');
 const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
+const { validatePassword } = require('../services/passwordPolicy');
 
+const BCRYPT_COST = 12;
 const VALID_ROLES = ['Admin','Owner','Office_POC','Purchase_Team','Warehouse_POC','PO_Executive'];
 
 function coerceUser(row) {
@@ -60,7 +62,10 @@ async function create(req, res, next) {
     const rolesErr = validateRoles(roles);
     if (rolesErr) return res.status(400).json({ message: rolesErr });
 
-    const hash = await bcrypt.hash(password, 10);
+    const policyError = await validatePassword(password);
+    if (policyError) return res.status(400).json({ message: policyError });
+
+    const hash = await bcrypt.hash(password, BCRYPT_COST);
     const { rows } = await db.execute({
       sql: `INSERT INTO users (name, email, password_hash, is_first_login)
             VALUES (?,?,?,1) RETURNING id, name, email, is_first_login, created_at`,
@@ -149,12 +154,12 @@ async function adminResetPassword(req, res, next) {
   try {
     const { id } = req.params;
     const { newPassword } = req.body;
-    if (!newPassword || newPassword.length < 8) {
-      return res.status(400).json({ message: 'Password must be at least 8 characters' });
-    }
-    const hash = await bcrypt.hash(newPassword, 10);
+    const policyError = await validatePassword(newPassword);
+    if (policyError) return res.status(400).json({ message: policyError });
+    const hash = await bcrypt.hash(newPassword, BCRYPT_COST);
+    // Also clear MFA so a user who lost their authenticator can recover via admin reset.
     const { rows } = await db.execute({
-      sql: 'UPDATE users SET password_hash = ?, is_first_login = 1 WHERE id = ? RETURNING email',
+      sql: 'UPDATE users SET password_hash = ?, is_first_login = 1, mfa_enabled = 0, mfa_secret = NULL WHERE id = ? RETURNING email',
       args: [hash, id],
     });
     if (!rows.length) return res.status(404).json({ message: 'User not found' });
