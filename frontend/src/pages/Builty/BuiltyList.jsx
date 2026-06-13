@@ -5,12 +5,18 @@ import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import Modal from '../../components/ui/Modal';
+import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { listOrderSummary, updateOrderSummary, getOrderSummaryCountsByVendor } from '../../api/orderSummary.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { formatDateTime } from '../../utils/formatters';
 import { useRBAC } from '../../hooks/useRBAC';
+
+// Row highlight for rows with edits not yet saved (kept in one place so the
+// legend swatch and the actual row colour can't drift apart).
+const DIRTY_ROW = 'bg-amber-50/60';
+const UNSAVED_LEGEND = [{ swatch: DIRTY_ROW, label: 'Unsaved changes' }];
 
 const VENDOR_TABS = [
   { key: 'Blinkit', label: 'Blinkit' },
@@ -277,6 +283,8 @@ export default function BuiltyList() {
         </div>
       </div>
 
+      <Legend items={UNSAVED_LEGEND} className="mb-2" />
+
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -306,7 +314,7 @@ export default function BuiltyList() {
                 const editBillNo = valueOf(po, 'bill_no') ?? '';
                 const onKey = onCellKeyDown(po.po_id);
                 return (
-                  <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? 'bg-amber-50/60' : 'hover:bg-gray-50'}`}>
+                  <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? DIRTY_ROW : 'hover:bg-gray-50'}`}>
                     {COLUMNS.map(col => {
                       switch (col.key) {
                         case 'po_id':

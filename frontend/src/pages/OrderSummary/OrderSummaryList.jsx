@@ -7,6 +7,7 @@ import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import Badge from '../../components/ui/Badge';
 import Modal from '../../components/ui/Modal';
+import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { listOrderSummary, updateOrderSummary, bulkUpdateOrderSummary } from '../../api/orderSummary.api';
 import { getUsers } from '../../api/users.api';
@@ -17,6 +18,10 @@ import { formatDateTime } from '../../utils/formatters';
 import { useRBAC, qualifiesAs } from '../../hooks/useRBAC';
 
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
+
+// Row highlight for rows with edits not yet saved (single source for row + legend).
+const DIRTY_ROW = 'bg-amber-50/60';
+const UNSAVED_LEGEND = [{ swatch: DIRTY_ROW, label: 'Unsaved changes' }];
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -508,6 +513,8 @@ export default function OrderSummaryList() {
       )}
 
       {/* Table */}
+      <Legend items={UNSAVED_LEGEND} className="mb-2" />
+
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -552,7 +559,7 @@ export default function OrderSummaryList() {
                 const editTracking = valueOf(po, 'tracking_id') ?? '';
                 const onKey = onCellKeyDown(po.po_id);
                 return (
-                  <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? 'bg-amber-50/60' : 'hover:bg-gray-50'}`}>
+                  <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? DIRTY_ROW : 'hover:bg-gray-50'}`}>
                     {canEdit && (
                       <td className="px-3 py-2">
                         <input

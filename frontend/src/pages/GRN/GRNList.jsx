@@ -6,11 +6,16 @@ import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import Badge from '../../components/ui/Badge';
+import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { listOrderSummary, updateOrderSummary } from '../../api/orderSummary.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { formatDateTime } from '../../utils/formatters';
+
+// Row highlight for rows with edits not yet saved (single source for row + legend).
+const DIRTY_ROW = 'bg-amber-50/60';
+const UNSAVED_LEGEND = [{ swatch: DIRTY_ROW, label: 'Unsaved changes' }];
 import { useRBAC } from '../../hooks/useRBAC';
 
 const VENDOR_TABS = [
@@ -343,6 +348,8 @@ export default function GRNList() {
         </div>
       </div>
 
+      <Legend items={UNSAVED_LEGEND} className="mb-2" />
+
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -384,7 +391,7 @@ export default function GRNList() {
                 const discQtyNum = editDiscQty == null || editDiscQty === '' ? 0 : Number(editDiscQty);
                 const onKey = onCellKeyDown(po.po_id);
                 return (
-                  <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? 'bg-amber-50/60' : 'hover:bg-gray-50'}`}>
+                  <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? DIRTY_ROW : 'hover:bg-gray-50'}`}>
                     {COLUMNS.map(col => {
                       switch (col.key) {
                         case 'po_date':
