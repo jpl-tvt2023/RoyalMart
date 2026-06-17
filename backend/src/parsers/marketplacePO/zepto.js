@@ -76,8 +76,17 @@ async function parseZepto(buffer) {
       item_code = flatLines[j];
       j++;
     } else {
-      i++;
-      continue;
+      // Page-break fallback: pdf-parse can glue the next row's head onto its
+      // description, e.g. "1310125Item name…". Match "<sr><material(6d)>" followed
+      // by a non-digit. Acceptance is still gated by the qty arithmetic below,
+      // so this cannot fabricate a line.
+      const merged = line.match(new RegExp(`^${srStr}(\\d{6})\\D`));
+      if (merged) {
+        item_code = merged[1];
+      } else {
+        i++;
+        continue;
+      }
     }
 
     // Skip description lines (anything not starting with a digit / decimal / %).

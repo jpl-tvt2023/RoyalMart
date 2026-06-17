@@ -32,7 +32,8 @@
       "Bash(curl -s http://localhost:5099/api/health)",
       "Bash(npx eslint *)",
       "Bash(echo \"=== EXIT: $? ===\")",
-      "PowerShell(cd \"d:\\\\My Projects\\\\Royal Mart Portal\\\\backend\"; node -e \"const db=require\\('./src/config/db'\\); \\(async\\(\\)=>{ const r=await db.execute\\('SELECT user_id, role FROM user_roles ORDER BY user_id'\\); console.log\\('user_roles:', JSON.stringify\\(r.rows\\)\\); const c=await db.execute\\(\\\\\"PRAGMA table_info\\(audit_logs\\)\\\\\"\\); console.log\\('audit_logs cols:', c.rows.map\\(x=>x.name\\).join\\(','\\)\\); const p=await db.execute\\(\\\\\"PRAGMA table_info\\(products\\)\\\\\"\\); console.log\\('products cols:', p.rows.map\\(x=>x.name\\).join\\(','\\)\\); db.close\\(\\); }\\)\\(\\);\")"
+      "PowerShell(cd \"d:\\\\My Projects\\\\Royal Mart Portal\\\\backend\"; node -e \"const db=require\\('./src/config/db'\\); \\(async\\(\\)=>{ const r=await db.execute\\('SELECT user_id, role FROM user_roles ORDER BY user_id'\\); console.log\\('user_roles:', JSON.stringify\\(r.rows\\)\\); const c=await db.execute\\(\\\\\"PRAGMA table_info\\(audit_logs\\)\\\\\"\\); console.log\\('audit_logs cols:', c.rows.map\\(x=>x.name\\).join\\(','\\)\\); const p=await db.execute\\(\\\\\"PRAGMA table_info\\(products\\)\\\\\"\\); console.log\\('products cols:', p.rows.map\\(x=>x.name\\).join\\(','\\)\\); db.close\\(\\); }\\)\\(\\);\")",
+      "Bash(node -e \"const {parse,hasParser}=require\\('./src/parsers/marketplacePO'\\); console.log\\('hasParser Scootsy:', hasParser\\('Scootsy'\\)\\); console.log\\('parse fn loaded:', typeof parse\\); const s=require\\('./src/parsers/marketplacePO/scootsy'\\); console.log\\('scootsy entry:', typeof s\\);\")"
     ]
   }
 }
