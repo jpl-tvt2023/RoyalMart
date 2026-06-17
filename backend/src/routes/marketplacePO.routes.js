@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const multer = require('multer');
 const auth = require('../middleware/auth');
-const { allowRoles } = require('../middleware/rbac');
+const { allowRoles, ALL_ROLES } = require('../middleware/rbac');
 const c = require('../controllers/marketplacePO.controller');
 
 const upload = multer({
@@ -13,7 +13,7 @@ const upload = multer({
   },
 });
 
-const guards = [auth, allowRoles('PO_Executive', 'Admin', 'Owner')];
+const guards = [auth, allowRoles(...ALL_ROLES)];
 
 router.post('/parse', ...guards, upload.single('file'), c.parsePreview);
 router.get('/',       ...guards, c.list);

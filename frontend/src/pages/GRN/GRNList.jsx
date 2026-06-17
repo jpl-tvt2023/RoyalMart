@@ -12,6 +12,7 @@ import { listOrderSummary, updateOrderSummary } from '../../api/orderSummary.api
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { formatDateTime } from '../../utils/formatters';
+import { HistoryButton } from '../../components/shared/HistoryDrawer';
 
 // Row highlight for rows with edits not yet saved (single source for row + legend).
 const DIRTY_ROW = 'bg-amber-50/60';
@@ -91,8 +92,7 @@ const buildColumns = (vendorTab) => [
 ];
 
 export default function GRNList() {
-  const { canAccess } = useRBAC();
-  const canEdit = canAccess('Admin', 'Owner', 'Office_POC', 'PO_Executive');
+  const { canEdit } = useRBAC();
 
   const [searchParams] = useSearchParams();
   const [vendorTab, setVendorTab] = useState(() => seededVendorTabFromURL(searchParams));
@@ -585,27 +585,30 @@ export default function GRNList() {
                     })}
                     {canEdit && (
                       <td className="px-3 py-2 whitespace-nowrap">
-                        {dirty && (
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => saveRow(po)}
-                              disabled={savingId === po.po_id}
-                              title="Save"
-                              className="p-1.5 rounded bg-[#c1121f] text-white hover:bg-[#a01019] disabled:opacity-40"
-                            >
-                              <Save size={14} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => cancelEdit(po.po_id)}
-                              title="Cancel (Esc)"
-                              className="p-1.5 rounded text-gray-500 hover:bg-gray-100"
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
-                        )}
+                        <div className="flex items-center gap-1">
+                          {dirty && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => saveRow(po)}
+                                disabled={savingId === po.po_id}
+                                title="Save"
+                                className="p-1.5 rounded bg-[#c1121f] text-white hover:bg-[#a01019] disabled:opacity-40"
+                              >
+                                <Save size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => cancelEdit(po.po_id)}
+                                title="Cancel (Esc)"
+                                className="p-1.5 rounded text-gray-500 hover:bg-gray-100"
+                              >
+                                <X size={14} />
+                              </button>
+                            </>
+                          )}
+                          <HistoryButton entityType="marketplace_po" entityId={po.po_id} title={`History — ${po.po_id}`} />
+                        </div>
                       </td>
                     )}
                   </tr>

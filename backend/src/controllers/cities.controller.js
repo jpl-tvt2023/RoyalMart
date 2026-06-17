@@ -1,5 +1,5 @@
 const db = require('../config/db');
-const { logAction } = require('../services/auditLog.service');
+const { logAction, diffFields } = require('../services/auditLog.service');
 
 function normName(v) {
   return v == null ? '' : String(v).trim();
@@ -8,7 +8,11 @@ function normName(v) {
 async function list(req, res, next) {
   try {
     const { rows } = await db.execute(
-      'SELECT id, name, is_active, created_at FROM cities ORDER BY is_active DESC, name ASC'
+      `SELECT c.id, c.name, c.is_active, c.created_at, c.updated_at,
+              u.name AS updated_by_name
+       FROM cities c
+       LEFT JOIN users u ON u.id = c.updated_by
+       ORDER BY c.is_active DESC, c.name ASC`
     );
     res.json(rows);
   } catch (err) { next(err); }
@@ -58,9 +62,11 @@ async function update(req, res, next) {
     let nextActive = current.is_active;
     if (has('is_active')) nextActive = req.body.is_active ? 1 : 0;
 
+    const changes = diffFields(current, { name: nextName, is_active: nextActive }, ['name', 'is_active']);
     const { rows } = await db.execute({
-      sql: 'UPDATE cities SET name = ?, is_active = ? WHERE id = ? RETURNING id, name, is_active, created_at',
-      args: [nextName, nextActive, id],
+      sql: `UPDATE cities SET name = ?, is_active = ?, updated_by = ?, updated_at = datetime('now')
+            WHERE id = ? RETURNING id, name, is_active, created_at, updated_at`,
+      args: [nextName, nextActive, req.user.id, id],
     });
     await logAction({
       userId: req.user.id,
@@ -68,6 +74,7 @@ async function update(req, res, next) {
       description: `Updated city #${id}: name="${nextName}", active=${nextActive}`,
       entityType: 'city',
       entityId: id,
+      changes,
     });
     res.json(rows[0]);
   } catch (err) {

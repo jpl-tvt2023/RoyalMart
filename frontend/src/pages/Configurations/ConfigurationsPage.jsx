@@ -44,6 +44,7 @@ export default function ConfigurationsPage() {
         <MasterTab
           label="City"
           labelPlural="cities"
+          entityType="city"
           listFn={listCities}
           createFn={createCity}
           updateFn={updateCity}
@@ -54,6 +55,7 @@ export default function ConfigurationsPage() {
         <MasterTab
           label="Vendor"
           labelPlural="vendors"
+          entityType="vendor"
           listFn={listVendors}
           createFn={createVendor}
           updateFn={updateVendor}
@@ -70,6 +72,7 @@ export default function ConfigurationsPage() {
         <MasterTab
           label="Courier"
           labelPlural="couriers"
+          entityType="courier"
           listFn={listCouriers}
           createFn={createCourier}
           updateFn={updateCourier}

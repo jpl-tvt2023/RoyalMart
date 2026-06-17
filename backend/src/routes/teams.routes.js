@@ -1,10 +1,10 @@
 const router = require('express').Router();
 const auth = require('../middleware/auth');
-const { allowRoles } = require('../middleware/rbac');
+const { allowRoles, ALL_ROLES, ADMIN_ROLES } = require('../middleware/rbac');
 const c = require('../controllers/teams.controller');
 
-const adminOnly = allowRoles('Admin', 'Owner');
-const canView   = allowRoles('Admin','Owner','Office_POC','Purchase_Team','Warehouse_POC');
+const adminOnly = allowRoles(...ADMIN_ROLES);
+const canView   = allowRoles(...ALL_ROLES);
 
 router.get('/',                        auth, canView, c.list);
 router.post('/',                       auth, adminOnly, c.create);

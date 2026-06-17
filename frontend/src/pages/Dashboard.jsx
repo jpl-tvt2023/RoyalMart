@@ -136,7 +136,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { canAccess } = useRBAC();
   const canSeeGRN    = canAccess('Admin', 'Owner', 'Office_POC', 'Warehouse_POC');
-  const canSeeExpiry = canAccess('Admin', 'Owner', 'Purchase_Team', 'PO_Executive');
+  const canSeeExpiry = canAccess('Admin', 'Owner', 'Employee', 'Office_POC', 'Warehouse_POC');
 
   const [state, setState] = useState({});
   const [loading, setLoading] = useState(true);

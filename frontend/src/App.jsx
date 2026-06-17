@@ -16,10 +16,7 @@ import BuiltyList from './pages/Builty/BuiltyList';
 import GRNList from './pages/GRN/GRNList';
 import ConfigurationsPage from './pages/Configurations/ConfigurationsPage';
 import ProductList from './pages/products/ProductList';
-
-const ALL_ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Warehouse_POC', 'PO_Executive'];
-const PO_ROLES = ['Admin', 'Owner', 'PO_Executive'];
-const ADMIN_ONLY = ['Admin', 'Owner'];
+import { ALL_ROLES, ADMIN_ONLY } from './utils/roles';
 
 export default function App() {
   return (
@@ -59,25 +56,25 @@ export default function App() {
           } />
 
           <Route path="/purchase-orders" element={
-            <ProtectedRoute roles={PO_ROLES}><PurchaseOrdersList /></ProtectedRoute>
+            <ProtectedRoute roles={ALL_ROLES}><PurchaseOrdersList /></ProtectedRoute>
           } />
           <Route path="/purchase-orders/new" element={
-            <ProtectedRoute roles={PO_ROLES}><PurchaseOrderImport /></ProtectedRoute>
+            <ProtectedRoute roles={ALL_ROLES}><PurchaseOrderImport /></ProtectedRoute>
           } />
           <Route path="/purchase-orders/:poId" element={
-            <ProtectedRoute roles={PO_ROLES}><PurchaseOrderDetail /></ProtectedRoute>
+            <ProtectedRoute roles={ALL_ROLES}><PurchaseOrderDetail /></ProtectedRoute>
           } />
 
           <Route path="/order-summary" element={
-            <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'PO_Executive']}><OrderSummaryList /></ProtectedRoute>
+            <ProtectedRoute roles={ALL_ROLES}><OrderSummaryList /></ProtectedRoute>
           } />
 
           <Route path="/builty" element={
-            <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'PO_Executive']}><BuiltyList /></ProtectedRoute>
+            <ProtectedRoute roles={ALL_ROLES}><BuiltyList /></ProtectedRoute>
           } />
 
           <Route path="/grn" element={
-            <ProtectedRoute roles={['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'PO_Executive']}><GRNList /></ProtectedRoute>
+            <ProtectedRoute roles={ALL_ROLES}><GRNList /></ProtectedRoute>
           } />
 
           <Route path="/configurations" element={

@@ -1,9 +1,14 @@
 const db = require('../config/db');
-const { logAction } = require('../services/auditLog.service');
+const { logAction, diffFields } = require('../services/auditLog.service');
 
 async function list(req, res, next) {
   try {
-    const { rows: teams } = await db.execute('SELECT * FROM warehouse_teams ORDER BY created_at DESC');
+    const { rows: teams } = await db.execute(
+      `SELECT t.*, u.name AS updated_by_name
+       FROM warehouse_teams t
+       LEFT JOIN users u ON u.id = t.updated_by
+       ORDER BY t.created_at DESC`
+    );
     const { rows: members } = await db.execute('SELECT * FROM team_members ORDER BY id');
     const result = teams.map(t => ({
       ...t,
@@ -30,12 +35,19 @@ async function update(req, res, next) {
   try {
     const { id } = req.params;
     const { team_name, lead_name } = req.body;
+
+    const { rows: existing } = await db.execute({ sql: 'SELECT * FROM warehouse_teams WHERE id = ?', args: [id] });
+    if (!existing.length) return res.status(404).json({ message: 'Team not found' });
+
     const { rows } = await db.execute({
-      sql: 'UPDATE warehouse_teams SET team_name = COALESCE(?, team_name), lead_name = COALESCE(?, lead_name) WHERE id = ? RETURNING *',
-      args: [team_name || null, lead_name || null, id],
+      sql: `UPDATE warehouse_teams
+            SET team_name = COALESCE(?, team_name), lead_name = COALESCE(?, lead_name),
+                updated_by = ?, updated_at = datetime('now')
+            WHERE id = ? RETURNING *`,
+      args: [team_name || null, lead_name || null, req.user.id, id],
     });
-    if (!rows.length) return res.status(404).json({ message: 'Team not found' });
-    await logAction({ userId: req.user.id, actionType: 'TEAM_UPDATE', description: `Updated team: ${rows[0].team_name}`, entityType: 'warehouse_team', entityId: id });
+    const changes = diffFields(existing[0], rows[0], ['team_name', 'lead_name']);
+    await logAction({ userId: req.user.id, actionType: 'TEAM_UPDATE', description: `Updated team: ${rows[0].team_name}`, entityType: 'warehouse_team', entityId: id, changes });
     res.json(rows[0]);
   } catch (err) { next(err); }
 }

@@ -1,6 +1,12 @@
 const db = require('../config/db');
-const { logAction } = require('../services/auditLog.service');
+const { logAction, diffFields } = require('../services/auditLog.service');
 const { userQualifiesAs } = require('../services/userRoles.service');
+
+const ORDER_SUMMARY_FIELDS = [
+  'office_poc', 'warehouse_poc', 'status', 'dispatch_date', 'courier_id', 'tracking_id',
+  'bill_no', 'appointment_date', 'asn', 'grn_status', 'grn_date', 'grn_qty', 'grn_number',
+  'discrepancy_qty', 'discrepancy_number', 'note',
+];
 const { buildPagination, buildOrderBy } = require('./marketplacePO.controller');
 
 const VALID_STATUSES = ['Open', 'Closed'];
@@ -457,12 +463,22 @@ async function updateOne(req, res, next) {
           req.user.id, poId,
         ],
       });
+      const changes = diffFields(current, {
+        office_poc: officePoc, warehouse_poc: warehousePoc, status: nextStatus,
+        dispatch_date: nextDispatchDate, courier_id: nextCourierId, tracking_id: nextTrackingId,
+        bill_no: nextBillNo, appointment_date: nextAppointmentDate, asn: nextAsn,
+        grn_status: nextGrnStatus, grn_date: nextGrnDate, grn_qty: nextGrnQty,
+        grn_number: nextGrnNumber, discrepancy_qty: nextDiscrepancyQty,
+        discrepancy_number: nextDiscrepancyNumber, note: nextNote,
+      }, ORDER_SUMMARY_FIELDS);
       await logAction({
         client: tx,
         userId: req.user.id,
         actionType: 'ORDER_SUMMARY_UPDATE',
         description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}, note=${nextNote ? '"' + nextNote.slice(0, 60) + (nextNote.length > 60 ? '…' : '') + '"' : '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
         entityType: 'marketplace_po',
+        entityRef: poId,
+        changes,
       });
       await tx.commit();
       res.json({ po_id: poId });
@@ -508,9 +524,10 @@ async function bulkUpdate(req, res, next) {
 
     const placeholders = po_ids.map(() => '?').join(',');
     const { rows: existing } = await db.execute({
-      sql: `SELECT po_id FROM marketplace_pos WHERE po_id IN (${placeholders})`,
+      sql: `SELECT po_id, office_poc, warehouse_poc FROM marketplace_pos WHERE po_id IN (${placeholders})`,
       args: po_ids,
     });
+    const prevById = new Map(existing.map(r => [r.po_id, r]));
     if (existing.length !== po_ids.length) {
       const found = new Set(existing.map(r => r.po_id));
       const missing = po_ids.filter(id => !found.has(id));
@@ -540,13 +557,23 @@ async function bulkUpdate(req, res, next) {
       const parts = [];
       if (hasOffice) parts.push(`office_poc=${officePocValue ?? '—'}`);
       if (hasWarehouse) parts.push(`warehouse_poc=${warehousePocValue ?? '—'}`);
-      await logAction({
-        client: tx,
-        userId: req.user.id,
-        actionType: 'ORDER_SUMMARY_BULK_UPDATE',
-        description: `Bulk-reassigned ${po_ids.length} orders (${parts.join(', ')}): ${summary}`,
-        entityType: 'marketplace_po',
-      });
+      // One audit entry per PO so each record's history reflects the reassignment.
+      const next = {};
+      if (hasOffice) next.office_poc = officePocValue;
+      if (hasWarehouse) next.warehouse_poc = warehousePocValue;
+      const diffCols = [hasOffice && 'office_poc', hasWarehouse && 'warehouse_poc'].filter(Boolean);
+      for (const poId of po_ids) {
+        const changes = diffFields(prevById.get(poId) || {}, next, diffCols);
+        await logAction({
+          client: tx,
+          userId: req.user.id,
+          actionType: 'ORDER_SUMMARY_BULK_UPDATE',
+          description: `Bulk-reassigned (${parts.join(', ')})`,
+          entityType: 'marketplace_po',
+          entityRef: poId,
+          changes,
+        });
+      }
       await tx.commit();
       res.json({ updated: po_ids.length });
     } catch (e) {
