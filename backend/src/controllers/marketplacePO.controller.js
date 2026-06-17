@@ -1,6 +1,5 @@
 const db = require('../config/db');
-const { logAction } = require('../services/auditLog.service');
-const { userQualifiesAs } = require('../services/userRoles.service');
+const { logAction, diffFields } = require('../services/auditLog.service');
 const { parse, hasParser } = require('../parsers/marketplacePO');
 
 const VALID_STATUSES = ['Open', 'Closed'];
@@ -255,6 +254,7 @@ async function create(req, res, next) {
         actionType: isNew ? 'MARKETPLACE_PO_CREATE' : 'MARKETPLACE_PO_UPSERT',
         description: `${isNew ? 'Created' : 'Upserted'} ${vendor} PO ${poId} (vendor_po_id=${cleanVendorPoId}, ${lines.length} lines)`,
         entityType: 'marketplace_po',
+        entityRef: poId,
       });
 
       await tx.commit();
@@ -270,7 +270,7 @@ async function update(req, res, next) {
   try {
     const { poId } = req.params;
     const { rows: existing } = await db.execute({
-      sql: 'SELECT vendor, vendor_po_id FROM marketplace_pos WHERE po_id = ?',
+      sql: 'SELECT vendor, vendor_po_id, po_date, po_expiry_date, city FROM marketplace_pos WHERE po_id = ?',
       args: [poId],
     });
     if (!existing.length) return res.status(404).json({ message: 'PO not found' });
@@ -296,9 +296,6 @@ async function update(req, res, next) {
         args: [onbId],
       });
       if (!u.length) return res.status(400).json({ message: 'Onboarder user not found' });
-      if (!(await userQualifiesAs(onbId, 'PO_Executive'))) {
-        return res.status(400).json({ message: 'Onboarder must be a PO_Executive (or Admin/Owner)' });
-      }
       newOnboardedBy = onbId;
     }
 
@@ -333,12 +330,15 @@ async function update(req, res, next) {
           args: [poId, Number(ln.line_no) || idx + 1, String(ln.item_code).trim(), ln.item_desc || null, Math.trunc(Number(ln.qty))],
         });
       }
+      const changes = diffFields(existing[0], body, ['vendor_po_id', 'po_date', 'po_expiry_date', 'city']);
       await logAction({
         client: tx,
         userId: req.user.id,
         actionType: 'MARKETPLACE_PO_UPDATE',
         description: `Updated PO ${poId} (${body.lines.length} lines)`,
         entityType: 'marketplace_po',
+        entityRef: poId,
+        changes,
       });
       await tx.commit();
       res.json({ po_id: poId });
@@ -362,6 +362,7 @@ async function remove(req, res, next) {
       actionType: 'MARKETPLACE_PO_DELETE',
       description: `Deleted PO ${poId}`,
       entityType: 'marketplace_po',
+      entityRef: poId,
     });
     res.json({ po_id: poId, deleted: true });
   } catch (err) { next(err); }

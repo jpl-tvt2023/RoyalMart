@@ -9,6 +9,7 @@ import { listVendors } from '../../api/vendors.api';
 import { Plus, Pencil, Trash2, Search, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useRBAC } from '../../hooks/useRBAC';
+import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import BulkUploadModal from './BulkUploadModal';
 
 const TABS = [
@@ -50,8 +51,7 @@ export default function ProductList() {
 const EMPTY_MAPPING = { product_id: '', vendor: '', vendor_item_code: '', product_description: '' };
 
 function VendorMappingsTab() {
-  const { canAccess } = useRBAC();
-  const canWrite = canAccess('Admin', 'Owner', 'PO_Executive');
+  const { canEdit: canWrite } = useRBAC();
 
   const [rows, setRows] = useState([]);
   const [skus, setSkus] = useState([]);
@@ -186,6 +186,7 @@ function VendorMappingsTab() {
                       <div className="flex items-center gap-1">
                         <button onClick={() => openEdit(r)} className="p-1.5 rounded hover:bg-blue-50 text-blue-500"><Pencil size={14} /></button>
                         <button onClick={() => setConfirmDelete({ id: r.id, label: `${r.sku_code} → ${r.vendor}/${r.vendor_item_code}` })} className="p-1.5 rounded hover:bg-red-50 text-red-500"><Trash2 size={14} /></button>
+                        <HistoryButton entityType="product_vendor_code" entityId={r.id} title="Mapping history" />
                       </div>
                     </td>
                   )}
@@ -300,8 +301,7 @@ function VendorMappingsTab() {
 const EMPTY_SKU = { sku_code: '', name: '', hsn_code: '', fabric_type: '', gsm: '', color: '', safety_threshold: 0 };
 
 function SKUsTab() {
-  const { canAccess } = useRBAC();
-  const canWrite = canAccess('Admin', 'Owner');
+  const { canEdit: canWrite } = useRBAC();
 
   const [skus, setSkus] = useState([]);
   const [search, setSearch] = useState('');
@@ -424,6 +424,7 @@ function SKUsTab() {
                       <div className="flex items-center gap-1">
                         <button onClick={() => openEdit(s)} className="p-1.5 rounded hover:bg-blue-50 text-blue-500"><Pencil size={14} /></button>
                         <button onClick={() => setConfirmDelete({ id: s.id, name: s.name })} className="p-1.5 rounded hover:bg-red-50 text-red-500"><Trash2 size={14} /></button>
+                        <HistoryButton entityType="product" entityId={s.id} title={`History — ${s.sku_code}`} />
                       </div>
                     </td>
                   )}

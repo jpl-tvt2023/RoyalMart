@@ -1,3 +1,11 @@
+// Canonical role set.
+//   Admin / Owner    — full access, including the Admin section.
+//   Employee         — full access EXCEPT the Admin section (users, teams, configurations).
+//   Office_POC /      — assignment-qualifier roles only (who can be set as a PO's
+//   Warehouse_POC       Office/Warehouse POC); they do not grant page access on their own.
+const ALL_ROLES = ['Admin', 'Owner', 'Employee', 'Office_POC', 'Warehouse_POC'];
+const ADMIN_ROLES = ['Admin', 'Owner'];
+
 const allowRoles = (...allowed) => (req, res, next) => {
   const userRoles = req.user?.roles || [];
   if (!userRoles.some(r => allowed.includes(r))) {
@@ -6,4 +14,4 @@ const allowRoles = (...allowed) => (req, res, next) => {
   next();
 };
 
-module.exports = { allowRoles };
+module.exports = { allowRoles, ALL_ROLES, ADMIN_ROLES };

@@ -1,14 +1,18 @@
 const db = require('../config/db');
-const { logAction } = require('../services/auditLog.service');
+const { logAction, diffFields } = require('../services/auditLog.service');
+
+const PVC_FIELDS = ['product_id', 'vendor', 'vendor_item_code', 'product_description'];
 
 async function list(req, res, next) {
   try {
     const { rows } = await db.execute(`
       SELECT pvc.id, pvc.product_id, pvc.vendor, pvc.vendor_item_code,
-             pvc.product_description, pvc.created_at,
-             p.sku_code, p.name AS product_name
+             pvc.product_description, pvc.created_at, pvc.updated_at,
+             p.sku_code, p.name AS product_name,
+             u.name AS updated_by_name
       FROM product_vendor_codes pvc
       JOIN products p ON p.id = pvc.product_id
+      LEFT JOIN users u ON u.id = pvc.updated_by
       ORDER BY p.sku_code, pvc.vendor
     `);
     res.json(rows);
@@ -68,19 +72,25 @@ async function update(req, res, next) {
     const err = validate(req.body);
     if (err) return res.status(400).json({ message: err });
     const { product_id, vendor, vendor_item_code, product_description } = req.body;
+
+    const { rows: existing } = await db.execute({ sql: 'SELECT * FROM product_vendor_codes WHERE id = ?', args: [id] });
+    if (!existing.length) return res.status(404).json({ message: 'Mapping not found' });
+
     const { rows } = await db.execute({
       sql: `UPDATE product_vendor_codes
-            SET product_id = ?, vendor = ?, vendor_item_code = ?, product_description = ?
+            SET product_id = ?, vendor = ?, vendor_item_code = ?, product_description = ?,
+                updated_by = ?, updated_at = datetime('now')
             WHERE id = ? RETURNING *`,
-      args: [Number(product_id), String(vendor).trim(), String(vendor_item_code).trim(), normDesc(product_description), id],
+      args: [Number(product_id), String(vendor).trim(), String(vendor_item_code).trim(), normDesc(product_description), req.user.id, id],
     });
-    if (!rows.length) return res.status(404).json({ message: 'Mapping not found' });
+    const changes = diffFields(existing[0], rows[0], PVC_FIELDS);
     await logAction({
       userId: req.user.id,
       actionType: 'PRODUCT_VENDOR_CODE_UPDATE',
       description: `Updated mapping #${id} → ${vendor}/${vendor_item_code}`,
       entityType: 'product_vendor_code',
       entityId: id,
+      changes,
     });
     res.json(rows[0]);
   } catch (err) {
@@ -154,12 +164,14 @@ async function bulkUpsert(req, res, next) {
 
       try {
         await db.execute({
-          sql: `INSERT INTO product_vendor_codes (product_id, vendor, vendor_item_code, product_description)
-                VALUES (?, ?, ?, ?)
+          sql: `INSERT INTO product_vendor_codes (product_id, vendor, vendor_item_code, product_description, updated_by, updated_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(vendor, vendor_item_code) DO UPDATE SET
                   product_id = excluded.product_id,
-                  product_description = excluded.product_description`,
-          args: [product_id, vendor, vendor_item_code, product_description],
+                  product_description = excluded.product_description,
+                  updated_by = excluded.updated_by,
+                  updated_at = excluded.updated_at`,
+          args: [product_id, vendor, vendor_item_code, product_description, req.user.id],
         });
         if (isUpdate) updated++;
         else { inserted++; existingKeys.add(key); }

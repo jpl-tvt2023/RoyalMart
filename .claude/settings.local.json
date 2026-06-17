@@ -31,7 +31,8 @@
       "Bash(curl -s -D - -o /dev/null http://localhost:5099/api/health)",
       "Bash(curl -s http://localhost:5099/api/health)",
       "Bash(npx eslint *)",
-      "Bash(echo \"=== EXIT: $? ===\")"
+      "Bash(echo \"=== EXIT: $? ===\")",
+      "PowerShell(cd \"d:\\\\My Projects\\\\Royal Mart Portal\\\\backend\"; node -e \"const db=require\\('./src/config/db'\\); \\(async\\(\\)=>{ const r=await db.execute\\('SELECT user_id, role FROM user_roles ORDER BY user_id'\\); console.log\\('user_roles:', JSON.stringify\\(r.rows\\)\\); const c=await db.execute\\(\\\\\"PRAGMA table_info\\(audit_logs\\)\\\\\"\\); console.log\\('audit_logs cols:', c.rows.map\\(x=>x.name\\).join\\(','\\)\\); const p=await db.execute\\(\\\\\"PRAGMA table_info\\(products\\)\\\\\"\\); console.log\\('products cols:', p.rows.map\\(x=>x.name\\).join\\(','\\)\\); db.close\\(\\); }\\)\\(\\);\")"
     ]
   }
 }

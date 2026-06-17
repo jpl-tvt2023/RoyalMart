@@ -6,18 +6,19 @@ import {
 export const ROLES = {
   ADMIN: 'Admin',
   OWNER: 'Owner',
+  EMPLOYEE: 'Employee',
   OFFICE_POC: 'Office_POC',
-  PURCHASE_TEAM: 'Purchase_Team',
   WAREHOUSE_POC: 'Warehouse_POC',
-  PO_EXECUTIVE: 'PO_Executive',
 };
 
-const ALL_ROLES = [
-  ROLES.ADMIN, ROLES.OWNER, ROLES.OFFICE_POC,
-  ROLES.PURCHASE_TEAM, ROLES.WAREHOUSE_POC, ROLES.PO_EXECUTIVE,
-];
-const ORDER_FLOW_ROLES = [ROLES.ADMIN, ROLES.OWNER, ROLES.OFFICE_POC, ROLES.PURCHASE_TEAM, ROLES.PO_EXECUTIVE];
-const ADMIN_ONLY = [ROLES.ADMIN, ROLES.OWNER];
+// Base access roles: Admin/Owner = everything, Employee = everything except the Admin section.
+// Office_POC / Warehouse_POC are assignment-qualifier tags, not access roles.
+export const BASE_ROLES = [ROLES.ADMIN, ROLES.OWNER, ROLES.EMPLOYEE];
+export const POC_ROLES = [ROLES.OFFICE_POC, ROLES.WAREHOUSE_POC];
+
+export const ALL_ROLES = [...BASE_ROLES, ...POC_ROLES];
+const ORDER_FLOW_ROLES = ALL_ROLES;
+export const ADMIN_ONLY = [ROLES.ADMIN, ROLES.OWNER];
 
 /**
  * Grouped navigation. Each entry is either a LEAF
@@ -43,7 +44,7 @@ export const NAV = [
         path: '/purchase-orders',
         icon: ClipboardList,
         description: 'Import & manage marketplace POs',
-        roles: [ROLES.ADMIN, ROLES.OWNER, ROLES.PO_EXECUTIVE],
+        roles: ALL_ROLES,
       },
       {
         label: 'Order Summary',

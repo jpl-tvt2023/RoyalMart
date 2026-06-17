@@ -1,10 +1,11 @@
 const bcrypt = require('bcryptjs');
 const db = require('../config/db');
-const { logAction } = require('../services/auditLog.service');
+const { logAction, diffFields } = require('../services/auditLog.service');
 const { validatePassword } = require('../services/passwordPolicy');
+const { ALL_ROLES } = require('../middleware/rbac');
 
 const BCRYPT_COST = 12;
-const VALID_ROLES = ['Admin','Owner','Office_POC','Purchase_Team','Warehouse_POC','PO_Executive'];
+const VALID_ROLES = ALL_ROLES;
 
 function coerceUser(row) {
   return { ...row, is_first_login: !!row.is_first_login };
@@ -46,7 +47,11 @@ async function fetchRolesMap(userIds) {
 async function list(req, res, next) {
   try {
     const { rows } = await db.execute(
-      'SELECT id, name, email, is_first_login, created_at FROM users ORDER BY created_at DESC'
+      `SELECT u.id, u.name, u.email, u.is_first_login, u.created_at, u.updated_at,
+              eu.name AS updated_by_name
+       FROM users u
+       LEFT JOIN users eu ON eu.id = u.updated_by
+       ORDER BY u.created_at DESC`
     );
     const rolesMap = await fetchRolesMap(rows.map(r => r.id));
     res.json(rows.map(r => ({ ...coerceUser(r), roles: rolesMap.get(r.id) || [] })));
@@ -90,22 +95,19 @@ async function update(req, res, next) {
     const { name, roles } = req.body;
     if (!name && !roles) return res.status(400).json({ message: 'Nothing to update' });
 
-    let userRow;
-    if (name) {
-      const { rows } = await db.execute({
-        sql: 'UPDATE users SET name = ? WHERE id = ? RETURNING id, name, email, is_first_login',
-        args: [name, id],
-      });
-      if (!rows.length) return res.status(404).json({ message: 'User not found' });
-      userRow = rows[0];
-    } else {
-      const { rows } = await db.execute({
-        sql: 'SELECT id, name, email, is_first_login FROM users WHERE id = ?',
-        args: [id],
-      });
-      if (!rows.length) return res.status(404).json({ message: 'User not found' });
-      userRow = rows[0];
-    }
+    const { rows: before } = await db.execute({
+      sql: 'SELECT id, name, email, is_first_login FROM users WHERE id = ?',
+      args: [id],
+    });
+    if (!before.length) return res.status(404).json({ message: 'User not found' });
+    const prevRoles = (await fetchRolesMap([before[0].id])).get(before[0].id) || [];
+
+    const { rows } = await db.execute({
+      sql: `UPDATE users SET name = COALESCE(?, name), updated_by = ?, updated_at = datetime('now')
+            WHERE id = ? RETURNING id, name, email, is_first_login`,
+      args: [name || null, req.user.id, id],
+    });
+    const userRow = rows[0];
 
     if (roles !== undefined) {
       const rolesErr = validateRoles(roles);
@@ -116,7 +118,12 @@ async function update(req, res, next) {
     const rolesMap = await fetchRolesMap([userRow.id]);
     const finalRoles = rolesMap.get(userRow.id) || [];
 
-    await logAction({ userId: req.user.id, actionType: 'USER_UPDATE', description: `Updated user ${userRow.email} (${finalRoles.join(',')})`, entityType: 'user', entityId: userRow.id });
+    const changes = diffFields(
+      { name: before[0].name, roles: prevRoles.join(', ') },
+      { name: userRow.name, roles: finalRoles.join(', ') },
+      ['name', 'roles'],
+    );
+    await logAction({ userId: req.user.id, actionType: 'USER_UPDATE', description: `Updated user ${userRow.email} (${finalRoles.join(',')})`, entityType: 'user', entityId: userRow.id, changes });
     res.json({ ...coerceUser(userRow), roles: finalRoles });
   } catch (err) { next(err); }
 }
@@ -128,18 +135,15 @@ async function remove(req, res, next) {
       return res.status(400).json({ message: 'Cannot delete your own account' });
     }
 
-    const blockers = await Promise.all([
-      db.execute({ sql: 'SELECT COUNT(*) AS c FROM marketplace_pos WHERE created_by = ? OR onboarded_by = ? OR updated_by = ?', args: [id, id, id] }),
-      db.execute({ sql: 'SELECT COUNT(*) AS c FROM supplier_pos WHERE created_by = ?', args: [id] }),
-    ]);
-    const poCount = blockers[0].rows[0].c;
-    const supCount = blockers[1].rows[0].c;
-    if (poCount > 0 || supCount > 0) {
-      const parts = [];
-      if (poCount > 0) parts.push(`${poCount} purchase order${poCount !== 1 ? 's' : ''}`);
-      if (supCount > 0) parts.push(`${supCount} supplier PO${supCount !== 1 ? 's' : ''}`);
+    // supplier_pos was dropped in migration 022; only marketplace POs link to users now.
+    const { rows: poRows } = await db.execute({
+      sql: 'SELECT COUNT(*) AS c FROM marketplace_pos WHERE created_by = ? OR onboarded_by = ? OR updated_by = ?',
+      args: [id, id, id],
+    });
+    const poCount = poRows[0].c;
+    if (poCount > 0) {
       return res.status(409).json({
-        message: `Cannot delete: user is linked to ${parts.join(' and ')}. Reassign those records first.`,
+        message: `Cannot delete: user is linked to ${poCount} purchase order${poCount !== 1 ? 's' : ''}. Reassign those records first.`,
       });
     }
 

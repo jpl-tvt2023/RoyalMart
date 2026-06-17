@@ -9,11 +9,12 @@ import { formatDate } from '../../utils/formatters';
 import { UserPlus, Pencil, Trash2, KeyRound } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../context/AuthContext';
+import { ROLES, BASE_ROLES, POC_ROLES } from '../../utils/roles';
+import { HistoryButton } from '../../components/shared/HistoryDrawer';
 
-const ROLES = ['Admin', 'Owner', 'Office_POC', 'Purchase_Team', 'Warehouse_POC', 'PO_Executive'];
-const roleColors = { Admin: 'red', Owner: 'purple', Office_POC: 'blue', Purchase_Team: 'orange', Warehouse_POC: 'green', PO_Executive: 'yellow' };
+const roleColors = { Admin: 'red', Owner: 'purple', Employee: 'blue', Office_POC: 'orange', Warehouse_POC: 'green' };
 
-const EMPTY_FORM = { name: '', email: '', roles: ['Office_POC'], password: '' };
+const EMPTY_FORM = { name: '', email: '', roles: [ROLES.EMPLOYEE], password: '' };
 
 export default function UserManagement() {
   const { user: me } = useAuth();
@@ -35,7 +36,12 @@ export default function UserManagement() {
   const openAdd = () => { setForm(EMPTY_FORM); setModal('add'); };
   const openEdit = (u) => { setForm({ name: u.name, email: u.email, roles: u.roles || [], password: '' }); setModal({ type: 'edit', id: u.id }); };
 
-  const toggleRole = (role) => {
+  // Roles = one base access role (Admin/Owner/Employee) + optional POC tags.
+  const baseRole = form.roles.find(r => BASE_ROLES.includes(r)) || '';
+  const setBaseRole = (role) => {
+    setForm(f => ({ ...f, roles: [role, ...f.roles.filter(r => POC_ROLES.includes(r))] }));
+  };
+  const togglePoc = (role) => {
     setForm(f => {
       const has = f.roles.includes(role);
       return { ...f, roles: has ? f.roles.filter(r => r !== role) : [...f.roles, role] };
@@ -44,7 +50,7 @@ export default function UserManagement() {
 
   const handleSave = async (e) => {
     e.preventDefault();
-    if (!form.roles.length) return toast.error('Select at least one role');
+    if (!baseRole) return toast.error('Select a base role (Admin, Owner or Employee)');
     setSaving(true);
     try {
       if (modal === 'add') {
@@ -133,6 +139,7 @@ export default function UserManagement() {
                     <div className="flex items-center gap-1">
                       <button onClick={() => openEdit(u)} title="Edit" className="p-1.5 rounded hover:bg-blue-50 text-blue-500 transition-colors"><Pencil size={14} /></button>
                       <button onClick={() => setResetModal({ id: u.id, name: u.name })} title="Reset Password" className="p-1.5 rounded hover:bg-amber-50 text-amber-500 transition-colors"><KeyRound size={14} /></button>
+                      <HistoryButton entityType="user" entityId={u.id} title={`History — ${u.name}`} />
                       {u.id !== me?.id && (
                         <button onClick={() => setConfirmDelete({ id: u.id, name: u.name })} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-red-500 transition-colors"><Trash2 size={14} /></button>
                       )}
@@ -161,23 +168,42 @@ export default function UserManagement() {
             </div>
           )}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Roles <span className="text-gray-400 font-normal">(pick one or more)</span></label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-3 border border-gray-200 rounded-lg">
-              {ROLES.map(r => (
+            <label className="block text-sm font-medium text-gray-700 mb-1">Access Role <span className="text-gray-400 font-normal">(pick one)</span></label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-3 border border-gray-200 rounded-lg">
+              {BASE_ROLES.map(r => (
                 <label key={r} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
                   <input
-                    type="checkbox"
-                    checked={form.roles.includes(r)}
-                    onChange={() => toggleRole(r)}
+                    type="radio"
+                    name="baseRole"
+                    checked={baseRole === r}
+                    onChange={() => setBaseRole(r)}
                     className="w-4 h-4 accent-[#c1121f]"
                   />
                   {r}
                 </label>
               ))}
             </div>
-            {form.roles.length === 0 && (
-              <p className="text-xs text-red-500 mt-1">Select at least one role.</p>
+            <p className="text-xs text-gray-400 mt-1">Admin / Owner can access everything. Employee can access everything except the Admin section.</p>
+            {!baseRole && (
+              <p className="text-xs text-red-500 mt-1">Select a base access role.</p>
             )}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">POC Tags <span className="text-gray-400 font-normal">(optional)</span></label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-3 border border-gray-200 rounded-lg">
+              {POC_ROLES.map(r => (
+                <label key={r} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.roles.includes(r)}
+                    onChange={() => togglePoc(r)}
+                    className="w-4 h-4 accent-[#c1121f]"
+                  />
+                  {r}
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400 mt-1">Allows the user to be assigned as an Office / Warehouse POC on orders.</p>
           </div>
           {modal === 'add' && (
             <div>

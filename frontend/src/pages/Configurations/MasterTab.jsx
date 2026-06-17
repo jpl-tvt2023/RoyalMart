@@ -4,6 +4,8 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
 import { useRBAC } from '../../hooks/useRBAC';
+import { HistoryButton } from '../../components/shared/HistoryDrawer';
+import { formatDateTime } from '../../utils/formatters';
 
 // Shared CRUD UI for any simple master with { id, name, is_active } shape.
 // Cities, Vendors, and Couriers all conform to it; Vendors adds an extra
@@ -14,11 +16,14 @@ const EMPTY = { name: '', is_active: true };
 export default function MasterTab({
   label,
   labelPlural,
+  entityType,
   listFn, createFn, updateFn, deleteFn,
   extraColumn,
 }) {
   const { canAccess } = useRBAC();
   const canAdmin = canAccess('Admin', 'Owner');
+  // # + Name + Last Updated + Status, plus optional Parser and Actions columns.
+  const colCount = 4 + (extraColumn ? 1 : 0) + (canAdmin ? 1 : 0);
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -98,6 +103,7 @@ export default function MasterTab({
                 {extraColumn && (
                   <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{extraColumn.header}</th>
                 )}
+                <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Last Updated</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Status</th>
                 {canAdmin && <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Actions</th>}
               </tr>
@@ -105,7 +111,7 @@ export default function MasterTab({
             <tbody>
               {loading ? (
                 [...Array(4)].map((_, i) => (
-                  <tr key={i}><td colSpan={canAdmin ? (extraColumn ? 5 : 4) : (extraColumn ? 4 : 3)} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
+                  <tr key={i}><td colSpan={colCount} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
               ) : rows.map((r, idx) => (
                 <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
@@ -114,6 +120,14 @@ export default function MasterTab({
                   {extraColumn && (
                     <td className="px-4 py-3">{extraColumn.render(r)}</td>
                   )}
+                  <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
+                    {r.updated_at ? (
+                      <>
+                        <span className="text-gray-700">{r.updated_by_name || '—'}</span>
+                        <span className="block text-gray-400">{formatDateTime(r.updated_at)}</span>
+                      </>
+                    ) : '—'}
+                  </td>
                   <td className="px-4 py-3">
                     {r.is_active ? (
                       <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200">Active</span>
@@ -139,6 +153,7 @@ export default function MasterTab({
                         >
                           <Power size={14} />
                         </button>
+                        <HistoryButton entityType={entityType} entityId={r.id} title={`${label} history`} />
                       </div>
                     </td>
                   )}
