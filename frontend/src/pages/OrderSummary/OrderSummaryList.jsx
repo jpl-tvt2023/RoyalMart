@@ -16,7 +16,7 @@ import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { formatDateTime } from '../../utils/formatters';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
-import { useRBAC, qualifiesAs } from '../../hooks/useRBAC';
+import { useRBAC } from '../../hooks/useRBAC';
 
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
@@ -142,8 +142,10 @@ export default function OrderSummaryList() {
     getUsers()
       .then(r => {
         const users = r.data || [];
-        setOfficePocs(users.filter(u => qualifiesAs(u, 'Office_POC')));
-        setWarehousePocs(users.filter(u => qualifiesAs(u, 'Warehouse_POC')));
+        // Only users explicitly tagged with the POC role are assignable —
+        // Admin/Owner are NOT auto-included (that's why qualifiesAs isn't used here).
+        setOfficePocs(users.filter(u => (u.roles || []).includes('Office_POC')));
+        setWarehousePocs(users.filter(u => (u.roles || []).includes('Warehouse_POC')));
       })
       .catch(() => {});
     listVendors()
