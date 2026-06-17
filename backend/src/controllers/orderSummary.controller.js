@@ -1,6 +1,6 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
-const { userQualifiesAs } = require('../services/userRoles.service');
+const { userHasRole } = require('../services/userRoles.service');
 
 const ORDER_SUMMARY_FIELDS = [
   'office_poc', 'warehouse_poc', 'status', 'dispatch_date', 'courier_id', 'tracking_id',
@@ -174,7 +174,7 @@ async function updateOne(req, res, next) {
     if (has('office_poc')) {
       const v = req.body.office_poc;
       if (v != null) {
-        const ok = await userQualifiesAs(v, 'Office_POC');
+        const ok = await userHasRole(v, 'Office_POC');
         if (!ok) return res.status(400).json({ message: 'Selected user is not an Office_POC' });
       }
       officePoc = v == null ? null : Number(v);
@@ -183,7 +183,7 @@ async function updateOne(req, res, next) {
     if (has('warehouse_poc')) {
       const v = req.body.warehouse_poc;
       if (v != null) {
-        const ok = await userQualifiesAs(v, 'Warehouse_POC');
+        const ok = await userHasRole(v, 'Warehouse_POC');
         if (!ok) return res.status(400).json({ message: 'Selected user is not a Warehouse_POC' });
       }
       warehousePoc = v == null ? null : Number(v);
@@ -507,7 +507,7 @@ async function bulkUpdate(req, res, next) {
     if (hasOffice) {
       const v = req.body.office_poc;
       if (v != null) {
-        const ok = await userQualifiesAs(v, 'Office_POC');
+        const ok = await userHasRole(v, 'Office_POC');
         if (!ok) return res.status(400).json({ message: 'Selected user is not an Office_POC' });
         officePocValue = Number(v);
       }
@@ -516,7 +516,7 @@ async function bulkUpdate(req, res, next) {
     if (hasWarehouse) {
       const v = req.body.warehouse_poc;
       if (v != null) {
-        const ok = await userQualifiesAs(v, 'Warehouse_POC');
+        const ok = await userHasRole(v, 'Warehouse_POC');
         if (!ok) return res.status(400).json({ message: 'Selected user is not a Warehouse_POC' });
         warehousePocValue = Number(v);
       }
