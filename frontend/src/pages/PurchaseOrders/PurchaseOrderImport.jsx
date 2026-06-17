@@ -38,7 +38,7 @@ export default function PurchaseOrderImport() {
         vendor_po_id: data.vendor_po_id || '',
         po_date: data.po_date || '',
         po_expiry_date: data.po_expiry_date || '',
-        city: '',
+        city: data.city || '',
         status: 'Open',
         party_name: data.party_name || '',
         lines: data.lines || [],

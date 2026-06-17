@@ -1,24 +1,10 @@
 const pdf = require('pdf-parse');
-const { parseIndianDate } = require('./dates');
-const { extractShipToParty } = require('./address');
+const { parseIndianDate } = require('../dates');
+const { extractShipToParty } = require('../address');
+const { fieldByLabel, NUMERIC_LINE_RE } = require('./shared');
 
-// Scootsy POs render labels and values on separate lines, e.g.
-//   "PO No :"
-//   "GCAPO52697"
-function fieldByLabel(lines, label) {
-  for (let i = 0; i < lines.length; i++) {
-    if (new RegExp('^\\s*' + label + '\\s*:?\\s*$', 'i').test(lines[i])) {
-      for (let k = i + 1; k < lines.length; k++) {
-        if (lines[k].trim()) return lines[k].trim();
-      }
-    }
-    const same = lines[i].match(new RegExp('^\\s*' + label + '\\s*:\\s*(.+)$', 'i'));
-    if (same && same[1].trim()) return same[1].trim();
-  }
-  return null;
-}
-
-// A Scootsy row's numeric tail (concatenated across however many pdf-parse lines):
+// Legacy Scootsy layout. A row's numeric tail (concatenated across however many
+// pdf-parse lines):
 //   <HSN(8)><Qty(int)><MRP(2dec)><UnitBase(3dec)><Taxable(2dec)>
 //   <CGST_rate(2dec)><CGST_amt(2dec)>
 //   <SGST_rate(2dec)><SGST_amt(2dec)>
@@ -45,9 +31,7 @@ function parseQtyFromBlob(blob) {
   return null;
 }
 
-const NUMERIC_LINE_RE = /^[\d.]+$/;
-
-async function parseScootsy(buffer) {
+async function parseScootsyLegacy(buffer) {
   const { text } = await pdf(buffer);
   const rawLines = text.split(/\r?\n/).map(l => l.trim());
 
@@ -104,7 +88,7 @@ async function parseScootsy(buffer) {
   }
 
   const party_name = extractShipToParty(flatLines);
-  return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, party_name, lines };
+  return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, party_name, city: null, lines };
 }
 
-module.exports = parseScootsy;
+module.exports = parseScootsyLegacy;

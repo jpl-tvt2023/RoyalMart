@@ -79,31 +79,43 @@ async function parseBlinkit(buffer) {
   while (i < end) {
     const line = flat[i];
     const srStr = String(expectedSr);
+    let item_code = null;
+    let j = i + 1;
+
     if (/^\d+$/.test(line) && line.startsWith(srStr) && line.length >= srStr.length + 6) {
-      let item_code = line.slice(srStr.length);
-      let j = i + 1;
+      item_code = line.slice(srStr.length);
       while (item_code.length < 8 && j < end && /^\d+$/.test(flat[j])) {
         item_code += flat[j];
         j++;
       }
       item_code = item_code.slice(0, 8);
-      let qty = null;
-      while (j < end) {
-        if (QTY_TAIL_SHAPE.test(flat[j])) {
-          qty = parseQtyTail(flat[j]);
-          j++;
-          break;
-        }
-        j++;
-      }
-      if (qty != null && qty > 0) {
-        lines.push({ line_no: expectedSr, item_code, item_desc: '', qty });
-      }
-      expectedSr++;
-      i = j;
     } else {
-      i++;
+      // Page-break fallback: pdf-parse can glue the next row's head onto its
+      // description, e.g. "1234567Item name…". Match "<sr><code(6-8d)>" followed
+      // by a non-digit. Acceptance is still gated by the qty arithmetic below.
+      const merged = line.match(new RegExp(`^${srStr}(\\d{6,8})(\\D.*)?$`));
+      if (merged) {
+        item_code = merged[1].slice(0, 8);
+      } else {
+        i++;
+        continue;
+      }
     }
+
+    let qty = null;
+    while (j < end) {
+      if (QTY_TAIL_SHAPE.test(flat[j])) {
+        qty = parseQtyTail(flat[j]);
+        j++;
+        break;
+      }
+      j++;
+    }
+    if (qty != null && qty > 0) {
+      lines.push({ line_no: expectedSr, item_code, item_desc: '', qty });
+    }
+    expectedSr++;
+    i = j;
   }
 
   const party_name = extractShipToParty(flat);
