@@ -2,28 +2,13 @@ import { useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
-import { bulkUpsertVendorCodes } from '../../api/productVendorCodes.api';
 import { Download, Upload, FileSpreadsheet } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-const HEADERS = ['sku_code', 'vendor', 'vendor_item_code', 'product_description'];
-const SAMPLE_ROW = ['BND-RED-S1', 'Scootsy', 'SCT-12345', 'Red Cotton Bandana (Single Pack)'];
-
-function downloadTemplate(existing = []) {
-  const dataRows = existing.length
-    ? existing.map(r => [r.sku_code || '', r.vendor || '', r.vendor_item_code || '', r.product_description || ''])
-    : [SAMPLE_ROW];
-  const ws = XLSX.utils.aoa_to_sheet([HEADERS, ...dataRows]);
-  ws['!cols'] = [{ wch: 18 }, { wch: 14 }, { wch: 20 }, { wch: 40 }];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Mappings');
-  XLSX.writeFile(wb, 'product-vendor-mappings-template.xlsx');
-}
-
-function summariseResult({ inserted, updated, skipped }) {
+function defaultSummarise({ inserted, updated, skipped }) {
   const parts = [];
-  if (inserted) parts.push(`${inserted} new mapping${inserted !== 1 ? 's' : ''} added`);
-  if (updated)  parts.push(`${updated} existing mapping${updated !== 1 ? 's' : ''} updated`);
+  if (inserted) parts.push(`${inserted} new row${inserted !== 1 ? 's' : ''} added`);
+  if (updated)  parts.push(`${updated} existing row${updated !== 1 ? 's' : ''} updated`);
   if (!parts.length) return skipped.length
     ? `No changes saved — all ${skipped.length} row${skipped.length !== 1 ? 's were' : ' was'} skipped.`
     : 'No changes — your file matched what was already saved.';
@@ -32,27 +17,36 @@ function summariseResult({ inserted, updated, skipped }) {
   return msg;
 }
 
-function normaliseRow(raw) {
+// Map an arbitrary parsed row onto the configured headers, normalising keys
+// (trim, lowercase, spaces → underscores) so header casing/spacing is forgiving.
+function normaliseRow(raw, headers) {
   const out = {};
   for (const key of Object.keys(raw)) {
     const k = String(key).trim().toLowerCase().replace(/\s+/g, '_');
     out[k] = typeof raw[key] === 'string' ? raw[key].trim() : raw[key];
   }
-  return {
-    sku_code: out.sku_code ?? '',
-    vendor: out.vendor ?? '',
-    vendor_item_code: out.vendor_item_code ?? '',
-    product_description: out.product_description ?? '',
-  };
+  const picked = {};
+  for (const h of headers) picked[h] = out[h] ?? '';
+  return picked;
 }
 
-export default function BulkUploadModal({ isOpen, onClose, onDone, existingRows = [] }) {
+function downloadTemplate(config) {
+  const ws = XLSX.utils.aoa_to_sheet([config.headers, config.sampleRow]);
+  ws['!cols'] = config.headers.map(() => ({ wch: 18 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Template');
+  XLSX.writeFile(wb, config.templateFileName);
+}
+
+export default function BulkUploadModal({ isOpen, onClose, onDone, config }) {
   const fileRef = useRef(null);
   const [file, setFile] = useState(null);
   const [rows, setRows] = useState([]);
   const [parseErr, setParseErr] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
+
+  const { headers, sampleRow, requiredKeys = [], instructions, summarise = defaultSummarise } = config;
 
   const reset = () => {
     setFile(null); setRows([]); setParseErr(''); setResult(null);
@@ -79,7 +73,10 @@ export default function BulkUploadModal({ isOpen, onClose, onDone, existingRows 
       const wb = XLSX.read(buf, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const raw = XLSX.utils.sheet_to_json(ws, { defval: '' });
-      const normalised = raw.map(normaliseRow).filter(r => r.sku_code || r.vendor || r.vendor_item_code);
+      const keysToCheck = requiredKeys.length ? requiredKeys : headers;
+      const normalised = raw
+        .map(r => normaliseRow(r, headers))
+        .filter(r => keysToCheck.some(k => String(r[k] ?? '').trim() !== ''));
       if (!normalised.length) {
         setParseErr('No data rows found. Check column headers match the template.');
         return;
@@ -94,9 +91,10 @@ export default function BulkUploadModal({ isOpen, onClose, onDone, existingRows 
     if (!rows.length) return;
     setSubmitting(true);
     try {
-      const r = await bulkUpsertVendorCodes(rows);
-      setResult(r.data);
-      toast.success(summariseResult(r.data), { duration: 5000 });
+      const r = await config.submit(rows);
+      const data = r.data ?? r;
+      setResult(data);
+      toast.success(summarise(data), { duration: 5000 });
       onDone?.();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Upload failed');
@@ -104,38 +102,38 @@ export default function BulkUploadModal({ isOpen, onClose, onDone, existingRows 
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} title="Bulk Upload Vendor Mappings" size="lg">
+    <Modal isOpen={isOpen} onClose={handleClose} title={config.title} size="lg">
       <div className="space-y-4">
         <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2 text-sm font-semibold text-[#003049]">
               <FileSpreadsheet size={16} /> Template columns
             </div>
-            <button type="button" onClick={() => downloadTemplate(existingRows)} className="inline-flex items-center gap-1 text-sm text-[#c1121f] hover:underline">
-              <Download size={14} /> {existingRows.length ? `Download current data (${existingRows.length})` : 'Download template'}
+            <button type="button" onClick={() => downloadTemplate(config)} className="inline-flex items-center gap-1 text-sm text-[#c1121f] hover:underline">
+              <Download size={14} /> Download template
             </button>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="bg-white border border-gray-200">
-                  {HEADERS.map(h => (
+                  {headers.map(h => (
                     <th key={h} className="px-2 py-1.5 text-left font-semibold text-gray-700 border-r border-gray-200 last:border-r-0">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 <tr className="border border-gray-200 border-t-0">
-                  {SAMPLE_ROW.map((c, i) => (
-                    <td key={i} className="px-2 py-1.5 font-mono text-gray-600 border-r border-gray-200 last:border-r-0">{c}</td>
+                  {sampleRow.map((c, i) => (
+                    <td key={i} className="px-2 py-1.5 font-mono text-gray-600 border-r border-gray-200 last:border-r-0">{String(c)}</td>
                   ))}
                 </tr>
               </tbody>
             </table>
           </div>
-          <p className="text-xs text-gray-500 mt-2">
-            If a row in your file has the same <b>Vendor</b> and <b>Vendor Product ID</b> as an existing mapping, the existing one will be updated with the new details. New combinations will be added as fresh mappings.
-          </p>
+          {instructions && (
+            <p className="text-xs text-gray-500 mt-2">{instructions}</p>
+          )}
         </div>
 
         <div>
@@ -158,16 +156,16 @@ export default function BulkUploadModal({ isOpen, onClose, onDone, existingRows 
             <p className="font-medium text-emerald-800">Upload complete</p>
             <ul className="mt-2 space-y-1 text-gray-800">
               {result.inserted > 0 && (
-                <li><span className="font-semibold text-emerald-700">{result.inserted}</span> new mapping{result.inserted !== 1 ? 's' : ''} added.</li>
+                <li><span className="font-semibold text-emerald-700">{result.inserted}</span> new row{result.inserted !== 1 ? 's' : ''} added.</li>
               )}
               {result.updated > 0 && (
-                <li><span className="font-semibold text-blue-700">{result.updated}</span> existing mapping{result.updated !== 1 ? 's' : ''} updated with new details.</li>
+                <li><span className="font-semibold text-blue-700">{result.updated}</span> existing row{result.updated !== 1 ? 's' : ''} updated with new details.</li>
               )}
               {result.inserted === 0 && result.updated === 0 && result.skipped.length === 0 && (
                 <li className="text-gray-600">No changes — your file matched what was already saved.</li>
               )}
               {result.skipped.length > 0 && (
-                <li><span className="font-semibold text-amber-700">{result.skipped.length}</span> row{result.skipped.length !== 1 ? 's' : ''} skipped (missing info or unknown SKU).</li>
+                <li><span className="font-semibold text-amber-700">{result.skipped.length}</span> row{result.skipped.length !== 1 ? 's' : ''} skipped (missing info or invalid value).</li>
               )}
             </ul>
             {result.skipped.length > 0 && (

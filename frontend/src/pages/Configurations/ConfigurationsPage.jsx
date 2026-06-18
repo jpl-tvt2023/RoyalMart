@@ -10,11 +10,15 @@ import {
 import {
   listCouriers, createCourier, updateCourier, deleteCourier,
 } from '../../api/couriers.api';
+import {
+  listCategories, createCategory, updateCategory, deleteCategory,
+} from '../../api/categories.api';
 
 const TABS = [
-  { key: 'cities',   label: 'Cities' },
-  { key: 'vendors',  label: 'Vendors' },
-  { key: 'couriers', label: 'Courier Partners' },
+  { key: 'cities',     label: 'Cities' },
+  { key: 'vendors',    label: 'Vendors' },
+  { key: 'couriers',   label: 'Courier Partners' },
+  { key: 'categories', label: 'Categories' },
 ];
 
 export default function ConfigurationsPage() {
@@ -24,7 +28,7 @@ export default function ConfigurationsPage() {
     <AppShell>
       <div className="mb-4">
         <h1 className="text-2xl font-bold text-[#003049]">Configurations</h1>
-        <p className="text-gray-500 text-sm">Master data for cities, vendors, and courier partners</p>
+        <p className="text-gray-500 text-sm">Master data for cities, vendors, courier partners, and categories</p>
       </div>
 
       <div className="flex gap-1 mb-4 border-b border-gray-200">
@@ -77,6 +81,17 @@ export default function ConfigurationsPage() {
           createFn={createCourier}
           updateFn={updateCourier}
           deleteFn={deleteCourier}
+        />
+      )}
+      {tab === 'categories' && (
+        <MasterTab
+          label="Category"
+          labelPlural="categories"
+          entityType="category"
+          listFn={listCategories}
+          createFn={createCategory}
+          updateFn={updateCategory}
+          deleteFn={deleteCategory}
         />
       )}
     </AppShell>
