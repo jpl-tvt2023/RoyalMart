@@ -8,6 +8,7 @@ import { getProducts, createProduct, updateProduct, deleteProduct, bulkUpsertPro
 import { getRawProducts, createRawProduct, updateRawProduct, deleteRawProduct, bulkUpsertRawProducts, bulkDeleteRawProducts } from '../../api/rawProducts.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCategories } from '../../api/categories.api';
+import { sortByText } from '../../utils/sort';
 import { Plus, Pencil, Trash2, Search, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useRBAC } from '../../hooks/useRBAC';
@@ -136,7 +137,7 @@ function VendorMappingsTab() {
     Promise.all([getVendorCodes(), getProducts(), listVendors().catch(() => [])])
       .then(([r, s, v]) => {
         setRows(r.data);
-        setSkus(s.data);
+        setSkus(sortByText(s.data, x => x.sku_code));
         setVendors(Array.isArray(v) ? v : []);
       })
       .catch(() => toast.error('Failed to load mappings'))
@@ -147,7 +148,7 @@ function VendorMappingsTab() {
   const vendorOptions = useMemo(() => {
     const active = vendors.filter(v => v.is_active).map(v => v.name);
     const extras = Array.from(new Set(rows.map(r => r.vendor).filter(v => v && !active.includes(v))));
-    return [...active, ...extras.sort()];
+    return sortByText([...active, ...extras]);
   }, [rows, vendors]);
 
   const filtered = useMemo(() => {
@@ -433,10 +434,10 @@ function SKUsTab() {
 
   useEffect(() => {
     listCategories()
-      .then(rows => setCategories((rows || []).filter(c => c.is_active)))
+      .then(rows => setCategories(sortByText((rows || []).filter(c => c.is_active), c => c.name)))
       .catch(() => {});
     getRawProducts()
-      .then(r => setRawProducts(r.data || []))
+      .then(r => setRawProducts(sortByText(r.data || [], rp => rp.name)))
       .catch(() => {});
   }, []);
 
@@ -535,7 +536,8 @@ function SKUsTab() {
     } finally { setSaving(false); }
   };
 
-  const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
+  const fieldBase = 'px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
+  const inputCls = `w-full ${fieldBase}`;
   const colSpan = 5 + (canWrite ? 2 : 0);
 
   return (
@@ -647,7 +649,7 @@ function SKUsTab() {
                   <select
                     value={r.raw_product_id}
                     onChange={e => setReq(idx, { raw_product_id: e.target.value })}
-                    className={`${inputCls} flex-1`}
+                    className={`${fieldBase} flex-1 min-w-0`}
                   >
                     <option value="">— Select raw product —</option>
                     {rawProducts.map(rp => <option key={rp.id} value={rp.id}>{rp.name}</option>)}
@@ -658,7 +660,7 @@ function SKUsTab() {
                     value={r.qty}
                     onChange={e => setReq(idx, { qty: e.target.value })}
                     placeholder="Qty"
-                    className={`${inputCls} w-24`}
+                    className={`${fieldBase} w-24 shrink-0`}
                   />
                   <button
                     type="button"

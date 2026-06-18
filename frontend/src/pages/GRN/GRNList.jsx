@@ -11,7 +11,7 @@ import Pagination, { loadPersistedPageSize, persistPageSize } from '../../compon
 import { listOrderSummary, updateOrderSummary } from '../../api/orderSummary.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
-import { formatDateTime } from '../../utils/formatters';
+import { sortByText } from '../../utils/sort';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 
 // Row highlight for rows with edits not yet saved (single source for row + legend).
@@ -147,10 +147,10 @@ export default function GRNList() {
 
   useEffect(() => {
     listCities()
-      .then(rows => setCities(rows.filter(c => c.is_active).map(c => c.name)))
+      .then(rows => setCities(sortByText(rows.filter(c => c.is_active).map(c => c.name))))
       .catch(() => {});
     listCouriers()
-      .then(setCouriers)
+      .then(rows => setCouriers(sortByText(rows, c => c.name)))
       .catch(() => {});
   }, []);
 

@@ -16,6 +16,7 @@ import BuiltyList from './pages/Builty/BuiltyList';
 import GRNList from './pages/GRN/GRNList';
 import ConfigurationsPage from './pages/Configurations/ConfigurationsPage';
 import ProductList from './pages/products/ProductList';
+import ProcurementPage from './pages/Procurement/ProcurementPage';
 import { ALL_ROLES, ADMIN_ONLY } from './utils/roles';
 
 export default function App() {
@@ -53,6 +54,10 @@ export default function App() {
 
           <Route path="/products" element={
             <ProtectedRoute roles={ALL_ROLES}><ProductList /></ProtectedRoute>
+          } />
+
+          <Route path="/procurement" element={
+            <ProtectedRoute roles={ALL_ROLES}><ProcurementPage /></ProtectedRoute>
           } />
 
           <Route path="/purchase-orders" element={

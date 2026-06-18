@@ -36,6 +36,7 @@ app.use('/api/users',        require('./src/routes/users.routes'));
 app.use('/api/teams',        require('./src/routes/teams.routes'));
 app.use('/api/products',     require('./src/routes/products.routes'));
 app.use('/api/raw-products', require('./src/routes/rawProducts.routes'));
+app.use('/api/procurement', require('./src/routes/procurement.routes'));
 app.use('/api/marketplace-pos', require('./src/routes/marketplacePO.routes'));
 app.use('/api/order-summary', require('./src/routes/orderSummary.routes'));
 app.use('/api/product-vendor-codes', require('./src/routes/productVendorCodes.routes'));

@@ -14,6 +14,7 @@ import { getUsers } from '../../api/users.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
+import { sortByText } from '../../utils/sort';
 import { formatDateTime } from '../../utils/formatters';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { useRBAC } from '../../hooks/useRBAC';
@@ -144,8 +145,8 @@ export default function OrderSummaryList() {
         const users = r.data || [];
         // Only users explicitly tagged with the POC role are assignable —
         // Admin/Owner are NOT auto-included (that's why qualifiesAs isn't used here).
-        setOfficePocs(users.filter(u => (u.roles || []).includes('Office_POC')));
-        setWarehousePocs(users.filter(u => (u.roles || []).includes('Warehouse_POC')));
+        setOfficePocs(sortByText(users.filter(u => (u.roles || []).includes('Office_POC')), u => u.name));
+        setWarehousePocs(sortByText(users.filter(u => (u.roles || []).includes('Warehouse_POC')), u => u.name));
       })
       .catch(() => {});
     listVendors()
@@ -155,10 +156,10 @@ export default function OrderSummaryList() {
       })
       .catch(() => {});
     listCities()
-      .then(rows => setCities(rows.filter(c => c.is_active).map(c => c.name)))
+      .then(rows => setCities(sortByText(rows.filter(c => c.is_active).map(c => c.name))))
       .catch(() => {});
     listCouriers()
-      .then(setCouriers)
+      .then(rows => setCouriers(sortByText(rows, c => c.name)))
       .catch(() => {});
   }, []);
 
