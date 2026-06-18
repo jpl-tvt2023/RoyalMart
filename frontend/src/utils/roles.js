@@ -1,6 +1,7 @@
 import {
   LayoutDashboard, ClipboardList, Package, Truck, ClipboardCheck,
   Tag, Settings, Users, UsersRound, SlidersHorizontal,
+  ShoppingCart, PackageSearch,
 } from 'lucide-react';
 
 export const ROLES = {
@@ -74,6 +75,19 @@ export const NAV = [
     path: '/products',
     icon: Tag,
     roles: ALL_ROLES,
+  },
+  {
+    label: 'Purchase',
+    icon: ShoppingCart,
+    children: [
+      {
+        label: 'Procurement',
+        path: '/procurement',
+        icon: PackageSearch,
+        description: 'Raw materials needed for pending POs',
+        roles: ALL_ROLES,
+      },
+    ],
   },
   {
     label: 'Admin',

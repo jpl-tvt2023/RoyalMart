@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react';
 import { Trash2, Plus } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import { listCities } from '../../api/cities.api';
+import { sortByText } from '../../utils/sort';
 
 export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true, onboarderSlot = null }) {
   const [cities, setCities] = useState([]);
   useEffect(() => {
     listCities()
-      .then(rows => setCities(rows.filter(c => c.is_active).map(c => c.name)))
+      .then(rows => setCities(sortByText(rows.filter(c => c.is_active).map(c => c.name))))
       .catch(() => {});
   }, []);
   const set = (patch) => onChange({ ...value, ...patch });

@@ -12,6 +12,7 @@ import { listPOs, deletePO } from '../../api/marketplacePO.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { formatDateTime } from '../../utils/formatters';
+import { sortByText } from '../../utils/sort';
 
 const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
 
@@ -84,10 +85,10 @@ export default function PurchaseOrdersList() {
 
   useEffect(() => {
     listVendors()
-      .then(rows => setVendors(rows.filter(v => v.is_active).map(v => v.name)))
+      .then(rows => setVendors(sortByText(rows.filter(v => v.is_active).map(v => v.name))))
       .catch(() => {});
     listCities()
-      .then(rows => setCities(rows.filter(c => c.is_active).map(c => c.name)))
+      .then(rows => setCities(sortByText(rows.filter(c => c.is_active).map(c => c.name))))
       .catch(() => {});
   }, []);
 

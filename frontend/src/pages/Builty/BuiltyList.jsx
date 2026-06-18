@@ -11,6 +11,7 @@ import { listOrderSummary, updateOrderSummary, getOrderSummaryCountsByVendor } f
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { formatDateTime } from '../../utils/formatters';
+import { sortByText } from '../../utils/sort';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { useRBAC } from '../../hooks/useRBAC';
 
@@ -124,10 +125,10 @@ export default function BuiltyList() {
 
   useEffect(() => {
     listCities()
-      .then(rows => setCities(rows.filter(c => c.is_active).map(c => c.name)))
+      .then(rows => setCities(sortByText(rows.filter(c => c.is_active).map(c => c.name))))
       .catch(() => {});
     listCouriers()
-      .then(setCouriers)
+      .then(rows => setCouriers(sortByText(rows, c => c.name)))
       .catch(() => {});
   }, []);
 

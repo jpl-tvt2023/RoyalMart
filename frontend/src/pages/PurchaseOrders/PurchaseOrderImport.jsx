@@ -8,6 +8,7 @@ import Modal from '../../components/ui/Modal';
 import SummaryEditor from './SummaryEditor';
 import { parsePreview, commitPO } from '../../api/marketplacePO.api';
 import { listVendors } from '../../api/vendors.api';
+import { sortByText } from '../../utils/sort';
 
 export default function PurchaseOrderImport() {
   const navigate = useNavigate();
@@ -22,7 +23,7 @@ export default function PurchaseOrderImport() {
 
   useEffect(() => {
     listVendors()
-      .then(rows => setVendors(rows.filter(v => v.is_active)))
+      .then(rows => setVendors(sortByText(rows.filter(v => v.is_active), v => v.name)))
       .catch(() => {});
   }, []);
 

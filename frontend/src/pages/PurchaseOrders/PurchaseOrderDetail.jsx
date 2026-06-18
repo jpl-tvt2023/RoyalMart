@@ -7,6 +7,7 @@ import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import { getPO, updatePO } from '../../api/marketplacePO.api';
 import { listCities } from '../../api/cities.api';
+import { sortByText } from '../../utils/sort';
 
 export default function PurchaseOrderDetail() {
   const { poId } = useParams();
@@ -32,7 +33,7 @@ export default function PurchaseOrderDetail() {
 
   useEffect(() => {
     listCities()
-      .then(rows => setCities(rows.filter(c => c.is_active).map(c => c.name)))
+      .then(rows => setCities(sortByText(rows.filter(c => c.is_active).map(c => c.name))))
       .catch(() => {});
   }, []);
 
