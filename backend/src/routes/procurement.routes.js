@@ -6,6 +6,7 @@ const c = require('../controllers/procurement.controller');
 const canView  = allowRoles(...ALL_ROLES);
 const canWrite = allowRoles(...ALL_ROLES);
 
+router.get('/defaults',       auth, canView,  c.getDefaults);
 router.get('/requirements',   auth, canView,  c.getRequirements);
 router.post('/mark-ordered',  auth, canWrite, c.markOrdered);
 router.get('/batches',        auth, canView,  c.listBatches);

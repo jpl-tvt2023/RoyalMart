@@ -13,13 +13,47 @@ function scopeWhere({ po_date_from, po_date_to }) {
   return { where: conditions.join(' AND '), args };
 }
 
+// Date-range WHERE over po_date only (no ordered filter) — the matrix shows
+// every PO in range, ordered or not. Returns { where, args }.
+function rangeWhere({ po_date_from, po_date_to }) {
+  const conditions = [];
+  const args = [];
+  if (po_date_from && DATE_RE.test(po_date_from)) { conditions.push('po.po_date >= ?'); args.push(po_date_from); }
+  if (po_date_to && DATE_RE.test(po_date_to))     { conditions.push('po.po_date <= ?'); args.push(po_date_to); }
+  conditions.push('po.po_date IS NOT NULL');
+  return { where: conditions.join(' AND '), args };
+}
+
+// Default PO-date-from for the UI: day after the latest already-ordered PO,
+// else the earliest PO date, else null.
+async function getDefaults(req, res, next) {
+  try {
+    const { rows } = await db.execute(
+      `SELECT
+         (SELECT date(MAX(po_date), '+1 day') FROM marketplace_pos WHERE procurement_batch_id IS NOT NULL AND po_date IS NOT NULL) AS after_last_ordered,
+         (SELECT MIN(po_date) FROM marketplace_pos WHERE po_date IS NOT NULL) AS earliest`
+    );
+    res.json({ po_date_from: rows[0]?.after_last_ordered || rows[0]?.earliest || null });
+  } catch (err) { next(err); }
+}
+
 async function getRequirements(req, res, next) {
   try {
-    const { where, args } = scopeWhere(req.query);
+    const { where, args } = rangeWhere(req.query);
 
-    const [{ rows: rawRows }, { rows: summaryRows }, { rows: unmappedRows }, { rows: unmappedSamples }] = await Promise.all([
+    const [{ rows: posRows }, { rows: cellRows }, { rows: allRawRows }, { rows: unmappedRows }, { rows: unmappedSamples }] = await Promise.all([
+      // Every PO in the date range, with its ordered flag.
       db.execute({
-        sql: `SELECT rp.id AS raw_product_id, rp.name, SUM(l.qty * preq.qty) AS required_qty
+        sql: `SELECT po.po_id, po.po_date, po.vendor,
+                     CASE WHEN po.procurement_batch_id IS NOT NULL THEN 1 ELSE 0 END AS ordered
+              FROM marketplace_pos po
+              WHERE ${where}
+              ORDER BY po.po_date, po.po_id`,
+        args,
+      }),
+      // Per (raw product, PO) required qty across the range.
+      db.execute({
+        sql: `SELECT rp.id AS raw_product_id, po.po_id, SUM(l.qty * preq.qty) AS qty
               FROM marketplace_pos po
               JOIN marketplace_po_lines l    ON l.po_id = po.po_id
               JOIN product_vendor_codes pvc  ON pvc.vendor = po.vendor AND pvc.vendor_item_code = l.item_code
@@ -27,17 +61,12 @@ async function getRequirements(req, res, next) {
               JOIN product_requirements preq ON preq.product_id = p.id
               JOIN raw_products rp           ON rp.id = preq.raw_product_id
               WHERE ${where}
-              GROUP BY rp.id, rp.name
-              ORDER BY rp.name COLLATE NOCASE`,
+              GROUP BY rp.id, po.po_id`,
         args,
       }),
-      db.execute({
-        sql: `SELECT COUNT(*) AS po_count, MIN(po.po_date) AS date_min, MAX(po.po_date) AS date_max
-              FROM marketplace_pos po
-              WHERE ${where}`,
-        args,
-      }),
-      // Lines in scope that don't expand to any raw product (no mapping, or SKU without requirements).
+      // Full raw-product roster so every raw product is listed (0 when nothing requires it).
+      db.execute('SELECT id, name FROM raw_products ORDER BY name COLLATE NOCASE'),
+      // Lines in range that don't expand to any raw product (no mapping, or SKU without requirements).
       db.execute({
         sql: `SELECT COUNT(*) AS n
               FROM marketplace_pos po
@@ -59,11 +88,30 @@ async function getRequirements(req, res, next) {
       }),
     ]);
 
+    const pos = posRows.map(p => ({ po_id: p.po_id, po_date: p.po_date, vendor: p.vendor, ordered: !!p.ordered }));
+    const orderedSet = new Set(pos.filter(p => p.ordered).map(p => p.po_id));
+    const poCount = pos.filter(p => !p.ordered).length;
+
+    // raw_product_id -> { [po_id]: qty }
+    const cellsByRaw = new Map();
+    for (const c of cellRows) {
+      if (!cellsByRaw.has(c.raw_product_id)) cellsByRaw.set(c.raw_product_id, {});
+      cellsByRaw.get(c.raw_product_id)[c.po_id] = Number(c.qty) || 0;
+    }
+
+    const raw_products = allRawRows.map(r => {
+      const quantities = cellsByRaw.get(r.id) || {};
+      let total = 0;
+      for (const [poId, qty] of Object.entries(quantities)) {
+        if (!orderedSet.has(poId)) total += qty;
+      }
+      return { raw_product_id: r.id, name: r.name, total_required_qty: total, quantities };
+    });
+
     res.json({
-      raw_products: rawRows.map(r => ({ raw_product_id: r.raw_product_id, name: r.name, required_qty: Number(r.required_qty) || 0 })),
-      po_count: Number(summaryRows[0]?.po_count) || 0,
-      date_min: summaryRows[0]?.date_min || null,
-      date_max: summaryRows[0]?.date_max || null,
+      pos,
+      raw_products,
+      po_count: poCount,
       unmapped_line_count: Number(unmappedRows[0]?.n) || 0,
       unmapped_samples: unmappedSamples.map(s => ({ vendor: s.vendor, item_code: s.item_code })),
     });
@@ -160,4 +208,4 @@ async function undoBatch(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { getRequirements, markOrdered, listBatches, undoBatch };
+module.exports = { getDefaults, getRequirements, markOrdered, listBatches, undoBatch };

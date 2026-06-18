@@ -1,15 +1,27 @@
 import { useEffect, useState, useCallback } from 'react';
+import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
-import { AlertTriangle, CheckCircle2, History, Undo2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, History, Undo2, Download } from 'lucide-react';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import Modal from '../../components/ui/Modal';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
+import Legend from '../../components/ui/Legend';
 import { useRBAC } from '../../hooks/useRBAC';
 import { formatDateTime } from '../../utils/formatters';
-import { getRequirements, markOrdered, listBatches, undoBatch } from '../../api/procurement.api';
+import { getDefaults, getRequirements, markOrdered, listBatches, undoBatch } from '../../api/procurement.api';
 
-const EMPTY = { raw_products: [], po_count: 0, date_min: null, date_max: null, unmapped_line_count: 0, unmapped_samples: [] };
+const isoLocal = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+const todayISO = () => isoLocal(new Date());
+
+const EMPTY = { pos: [], raw_products: [], po_count: 0, unmapped_line_count: 0, unmapped_samples: [] };
+
+const ORDERED_LEGEND = [{ swatch: 'bg-green-100', label: 'Already marked as ordered' }];
 
 export default function ProcurementPage() {
   const { canEdit } = useRBAC();
@@ -25,20 +37,29 @@ export default function ProcurementPage() {
   const [batchesLoading, setBatchesLoading] = useState(false);
   const [undoingId, setUndoingId] = useState(null);
 
-  const load = useCallback((f = filters) => {
+  const load = useCallback((f) => {
     setLoading(true);
     const params = {};
     if (f.po_date_from) params.po_date_from = f.po_date_from;
     if (f.po_date_to) params.po_date_to = f.po_date_to;
-    getRequirements(params)
+    return getRequirements(params)
       .then(setData)
       .catch(() => toast.error('Failed to load procurement requirements'))
       .finally(() => setLoading(false));
-  }, [filters]);
+  }, []);
 
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // On mount: seed From from the server default (day after last ordered, else earliest), To = today.
+  useEffect(() => {
+    getDefaults()
+      .then(d => {
+        const f = { po_date_from: d.po_date_from || '', po_date_to: todayISO() };
+        setFilters(f);
+        return load(f);
+      })
+      .catch(() => { const f = { po_date_from: '', po_date_to: todayISO() }; setFilters(f); load(f); });
+  }, [load]);
 
-  const applyFilters = () => { load(filters); };
+  const applyFilters = () => load(filters);
   const clearFilters = () => { const f = { po_date_from: '', po_date_to: '' }; setFilters(f); load(f); };
 
   const loadBatches = () => {
@@ -59,7 +80,7 @@ export default function ProcurementPage() {
       });
       toast.success(`Marked ${r.po_count} PO${r.po_count !== 1 ? 's' : ''} as ordered`);
       setConfirmMark(false);
-      load();
+      load(filters);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to mark as ordered');
     } finally { setMarking(false); }
@@ -71,28 +92,52 @@ export default function ProcurementPage() {
       const r = await undoBatch(batch.id);
       toast.success(`Returned ${r.po_count} PO${r.po_count !== 1 ? 's' : ''} to pending`);
       loadBatches();
-      load();
+      load(filters);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Undo failed');
     } finally { setUndoingId(null); }
   };
 
+  const exportXLSX = () => {
+    const { pos, raw_products } = data;
+    if (!raw_products.length) { toast('Nothing to export'); return; }
+    const header = ['Raw Product', 'Total Required', ...pos.map(p => `${p.po_id}${p.ordered ? ' (ordered)' : ''}`)];
+    const body = raw_products.map(r => [
+      r.name,
+      r.total_required_qty,
+      ...pos.map(p => r.quantities[p.po_id] || 0),
+    ]);
+    const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Procurement');
+    const from = filters.po_date_from || 'all';
+    const to = filters.po_date_to || 'all';
+    XLSX.writeFile(wb, `procurement-${from}_${to}.xlsx`);
+  };
+
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
-  const span = data.date_min && data.date_max
-    ? (data.date_min === data.date_max ? data.date_min : `${data.date_min} – ${data.date_max}`)
-    : '—';
+  const { pos, raw_products } = data;
+
+  // Sticky column classes: Raw Product frozen at left:0, Total at left:14rem.
+  const stickyName = 'sticky left-0 z-10 bg-white';
+  const stickyTotal = 'sticky left-56 z-10 bg-white';
+  const stickyNameHead = 'sticky left-0 z-20 bg-gray-50';
+  const stickyTotalHead = 'sticky left-56 z-20 bg-gray-50';
 
   return (
     <AppShell>
       <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[#003049]">Procurement</h1>
-          <p className="text-gray-500 text-sm">Raw materials required to fulfil the POs you haven&apos;t ordered for yet.</p>
+          <p className="text-gray-500 text-sm">Raw materials required per PO. Total counts only POs you haven&apos;t ordered for yet.</p>
         </div>
-        <Button variant="outline" onClick={openHistory}><History size={16} />Ordered history</Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={exportXLSX} disabled={loading || raw_products.length === 0}><Download size={16} />Export</Button>
+          <Button variant="outline" onClick={openHistory}><History size={16} />Ordered history</Button>
+        </div>
       </div>
 
-      {/* Summary + filters */}
+      {/* Filters */}
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
         <div className="flex flex-wrap items-end gap-3">
           <div className="w-full sm:w-44">
@@ -114,8 +159,9 @@ export default function ProcurementPage() {
           </div>
         </div>
         <div className="mt-3 pt-3 border-t border-gray-100 text-sm text-gray-600">
-          <span className="font-semibold text-[#003049]">{data.po_count}</span> pending PO{data.po_count !== 1 ? 's' : ''} in scope
-          <span className="text-gray-400"> · PO dates {span}</span>
+          <span className="font-semibold text-[#003049]">{pos.length}</span> PO{pos.length !== 1 ? 's' : ''} in range
+          <span className="text-gray-400"> · </span>
+          <span className="font-semibold text-[#003049]">{data.po_count}</span> still to order
         </div>
       </div>
 
@@ -134,33 +180,53 @@ export default function ProcurementPage() {
         </div>
       )}
 
-      {/* Raw products table */}
+      {pos.some(p => p.ordered) && <Legend items={ORDERED_LEGEND} className="mb-2" />}
+
+      {/* Matrix */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="overflow-auto max-h-[70vh]">
+          <table className="text-sm border-separate border-spacing-0">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="px-4 py-3 text-left font-semibold text-gray-600">Raw Product</th>
-                <th className="px-4 py-3 text-left font-semibold text-gray-600">Required Qty</th>
+              <tr className="bg-gray-50">
+                <th className={`${stickyNameHead} px-4 py-3 text-left font-semibold text-gray-600 border-b border-r border-gray-200 w-56`}>Raw Product</th>
+                <th className={`${stickyTotalHead} px-4 py-3 text-left font-semibold text-gray-600 border-b border-r border-gray-200 w-36`}>Total Required</th>
+                {pos.map(p => (
+                  <th
+                    key={p.po_id}
+                    className={`px-3 py-2 text-left font-semibold border-b border-gray-200 whitespace-nowrap ${p.ordered ? 'bg-green-100 text-green-800' : 'text-gray-600'}`}
+                  >
+                    <div className="font-mono">{p.po_id}</div>
+                    <div className="text-[11px] font-normal opacity-70">{p.po_date || '—'} · {p.vendor}</div>
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 [...Array(5)].map((_, i) => (
-                  <tr key={i}><td colSpan={2} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
+                  <tr key={i}><td colSpan={2 + pos.length} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
-              ) : data.raw_products.map(r => (
-                <tr key={r.raw_product_id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                  <td className="px-4 py-3 font-medium text-gray-900">{r.name}</td>
-                  <td className="px-4 py-3 text-gray-800 font-semibold">{Number(r.required_qty).toLocaleString('en-IN')}</td>
+              ) : raw_products.map(r => (
+                <tr key={r.raw_product_id} className="hover:bg-gray-50">
+                  <td className={`${stickyName} px-4 py-2.5 font-medium text-gray-900 border-b border-r border-gray-100`}>{r.name}</td>
+                  <td className={`${stickyTotal} px-4 py-2.5 font-semibold text-gray-800 border-b border-r border-gray-100`}>{Number(r.total_required_qty).toLocaleString('en-IN')}</td>
+                  {pos.map(p => {
+                    const q = r.quantities[p.po_id] || 0;
+                    return (
+                      <td key={p.po_id} className={`px-3 py-2.5 border-b border-gray-100 ${p.ordered ? 'bg-green-50/60' : ''} ${q ? 'text-gray-800' : 'text-gray-300'}`}>
+                        {Number(q).toLocaleString('en-IN')}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
           </table>
-          {!loading && data.raw_products.length === 0 && (
-            <p className="text-center text-gray-400 py-8">
-              {data.po_count === 0 ? 'No pending POs — nothing to procure.' : 'No raw-material requirements could be derived for the POs in scope.'}
-            </p>
+          {!loading && raw_products.length === 0 && (
+            <p className="text-center text-gray-400 py-8">No raw products yet — add them on the Products → Raw Products tab.</p>
+          )}
+          {!loading && raw_products.length > 0 && pos.length === 0 && (
+            <p className="text-center text-gray-400 py-8">No POs in the selected date range.</p>
           )}
         </div>
       </div>
@@ -170,7 +236,7 @@ export default function ProcurementPage() {
         onClose={() => setConfirmMark(false)}
         onConfirm={doMark}
         title="Mark POs as ordered"
-        message={`Mark ${data.po_count} PO${data.po_count !== 1 ? 's' : ''}${span !== '—' ? ` (PO dates ${span})` : ''} as raw-ordered? They'll be removed from this list. You can undo this from Ordered history.`}
+        message={`Mark ${data.po_count} not-yet-ordered PO${data.po_count !== 1 ? 's' : ''} in ${filters.po_date_from || '…'} – ${filters.po_date_to || '…'} as raw-ordered? They'll drop out of the Total (and the default view next time). You can undo this from Ordered history.`}
         confirmLabel="Mark as ordered"
         loading={marking}
       />
