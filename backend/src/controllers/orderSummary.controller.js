@@ -649,6 +649,57 @@ async function countsByVendor(req, res, next) {
   } catch (err) { next(err); }
 }
 
+async function countsByPoc(req, res, next) {
+  try {
+    // Aggregate open POs by POC column, with PO count and total unit qty.
+    const aggSql = (col) => `
+      SELECT p.${col} AS poc_id, COUNT(*) AS po_count, COALESCE(SUM(l.qty), 0) AS unit_qty
+      FROM marketplace_pos p
+      LEFT JOIN (SELECT po_id, SUM(qty) AS qty FROM marketplace_po_lines GROUP BY po_id) l
+        ON l.po_id = p.po_id
+      WHERE p.status = 'Open'
+      GROUP BY p.${col}`;
+    const rosterSql = `
+      SELECT u.id, u.name FROM users u
+      JOIN user_roles ur ON ur.user_id = u.id
+      WHERE ur.role = ?
+      ORDER BY u.name COLLATE NOCASE`;
+
+    const [officeAgg, warehouseAgg, officeRoster, warehouseRoster] = await Promise.all([
+      db.execute({ sql: aggSql('office_poc'), args: [] }),
+      db.execute({ sql: aggSql('warehouse_poc'), args: [] }),
+      db.execute({ sql: rosterSql, args: ['Office_POC'] }),
+      db.execute({ sql: rosterSql, args: ['Warehouse_POC'] }),
+    ]);
+
+    const build = (agg, roster) => {
+      const byId = new Map();
+      let unassigned = { po_count: 0, unit_qty: 0 };
+      for (const r of agg.rows) {
+        const entry = { po_count: Number(r.po_count) || 0, unit_qty: Number(r.unit_qty) || 0 };
+        if (r.poc_id == null) unassigned = entry;
+        else byId.set(Number(r.poc_id), entry);
+      }
+      const rows = roster.rows.map(u => {
+        const e = byId.get(Number(u.id)) || { po_count: 0, unit_qty: 0 };
+        byId.delete(Number(u.id));
+        return { id: u.id, name: u.name, po_count: e.po_count, unit_qty: e.unit_qty };
+      });
+      // Any POC still assigned but no longer holding the role — keep so totals reconcile.
+      for (const [id, e] of byId) {
+        rows.push({ id, name: '(removed POC)', po_count: e.po_count, unit_qty: e.unit_qty });
+      }
+      rows.push({ id: null, name: 'Unassigned', po_count: unassigned.po_count, unit_qty: unassigned.unit_qty });
+      return rows;
+    };
+
+    res.json({
+      office: build(officeAgg, officeRoster),
+      warehouse: build(warehouseAgg, warehouseRoster),
+    });
+  } catch (err) { next(err); }
+}
+
 async function grnAppointments(req, res, next) {
   try {
     const { date } = req.query;
@@ -670,4 +721,4 @@ async function grnAppointments(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, updateOne, bulkUpdate, countsByVendor, grnAppointments };
+module.exports = { list, updateOne, bulkUpdate, countsByVendor, countsByPoc, grnAppointments };

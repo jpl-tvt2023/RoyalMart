@@ -8,6 +8,7 @@ const canWrite = allowRoles(...ALL_ROLES);
 
 router.get('/',       auth, allAuth,  c.list);
 router.post('/bulk',  auth, canWrite, c.bulkUpsert);
+router.post('/bulk-delete', auth, canWrite, c.bulkDelete);
 router.post('/',      auth, canWrite, c.create);
 router.put('/:id',    auth, canWrite, c.update);
 router.delete('/:id', auth, canWrite, c.remove);

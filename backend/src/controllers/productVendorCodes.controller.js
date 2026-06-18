@@ -8,7 +8,7 @@ async function list(req, res, next) {
     const { rows } = await db.execute(`
       SELECT pvc.id, pvc.product_id, pvc.vendor, pvc.vendor_item_code,
              pvc.product_description, pvc.created_at, pvc.updated_at,
-             p.sku_code, p.name AS product_name,
+             p.sku_code, p.description AS product_name,
              u.name AS updated_by_name
       FROM product_vendor_codes pvc
       JOIN products p ON p.id = pvc.product_id
@@ -120,6 +120,39 @@ async function remove(req, res, next) {
   } catch (err) { next(err); }
 }
 
+async function bulkDelete(req, res, next) {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'ids must be a non-empty array' });
+    }
+    const cleanIds = ids.map(Number).filter(Number.isInteger);
+    if (!cleanIds.length) return res.status(400).json({ message: 'No valid ids provided' });
+
+    const placeholders = cleanIds.map(() => '?').join(',');
+    const tx = await db.transaction('write');
+    try {
+      const { rows } = await tx.execute({
+        sql: `DELETE FROM product_vendor_codes WHERE id IN (${placeholders}) RETURNING id`,
+        args: cleanIds,
+      });
+      await logAction({
+        client: tx,
+        userId: req.user.id,
+        actionType: 'PRODUCT_VENDOR_CODE_BULK_DELETE',
+        description: `Deleted ${rows.length} mapping${rows.length !== 1 ? 's' : ''}`,
+        entityType: 'product_vendor_code',
+        entityId: null,
+      });
+      await tx.commit();
+      res.json({ deleted: rows.length });
+    } catch (e) {
+      await tx.rollback();
+      throw e;
+    }
+  } catch (err) { next(err); }
+}
+
 const BULK_LIMIT = 2000;
 
 async function bulkUpsert(req, res, next) {
@@ -192,4 +225,4 @@ async function bulkUpsert(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, create, update, remove, bulkUpsert };
+module.exports = { list, create, update, remove, bulkDelete, bulkUpsert };
