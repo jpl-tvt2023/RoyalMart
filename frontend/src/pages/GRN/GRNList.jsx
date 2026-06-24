@@ -185,8 +185,10 @@ function AppointmentDateNav({ vendor, value, onPick }) {
                 // Red only when it needs attention: a today/past day with GRN still
                 // pending. Otherwise the count is shown in calm brand navy.
                 const overduePending = pending > 0 && iso <= today;
+                // On a selected (red) cell, use a white fill with a coloured ring so
+                // the badge stays legible against the red background.
                 const badgeCls = isSel
-                  ? `bg-white ${overduePending ? 'text-[#c1121f]' : 'text-[#003049]'}`
+                  ? `bg-white ring-1 ${overduePending ? 'ring-[#c1121f] text-[#c1121f]' : 'ring-[#003049] text-[#003049]'}`
                   : `text-white ${overduePending ? 'bg-[#c1121f]' : 'bg-[#003049]'}`;
                 return (
                   <button
@@ -197,7 +199,7 @@ function AppointmentDateNav({ vendor, value, onPick }) {
                   >
                     {d.getDate()}
                     {cnt > 0 && (
-                      <span className={`absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] font-semibold flex items-center justify-center ${badgeCls}`} title={overduePending ? `${cnt} appointment${cnt !== 1 ? 's' : ''} · ${pending} pending GRN` : `${cnt} appointment${cnt !== 1 ? 's' : ''}`}>{cnt}</span>
+                      <span className={`absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full text-[11px] font-bold leading-none flex items-center justify-center shadow-sm ${badgeCls}`} title={overduePending ? `${cnt} appointment${cnt !== 1 ? 's' : ''} · ${pending} pending GRN` : `${cnt} appointment${cnt !== 1 ? 's' : ''}`}>{cnt}</span>
                     )}
                   </button>
                 );
