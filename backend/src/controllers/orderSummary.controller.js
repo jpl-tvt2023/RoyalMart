@@ -756,7 +756,9 @@ async function grnAppointmentCounts(req, res, next) {
     if (vendor) { conditions.push('p.vendor = ?'); args.push(vendor); }
     else { conditions.push("p.vendor IN ('Blinkit', 'Scootsy', 'Zepto')"); }
     const { rows } = await db.execute({
-      sql: `SELECT p.appointment_date, COUNT(*) AS count
+      sql: `SELECT p.appointment_date,
+                   COUNT(*) AS count,
+                   COALESCE(SUM(CASE WHEN ${COMPUTED_GRN_STATUS_SQL} <> 'Delivered - GRN Received' THEN 1 ELSE 0 END), 0) AS pending
             FROM marketplace_pos p
             WHERE ${conditions.join(' AND ')}
             GROUP BY p.appointment_date

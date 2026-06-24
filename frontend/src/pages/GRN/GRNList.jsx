@@ -33,8 +33,9 @@ const GRN_STATUS_OPTIONS = [
   'Delivered - GRN Received',
 ];
 // Selectable values for the multiselect status filter (includes the computed
-// 'Yet to Dispatch'). Default selection is everything except the two Delivered
-// states, so the active pipeline shows first.
+// 'Yet to Dispatch'). Default selection is everything except
+// 'Delivered - GRN Received' (the only fully-closed state), so the active pipeline
+// — including GRN-pending deliveries — shows first.
 const STATUS_MULTI_OPTIONS = [
   'Yet to Dispatch',
   'Pending',
@@ -48,6 +49,7 @@ const DEFAULT_STATUS_SELECTION = [
   'Pending',
   'Out For Delivery',
   'Returned to Vendor',
+  'Delivered - GRN Pending',
 ];
 
 const STATUS_COLORS = {
@@ -59,13 +61,30 @@ const STATUS_COLORS = {
   'Delivered - GRN Received': 'green',
 };
 
-const defaultFilters = () => ({
-  grn_status:             [...DEFAULT_STATUS_SELECTION],
-  appointment_date_from:  '',
-  appointment_date_to:    '',
-  city:                   '',
-  courier_id:             '',
-});
+// ── date helpers (no date lib in the project; native Date, local time) ──
+const isoLocal = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+const parseISO = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n); return isoLocal(d); };
+const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+// Default the GRN view to today's appointments (owner request). The in-calendar
+// "Clear date" still lets the user switch to all dates.
+const defaultFilters = () => {
+  const today = isoLocal(new Date());
+  return {
+    grn_status:             [...DEFAULT_STATUS_SELECTION],
+    appointment_date_from:  today,
+    appointment_date_to:    today,
+    city:                   '',
+    courier_id:             '',
+  };
+};
 
 const seededFiltersFromURL = (params) => {
   const base = defaultFilters();
@@ -102,18 +121,6 @@ const buildColumns = (vendorTab) => [
   { key: 'note',                label: 'Note' },
 ];
 
-// ── date helpers (no date lib in the project; native Date, local time) ──
-const isoLocal = (d) => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-};
-const parseISO = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
-const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n); return isoLocal(d); };
-const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-
 // `‹ Today ›` appointment-date navigator with a calendar popover. The calendar
 // shows a per-day appointment-count badge for the current vendor tab. Picking a
 // day (arrows or grid) calls onPick(iso) — '' clears the date filter.
@@ -132,7 +139,9 @@ function AppointmentDateNav({ vendor, value, onPick }) {
     getGrnAppointmentCounts(vendor, isoLocal(first), isoLocal(last))
       .then(res => {
         const map = {};
-        (res.rows || []).forEach(r => { map[r.appointment_date] = Number(r.count) || 0; });
+        (res.rows || []).forEach(r => {
+          map[r.appointment_date] = { count: Number(r.count) || 0, pending: Number(r.pending) || 0 };
+        });
         setCounts(map);
       })
       .catch(() => setCounts({}));
@@ -168,9 +177,17 @@ function AppointmentDateNav({ vendor, value, onPick }) {
               {cells.map((d, i) => {
                 if (!d) return <div key={i} />;
                 const iso = isoLocal(d);
-                const cnt = counts[iso] || 0;
+                const info = counts[iso];
+                const cnt = info?.count || 0;
+                const pending = info?.pending || 0;
                 const isSel = iso === value;
                 const isToday = iso === today;
+                // Red only when it needs attention: a today/past day with GRN still
+                // pending. Otherwise the count is shown in calm brand navy.
+                const overduePending = pending > 0 && iso <= today;
+                const badgeCls = isSel
+                  ? `bg-white ${overduePending ? 'text-[#c1121f]' : 'text-[#003049]'}`
+                  : `text-white ${overduePending ? 'bg-[#c1121f]' : 'bg-[#003049]'}`;
                 return (
                   <button
                     key={i}
@@ -180,7 +197,7 @@ function AppointmentDateNav({ vendor, value, onPick }) {
                   >
                     {d.getDate()}
                     {cnt > 0 && (
-                      <span className={`absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] font-semibold flex items-center justify-center ${isSel ? 'bg-white text-[#c1121f]' : 'bg-[#c1121f] text-white'}`}>{cnt}</span>
+                      <span className={`absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] font-semibold flex items-center justify-center ${badgeCls}`} title={overduePending ? `${cnt} appointment${cnt !== 1 ? 's' : ''} · ${pending} pending GRN` : `${cnt} appointment${cnt !== 1 ? 's' : ''}`}>{cnt}</span>
                     )}
                   </button>
                 );
@@ -447,7 +464,6 @@ export default function GRNList() {
           <h1 className="text-2xl font-bold text-[#003049]">GRN</h1>
           <p className="text-gray-500 text-sm">{total} order{total !== 1 ? 's' : ''} · {vendorTab}</p>
         </div>
-        <AppointmentDateNav vendor={vendorTab} value={apptValue} onPick={pickAppointmentDay} />
         <Button variant="outline" onClick={downloadXLSX} loading={exporting}>
           <Download size={16} />Download XLSX
         </Button>
@@ -502,7 +518,9 @@ export default function GRNList() {
         </div>
       </div>
 
-      <Legend items={UNSAVED_LEGEND} className="mb-2" />
+      <div className="mb-2">
+        <AppointmentDateNav vendor={vendorTab} value={apptValue} onPick={pickAppointmentDay} />
+      </div>
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
@@ -782,6 +800,7 @@ export default function GRNList() {
           total={total}
           onPageChange={handlePageChange}
           onPageSizeChange={handlePageSizeChange}
+          leftExtra={<Legend items={UNSAVED_LEGEND} />}
         />
       </div>
     </AppShell>

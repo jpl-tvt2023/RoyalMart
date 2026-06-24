@@ -2,7 +2,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 const PAGE_SIZES = [10, 25, 50, 100];
 
-export default function Pagination({ page, pageSize, total, onPageChange, onPageSizeChange }) {
+export default function Pagination({ page, pageSize, total, onPageChange, onPageSizeChange, leftExtra }) {
   const totalPages = Math.max(1, Math.ceil((total || 0) / pageSize));
   const safePage = Math.min(Math.max(1, page || 1), totalPages);
   const start = total === 0 ? 0 : (safePage - 1) * pageSize + 1;
@@ -28,6 +28,12 @@ export default function Pagination({ page, pageSize, total, onPageChange, onPage
             {PAGE_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </label>
+        {leftExtra && (
+          <>
+            <span className="text-gray-300">·</span>
+            {leftExtra}
+          </>
+        )}
       </div>
 
       <div className="flex items-center gap-1">
