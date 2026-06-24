@@ -157,8 +157,8 @@ export default function PurchaseOrderDetail() {
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
                     <th className="px-3 py-2 text-left font-semibold text-gray-600 w-16">Line</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-40">Item Code</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600">Internal Product ID</th>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-40">Item Code/EAN</th>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-600">Internal SKU Code</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Qty</th>
                     <th className="px-3 py-2 w-12" />
                   </tr>

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
 import { AlertTriangle, CheckCircle2, History, Undo2, Download } from 'lucide-react';
@@ -172,9 +173,36 @@ export default function ProcurementPage() {
           <div>
             <span className="font-medium">{data.unmapped_line_count} PO line{data.unmapped_line_count !== 1 ? 's' : ''}</span> couldn&apos;t be matched to a SKU with requirements and {data.unmapped_line_count !== 1 ? 'are' : 'is'} not counted below. Add the missing vendor mapping or SKU requirements.
             {data.unmapped_samples?.length > 0 && (
-              <span className="block text-xs text-amber-700 mt-1">
-                e.g. {data.unmapped_samples.map(s => `${s.vendor}/${s.item_code}`).join(', ')}
-              </span>
+              <details className="mt-2">
+                <summary className="cursor-pointer text-xs font-medium text-amber-800 hover:underline">Show details</summary>
+                <div className="mt-2 overflow-x-auto rounded-lg border border-amber-200 bg-white">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-amber-100/60 text-amber-900">
+                        <th className="px-2 py-1.5 text-left font-semibold">Vendor</th>
+                        <th className="px-2 py-1.5 text-left font-semibold">Item Code/EAN</th>
+                        <th className="px-2 py-1.5 text-left font-semibold">PO ID</th>
+                        <th className="px-2 py-1.5 text-left font-semibold">Vendor PO No</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.unmapped_samples.map((s, i) => (
+                        <tr key={i} className="border-t border-amber-100">
+                          <td className="px-2 py-1.5 text-gray-700">{s.vendor}</td>
+                          <td className="px-2 py-1.5 font-mono text-gray-800">{s.item_code}</td>
+                          <td className="px-2 py-1.5">
+                            <Link to={`/purchase-orders/${s.po_id}`} className="font-mono font-semibold text-[#c1121f] hover:underline">{s.po_id}</Link>
+                          </td>
+                          <td className="px-2 py-1.5 font-mono text-gray-600">{s.vendor_po_id || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {data.unmapped_samples.length >= 50 && (
+                  <p className="mt-1 text-xs text-amber-700">Showing the first 50 unmatched lines — narrow the date range to see the rest.</p>
+                )}
+              </details>
             )}
           </div>
         </div>

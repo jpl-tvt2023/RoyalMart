@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import AppShell from '../../components/layout/AppShell';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
@@ -9,7 +10,7 @@ import { getRawProducts, createRawProduct, updateRawProduct, deleteRawProduct, b
 import { listVendors } from '../../api/vendors.api';
 import { listCategories } from '../../api/categories.api';
 import { sortByText } from '../../utils/sort';
-import { Plus, Pencil, Trash2, Search, Upload } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Upload, Download } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useRBAC } from '../../hooks/useRBAC';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
@@ -22,6 +23,23 @@ const TABS = [
 ];
 
 // ───────────────────────────── shared helpers ─────────────────────────────
+
+// Export an array-of-objects to an .xlsx whose columns match the bulk-upload
+// template (so a downloaded file can be edited and re-uploaded round-trip).
+// `columns` is [{ key, header }]; `serialize` optionally maps a row→value per key.
+function downloadRows(filename, columns, rows, serialize) {
+  const header = columns.map(c => c.header);
+  const data = rows.map(r => columns.map(c => {
+    const v = serialize ? serialize(r, c.key) : r[c.key];
+    return v == null ? '' : v;
+  }));
+  const ws = XLSX.utils.aoa_to_sheet([header, ...data]);
+  ws['!cols'] = header.map(() => ({ wch: 22 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Export');
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
+  XLSX.writeFile(wb, `${filename}-${stamp}.xlsx`);
+}
 
 // Set-based row selection for multi-select delete (mirrors OrderSummaryList).
 function useRowSelection(items, idKey = 'id') {
@@ -218,18 +236,24 @@ function VendorMappingsTab() {
     } finally { setSaving(false); }
   };
 
+  const downloadXlsx = () => downloadRows('product-vendor-mappings', [
+    { key: 'sku_code', header: 'sku_code' },
+    { key: 'vendor', header: 'vendor' },
+    { key: 'vendor_item_code', header: 'vendor_item_code' },
+    { key: 'product_description', header: 'product_description' },
+  ], rows);
+
   const colSpan = 4 + (canWrite ? 2 : 0);
 
   return (
     <>
       <div className="mb-4 flex items-start justify-between flex-wrap gap-3">
         <p className="text-gray-500 text-sm">{rows.length} mapping{rows.length !== 1 ? 's' : ''}</p>
-        {canWrite && (
-          <div className="flex gap-2 items-center">
-            <Button variant="ghost" onClick={() => setBulkOpen(true)}><Upload size={16} />Bulk Upload</Button>
-            <Button onClick={openAdd}><Plus size={16} />Add Mapping</Button>
-          </div>
-        )}
+        <div className="flex gap-2 items-center">
+          <Button variant="ghost" onClick={downloadXlsx} disabled={!rows.length}><Download size={16} />Download XLSX</Button>
+          {canWrite && <Button variant="ghost" onClick={() => setBulkOpen(true)}><Upload size={16} />Bulk Upload</Button>}
+          {canWrite && <Button onClick={openAdd}><Plus size={16} />Add Mapping</Button>}
+        </div>
       </div>
 
       <div className="mb-4 flex items-center gap-3 flex-wrap">
@@ -540,6 +564,16 @@ function SKUsTab() {
   const inputCls = `w-full ${fieldBase}`;
   const colSpan = 5 + (canWrite ? 2 : 0);
 
+  const downloadXlsx = () => downloadRows('skus', [
+    { key: 'sku_code', header: 'sku_code' },
+    { key: 'description', header: 'description' },
+    { key: 'hsn_code', header: 'hsn_code' },
+    { key: 'category', header: 'category' },
+    { key: 'requirements', header: 'requirements' },
+  ], skus, (r, key) => key === 'requirements'
+    ? (r.requirements || []).map(req => `${req.name}:${req.qty}`).join('; ')
+    : r[key]);
+
   return (
     <>
       <div className="mb-4 flex items-start justify-between flex-wrap gap-3">
@@ -549,6 +583,7 @@ function SKUsTab() {
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search SKUs…" className="pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f] w-full sm:w-52" />
           </div>
+          <Button variant="ghost" onClick={downloadXlsx} disabled={!skus.length}><Download size={16} />Download XLSX</Button>
           {canWrite && <Button variant="ghost" onClick={() => setBulkOpen(true)}><Upload size={16} />Bulk Upload</Button>}
           {canWrite && <Button onClick={openAdd}><Plus size={16} />Add SKU</Button>}
         </div>
@@ -796,6 +831,11 @@ function RawProductsTab() {
 
   const colSpan = 2 + (canWrite ? 2 : 0);
 
+  const downloadXlsx = () => downloadRows('raw-products', [
+    { key: 'name', header: 'name' },
+    { key: 'qty', header: 'qty' },
+  ], rows);
+
   return (
     <>
       <div className="mb-4 flex items-start justify-between flex-wrap gap-3">
@@ -805,6 +845,7 @@ function RawProductsTab() {
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search raw products…" className="pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f] w-full sm:w-52" />
           </div>
+          <Button variant="ghost" onClick={downloadXlsx} disabled={!rows.length}><Download size={16} />Download XLSX</Button>
           {canWrite && <Button variant="ghost" onClick={() => setBulkOpen(true)}><Upload size={16} />Bulk Upload</Button>}
           {canWrite && <Button onClick={openAdd}><Plus size={16} />Add Raw Product</Button>}
         </div>

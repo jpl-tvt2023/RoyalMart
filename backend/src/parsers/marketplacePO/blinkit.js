@@ -17,6 +17,22 @@ function fieldByLine(lines, label) {
   return null;
 }
 
+// Buyer entity for Blinkit = the company under the "Issued by … Seller Hub"
+// banner (always BLINK COMMERCE PRIVATE LIMITED). The R.O. layout has no
+// "Shipping Address" header, so anchor on that banner and take the first
+// company-like line after it (the seller, ROYMAX …, appears later).
+function extractBlinkitParty(flat) {
+  const idx = flat.findIndex(l => /issued by .*seller hub/i.test(l));
+  const start = idx === -1 ? 0 : idx + 1;
+  for (let k = start; k < flat.length; k++) {
+    const v = (flat[k] || '').trim();
+    if (/(private limited|pvt\.?\s*ltd|\blimited\b|\bllp\b)/i.test(v)) {
+      return v.replace(/\s*\(.*$/, '').trim();
+    }
+  }
+  return null;
+}
+
 function findMultilineField(lines, labelParts) {
   for (let i = 0; i < lines.length - labelParts.length; i++) {
     let ok = true;
@@ -118,7 +134,7 @@ async function parseBlinkit(buffer) {
     i = j;
   }
 
-  const party_name = extractShipToParty(flat);
+  const party_name = extractBlinkitParty(flat) || extractShipToParty(flat);
   return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, party_name, lines };
 }
 

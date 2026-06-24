@@ -92,12 +92,6 @@ export default function PurchaseOrdersList() {
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    if (searchParams.toString() === '') return;
-    setFilters(seededFiltersFromURL(searchParams));
-    setPage(1);
-  }, [searchParams]);
-
   const buildParams = useCallback((overrides) => {
     const f = overrides?.filters ?? filters;
     const s = overrides?.sort ?? sort;
@@ -119,7 +113,15 @@ export default function PurchaseOrdersList() {
       .finally(() => setLoading(false));
   }, [buildParams]);
 
-  useEffect(() => { load(); }, [load]);
+  // Load on mount and whenever the URL (navigation) changes. Editing filter inputs
+  // does NOT fetch — only an explicit action (Search/Clear/sort/pagination) does.
+  useEffect(() => {
+    const f = seededFiltersFromURL(searchParams);
+    setFilters(f);
+    setPage(1);
+    load({ filters: f, page: 1 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
   const onSearchKey = (e) => { if (e.key === 'Enter') applySearch(); };

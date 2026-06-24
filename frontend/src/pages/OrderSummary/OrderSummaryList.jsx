@@ -120,17 +120,20 @@ export default function OrderSummaryList() {
       .finally(() => setLoading(false));
   }, [buildParams]);
 
-  useEffect(() => { load(); }, [load]);
-
+  // Load on mount and whenever the URL (navigation) changes. Editing filter inputs
+  // does NOT fetch — only an explicit action (Search/Clear/tab/sort/pagination).
+  // Seeded values are passed as overrides so the fetch doesn't race setState.
   useEffect(() => {
-    if (searchParams.toString() === '') return;
     const seeded = seededFiltersFromURL(searchParams);
+    const v = searchParams.get('vendor') || '';
     setFilters(seeded);
-    setVendorTab(searchParams.get('vendor') || '');
+    setVendorTab(v);
     setPage(1);
     const DEFAULTS = defaultFilters();
-    const hasNonStatusFilter = Object.entries(seeded).some(([k, v]) => k !== 'status' && v !== DEFAULTS[k]);
+    const hasNonStatusFilter = Object.entries(seeded).some(([k, val]) => k !== 'status' && val !== DEFAULTS[k]);
     if (hasNonStatusFilter) setShowMore(true);
+    load({ filters: seeded, vendor: v, page: 1 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   const DEFAULTS = defaultFilters();

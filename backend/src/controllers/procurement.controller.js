@@ -77,13 +77,14 @@ async function getRequirements(req, res, next) {
         args,
       }),
       db.execute({
-        sql: `SELECT DISTINCT po.vendor, l.item_code
+        sql: `SELECT DISTINCT po.vendor, l.item_code, po.po_id, po.vendor_po_id
               FROM marketplace_pos po
               JOIN marketplace_po_lines l ON l.po_id = po.po_id
               LEFT JOIN product_vendor_codes pvc ON pvc.vendor = po.vendor AND pvc.vendor_item_code = l.item_code
               LEFT JOIN product_requirements preq ON preq.product_id = pvc.product_id
               WHERE ${where} AND preq.id IS NULL
-              LIMIT 10`,
+              ORDER BY po.po_id, l.item_code
+              LIMIT 50`,
         args,
       }),
     ]);
@@ -113,7 +114,12 @@ async function getRequirements(req, res, next) {
       raw_products,
       po_count: poCount,
       unmapped_line_count: Number(unmappedRows[0]?.n) || 0,
-      unmapped_samples: unmappedSamples.map(s => ({ vendor: s.vendor, item_code: s.item_code })),
+      unmapped_samples: unmappedSamples.map(s => ({
+        vendor: s.vendor,
+        item_code: s.item_code,
+        po_id: s.po_id,
+        vendor_po_id: s.vendor_po_id,
+      })),
     });
   } catch (err) { next(err); }
 }
