@@ -6,3 +6,5 @@ dist/
 .vercel/
 coverage/
 backend/tests/.tmp/
+PRODUCT_OVERVIEW.html
+PRODUCT_OVERVIEW.md
