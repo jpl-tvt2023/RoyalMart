@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X, ChevronDown, ChevronLeft, ChevronRight, Calendar as CalendarIcon } from 'lucide-react';
@@ -147,6 +147,15 @@ function AppointmentDateNav({ vendor, value, onPick }) {
       .catch(() => setCounts({}));
   }, [open, viewMonth, vendor]);
 
+  // Close the calendar popover on any click outside it.
+  const popRef = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (popRef.current && !popRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
   const label = value ? (value === today ? `Today · ${value}` : value) : 'All dates';
   const pick = (iso) => { onPick(iso); setOpen(false); };
 
@@ -159,7 +168,7 @@ function AppointmentDateNav({ vendor, value, onPick }) {
   return (
     <div className="flex items-center gap-2">
       <button type="button" onClick={() => onPick(addDays(current, -1))} title="Previous day" className="p-1.5 rounded border border-gray-200 hover:bg-gray-50 text-gray-600"><ChevronLeft size={16} /></button>
-      <div className="relative">
+      <div className="relative" ref={popRef}>
         <button type="button" onClick={() => setOpen(o => !o)} className="min-w-[160px] px-3 py-1.5 rounded border border-gray-200 bg-white text-sm font-medium text-[#003049] hover:bg-gray-50 inline-flex items-center gap-2 justify-center">
           <CalendarIcon size={14} className="text-gray-400" />{label}
         </button>
@@ -217,9 +226,17 @@ function AppointmentDateNav({ vendor, value, onPick }) {
   );
 }
 
-// Checkbox dropdown for the multi-value status filter. Uses native <details> so
-// it needs no outside-click wiring; the summary shows the current selection.
+// Checkbox dropdown for the multi-value status filter. Native <details>, but
+// closed on any click outside the control.
 function StatusMultiSelect({ selected, onChange }) {
+  const detRef = useRef(null);
+  useEffect(() => {
+    const handler = (e) => {
+      if (detRef.current?.open && !detRef.current.contains(e.target)) detRef.current.open = false;
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
   const toggle = (s) => {
     onChange(selected.includes(s) ? selected.filter(x => x !== s) : [...selected, s]);
   };
@@ -227,7 +244,7 @@ function StatusMultiSelect({ selected, onChange }) {
     ? 'All statuses'
     : `${selected.length} selected`;
   return (
-    <details className="relative">
+    <details ref={detRef} className="relative">
       <summary className="list-none cursor-pointer flex items-center justify-between w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30">
         <span className="text-gray-700 truncate">{label}</span>
         <ChevronDown size={14} className="text-gray-400 shrink-0" />
