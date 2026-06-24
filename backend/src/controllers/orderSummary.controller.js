@@ -99,9 +99,17 @@ async function list(req, res, next) {
     }
     if (tracking_id) { conditions.push('p.tracking_id LIKE ?'); args.push(`%${tracking_id}%`); }
     if (bill_no) { conditions.push('p.bill_no LIKE ?'); args.push(`%${bill_no}%`); }
-    if (grn_status && grn_status !== 'All' && GRN_STATUS_FILTER_VALUES.includes(grn_status)) {
-      conditions.push(`${COMPUTED_GRN_STATUS_SQL} = ?`);
-      args.push(grn_status);
+    // grn_status accepts a single value or a comma-separated list (multiselect).
+    // 'All' (or empty) means no status filter.
+    if (grn_status && grn_status !== 'All') {
+      const valid = String(grn_status)
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => GRN_STATUS_FILTER_VALUES.includes(s));
+      if (valid.length) {
+        conditions.push(`${COMPUTED_GRN_STATUS_SQL} IN (${valid.map(() => '?').join(', ')})`);
+        args.push(...valid);
+      }
     }
     if (appointment_date_from) { conditions.push('p.appointment_date >= ?'); args.push(appointment_date_from); }
     if (appointment_date_to)   { conditions.push('p.appointment_date <= ?'); args.push(appointment_date_to); }
@@ -628,9 +636,17 @@ async function countsByVendor(req, res, next) {
     }
     if (tracking_id) { conditions.push('p.tracking_id LIKE ?'); args.push(`%${tracking_id}%`); }
     if (bill_no) { conditions.push('p.bill_no LIKE ?'); args.push(`%${bill_no}%`); }
-    if (grn_status && grn_status !== 'All' && GRN_STATUS_FILTER_VALUES.includes(grn_status)) {
-      conditions.push(`${COMPUTED_GRN_STATUS_SQL} = ?`);
-      args.push(grn_status);
+    // grn_status accepts a single value or a comma-separated list (multiselect).
+    // 'All' (or empty) means no status filter.
+    if (grn_status && grn_status !== 'All') {
+      const valid = String(grn_status)
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => GRN_STATUS_FILTER_VALUES.includes(s));
+      if (valid.length) {
+        conditions.push(`${COMPUTED_GRN_STATUS_SQL} IN (${valid.map(() => '?').join(', ')})`);
+        args.push(...valid);
+      }
     }
     if (appointment_date_from) { conditions.push('p.appointment_date >= ?'); args.push(appointment_date_from); }
     if (appointment_date_to)   { conditions.push('p.appointment_date <= ?'); args.push(appointment_date_to); }
@@ -663,6 +679,7 @@ async function countsByPoc(req, res, next) {
       SELECT u.id, u.name FROM users u
       JOIN user_roles ur ON ur.user_id = u.id
       WHERE ur.role = ?
+      GROUP BY u.id
       ORDER BY u.name COLLATE NOCASE`;
 
     const [officeAgg, warehouseAgg, officeRoster, warehouseRoster] = await Promise.all([
@@ -685,9 +702,12 @@ async function countsByPoc(req, res, next) {
         byId.delete(Number(u.id));
         return { id: u.id, name: u.name, po_count: e.po_count, unit_qty: e.unit_qty };
       });
-      // Any POC still assigned but no longer holding the role — keep so totals reconcile.
-      for (const [id, e] of byId) {
-        rows.push({ id, name: '(removed POC)', po_count: e.po_count, unit_qty: e.unit_qty });
+      // Any PO still assigned to someone no longer holding the role is effectively
+      // orphaned — fold it into Unassigned so it surfaces for reassignment (and is
+      // reachable via the office_poc/warehouse_poc=unassigned filter).
+      for (const [, e] of byId) {
+        unassigned.po_count += e.po_count;
+        unassigned.unit_qty += e.unit_qty;
       }
       rows.push({ id: null, name: 'Unassigned', po_count: unassigned.po_count, unit_qty: unassigned.unit_qty });
       return rows;
@@ -721,4 +741,30 @@ async function grnAppointments(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, updateOne, bulkUpdate, countsByVendor, countsByPoc, grnAppointments };
+// Per-day appointment counts for a vendor over a date range — powers the GRN date
+// picker's day badges. Returns [{ appointment_date, count }] for days in [from,to]
+// that have at least one appointment for the given vendor.
+async function grnAppointmentCounts(req, res, next) {
+  try {
+    const { vendor, from, to } = req.query;
+    const DATE = /^\d{4}-\d{2}-\d{2}$/;
+    if (!from || !to || !DATE.test(from) || !DATE.test(to)) {
+      return res.status(400).json({ message: 'from and to are required (YYYY-MM-DD)' });
+    }
+    const conditions = ['p.appointment_date >= ?', 'p.appointment_date <= ?'];
+    const args = [from, to];
+    if (vendor) { conditions.push('p.vendor = ?'); args.push(vendor); }
+    else { conditions.push("p.vendor IN ('Blinkit', 'Scootsy', 'Zepto')"); }
+    const { rows } = await db.execute({
+      sql: `SELECT p.appointment_date, COUNT(*) AS count
+            FROM marketplace_pos p
+            WHERE ${conditions.join(' AND ')}
+            GROUP BY p.appointment_date
+            ORDER BY p.appointment_date`,
+      args,
+    });
+    res.json({ rows });
+  } catch (err) { next(err); }
+}
+
+module.exports = { list, updateOne, bulkUpdate, countsByVendor, countsByPoc, grnAppointments, grnAppointmentCounts };

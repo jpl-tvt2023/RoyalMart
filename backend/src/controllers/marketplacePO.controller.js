@@ -16,6 +16,29 @@ async function lookupActiveVendor(name) {
   return rows[0] || null;
 }
 
+// Attach internal_product_id/internal_sku_code to parsed preview lines by looking
+// up this vendor's product_vendor_codes map (vendor_item_code → product). Lines
+// aren't persisted yet, so we resolve in memory rather than via a join.
+async function enrichLinesWithInternalSku(vendor, lines) {
+  if (!Array.isArray(lines) || lines.length === 0) return lines || [];
+  const { rows } = await db.execute({
+    sql: `SELECT pvc.vendor_item_code, pr.id AS product_id, pr.sku_code
+          FROM product_vendor_codes pvc
+          JOIN products pr ON pr.id = pvc.product_id
+          WHERE pvc.vendor = ?`,
+    args: [vendor],
+  });
+  const byCode = new Map(rows.map(r => [String(r.vendor_item_code), r]));
+  return lines.map(l => {
+    const match = byCode.get(String(l.item_code));
+    return {
+      ...l,
+      internal_product_id: match ? match.product_id : null,
+      internal_sku_code: match ? match.sku_code : null,
+    };
+  });
+}
+
 async function parsePreview(req, res, next) {
   try {
     const { vendor } = req.body;
@@ -40,6 +63,11 @@ async function parsePreview(req, res, next) {
     } catch (err) {
       return res.status(400).json({ message: `Parse failed: ${err.message}` });
     }
+
+    // Enrich preview lines with the internal SKU so the user sees it BEFORE
+    // approval (mirrors the join getOne() runs post-save). Single lookup of this
+    // vendor's code→product map, then attach per line.
+    parsed.lines = await enrichLinesWithInternalSku(vendor, parsed.lines);
 
     await logAction({
       userId: req.user.id,

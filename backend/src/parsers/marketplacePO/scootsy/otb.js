@@ -1,6 +1,6 @@
 const pdf = require('pdf-parse');
 const { parseIndianDate } = require('../dates');
-const { extractShipToParty } = require('../address');
+const { extractShipToParty, companyAfterShipping } = require('../address');
 const { fieldByLabel } = require('./shared');
 
 // New Scootsy "OTB" layout (CREATE_OTB_PURCHASE_ORDER). Same column set as the
@@ -126,7 +126,9 @@ async function parseScootsyOtb(buffer) {
     i = j > i ? j : i + 1;
   }
 
-  const party_name = extractShipToParty(flatLines);
+  // Buyer entity = the company line after the (combined) Billing/Shipping Address
+  // header, e.g. CLOUDSTORE RETAIL PRIVATE LIMITED.
+  const party_name = companyAfterShipping(flatLines) || extractShipToParty(flatLines);
   const city = extractCity(flatLines);
   return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, party_name, city, lines };
 }

@@ -1,6 +1,6 @@
 const pdf = require('pdf-parse');
 const { parseIndianDate } = require('./dates');
-const { extractShipToParty } = require('./address');
+const { extractShipToParty, companyAfterShipping } = require('./address');
 
 function fieldByLine(lines, label) {
   const re = new RegExp('^\\s*' + label + '\\s*:\\s*(.+)$', 'i');
@@ -19,7 +19,8 @@ function fieldByLine(lines, label) {
 //   <CESS_rate(2dec)>%<CESS_amt(2dec)>
 //   <AddCess(2dec)><Total(2dec)>
 // Qty length varies (1–4 digits in observed specimens). Pick the split where
-// qty * unitBase ≈ taxable.
+// qty * unitBase ≈ taxable. Returns { qty, ean } — the EAN (group 2) is used as
+// the Zepto line identifier; previously it was matched but discarded.
 function parseQtyFromBlob(blob) {
   const D = '\\d+\\.\\d{2}';
   for (let qLen = 1; qLen <= 5; qLen++) {
@@ -33,7 +34,9 @@ function parseQtyFromBlob(blob) {
     const qty = parseInt(m[3], 10);
     const unitBase = parseFloat(m[5]);
     const taxable = parseFloat(m[6]);
-    if (qty > 0 && Math.abs(qty * unitBase - taxable) / Math.max(taxable, 1) < 0.005) return qty;
+    if (qty > 0 && Math.abs(qty * unitBase - taxable) / Math.max(taxable, 1) < 0.005) {
+      return { qty, ean: m[2] };
+    }
   }
   return null;
 }
@@ -95,22 +98,31 @@ async function parseZepto(buffer) {
     // Accumulate consecutive numeric/percent lines into a single blob,
     // attempting to parse after each append. Stop at first successful parse.
     let blob = '';
-    let qty = null;
+    let parsed = null;
     while (j < bodyEnd && NUMERIC_LINE_RE.test(flatLines[j])) {
       blob += flatLines[j];
       j++;
-      qty = parseQtyFromBlob(blob);
-      if (qty != null) break;
+      parsed = parseQtyFromBlob(blob);
+      if (parsed != null) break;
     }
 
-    if (qty != null && qty > 0) {
-      lines.push({ line_no: expectedSr, item_code, item_desc: '', qty });
+    if (parsed != null && parsed.qty > 0) {
+      // For Zepto the line identifier is the EAN (from the numeric tail), not the
+      // 6-digit material code. Keep the material code in item_desc for traceability.
+      lines.push({
+        line_no: expectedSr,
+        item_code: parsed.ean,
+        item_desc: item_code ? `material:${item_code}` : '',
+        qty: parsed.qty,
+      });
     }
     expectedSr++;
     i = j;
   }
 
-  const party_name = extractShipToParty(flatLines);
+  // Buyer entity = ZEPTO LIMITED (the company line after the Shipping Address
+  // header; the "(Formerly known as …)" parenthetical is stripped).
+  const party_name = companyAfterShipping(flatLines) || extractShipToParty(flatLines);
   return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, party_name, lines };
 }
 

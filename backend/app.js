@@ -33,7 +33,6 @@ app.use(globalLimiter);
 
 app.use('/api/auth',         require('./src/routes/auth.routes'));
 app.use('/api/users',        require('./src/routes/users.routes'));
-app.use('/api/teams',        require('./src/routes/teams.routes'));
 app.use('/api/products',     require('./src/routes/products.routes'));
 app.use('/api/raw-products', require('./src/routes/rawProducts.routes'));
 app.use('/api/procurement', require('./src/routes/procurement.routes'));

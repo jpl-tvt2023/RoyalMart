@@ -1,6 +1,6 @@
 const pdf = require('pdf-parse');
 const { parseIndianDate } = require('../dates');
-const { extractShipToParty } = require('../address');
+const { extractShipToParty, companyAfterShipping } = require('../address');
 const { fieldByLabel, NUMERIC_LINE_RE } = require('./shared');
 
 // Legacy Scootsy layout. A row's numeric tail (concatenated across however many
@@ -87,7 +87,8 @@ async function parseScootsyLegacy(buffer) {
     i = j;
   }
 
-  const party_name = extractShipToParty(flatLines);
+  // Buyer entity = the company line after the (combined) Billing/Shipping header.
+  const party_name = companyAfterShipping(flatLines) || extractShipToParty(flatLines);
   return { vendor_po_id, po_date, expected_delivery_date, po_expiry_date, party_name, city: null, lines };
 }
 

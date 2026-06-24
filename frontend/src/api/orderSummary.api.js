@@ -29,3 +29,8 @@ export async function getGrnAppointmentsByDate(date) {
   const { data } = await api.get('/order-summary/grn-appointments', { params: { date } });
   return data;
 }
+
+export async function getGrnAppointmentCounts(vendor, from, to) {
+  const { data } = await api.get('/order-summary/grn-appointment-counts', { params: { vendor, from, to } });
+  return data;
+}

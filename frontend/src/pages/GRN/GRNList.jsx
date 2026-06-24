@@ -1,14 +1,14 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X } from 'lucide-react';
+import { ArrowUp, ArrowDown, ArrowUpDown, Download, Save, X, ChevronDown, ChevronLeft, ChevronRight, Calendar as CalendarIcon } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import Badge from '../../components/ui/Badge';
 import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
-import { listOrderSummary, updateOrderSummary } from '../../api/orderSummary.api';
+import { listOrderSummary, updateOrderSummary, getGrnAppointmentCounts } from '../../api/orderSummary.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { sortByText } from '../../utils/sort';
@@ -32,14 +32,22 @@ const GRN_STATUS_OPTIONS = [
   'Delivered - GRN Pending',
   'Delivered - GRN Received',
 ];
-const STATUS_FILTER_OPTIONS = [
-  'All',
-  'Pending',
+// Selectable values for the multiselect status filter (includes the computed
+// 'Yet to Dispatch'). Default selection is everything except the two Delivered
+// states, so the active pipeline shows first.
+const STATUS_MULTI_OPTIONS = [
   'Yet to Dispatch',
+  'Pending',
   'Out For Delivery',
   'Returned to Vendor',
   'Delivered - GRN Pending',
   'Delivered - GRN Received',
+];
+const DEFAULT_STATUS_SELECTION = [
+  'Yet to Dispatch',
+  'Pending',
+  'Out For Delivery',
+  'Returned to Vendor',
 ];
 
 const STATUS_COLORS = {
@@ -52,7 +60,7 @@ const STATUS_COLORS = {
 };
 
 const defaultFilters = () => ({
-  grn_status:             'Pending',
+  grn_status:             [...DEFAULT_STATUS_SELECTION],
   appointment_date_from:  '',
   appointment_date_to:    '',
   city:                   '',
@@ -63,7 +71,9 @@ const seededFiltersFromURL = (params) => {
   const base = defaultFilters();
   if (!params) return base;
   for (const [k, v] of params.entries()) {
-    if (k in base && v) base[k] = v;
+    if (!(k in base) || !v) continue;
+    if (k === 'grn_status') base[k] = v.split(',').map(s => s.trim()).filter(Boolean);
+    else base[k] = v;
   }
   return base;
 };
@@ -79,6 +89,7 @@ const buildColumns = (vendorTab) => [
   ...(vendorTab === 'Zepto' ? [{ key: 'asn', label: 'ASN' }] : []),
   { key: 'computed_grn_status', label: 'Status' },
   { key: 'courier_name',        label: 'Courier' },
+  { key: 'po_id',               label: 'PO ID' },
   { key: 'vendor_po_id',        label: 'PO Number' },
   { key: 'total_qty',           label: 'PO Qty' },
   { key: 'city',                label: 'City' },
@@ -90,6 +101,129 @@ const buildColumns = (vendorTab) => [
   { key: 'discrepancy_number',  label: 'Discrepancy Number' },
   { key: 'note',                label: 'Note' },
 ];
+
+// ── date helpers (no date lib in the project; native Date, local time) ──
+const isoLocal = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+const parseISO = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n); return isoLocal(d); };
+const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+// `‹ Today ›` appointment-date navigator with a calendar popover. The calendar
+// shows a per-day appointment-count badge for the current vendor tab. Picking a
+// day (arrows or grid) calls onPick(iso) — '' clears the date filter.
+function AppointmentDateNav({ vendor, value, onPick }) {
+  const today = isoLocal(new Date());
+  const current = value || today;
+  const [open, setOpen] = useState(false);
+  const [viewMonth, setViewMonth] = useState(() => { const d = parseISO(current); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  const [counts, setCounts] = useState({});
+
+  // Fetch month counts when the popover opens or the month/vendor changes.
+  useEffect(() => {
+    if (!open) return;
+    const first = new Date(viewMonth.getFullYear(), viewMonth.getMonth(), 1);
+    const last = new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 0);
+    getGrnAppointmentCounts(vendor, isoLocal(first), isoLocal(last))
+      .then(res => {
+        const map = {};
+        (res.rows || []).forEach(r => { map[r.appointment_date] = Number(r.count) || 0; });
+        setCounts(map);
+      })
+      .catch(() => setCounts({}));
+  }, [open, viewMonth, vendor]);
+
+  const label = value ? (value === today ? `Today · ${value}` : value) : 'All dates';
+  const pick = (iso) => { onPick(iso); setOpen(false); };
+
+  const startPad = new Date(viewMonth.getFullYear(), viewMonth.getMonth(), 1).getDay();
+  const daysInMonth = new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startPad; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(viewMonth.getFullYear(), viewMonth.getMonth(), d));
+
+  return (
+    <div className="flex items-center gap-2">
+      <button type="button" onClick={() => onPick(addDays(current, -1))} title="Previous day" className="p-1.5 rounded border border-gray-200 hover:bg-gray-50 text-gray-600"><ChevronLeft size={16} /></button>
+      <div className="relative">
+        <button type="button" onClick={() => setOpen(o => !o)} className="min-w-[160px] px-3 py-1.5 rounded border border-gray-200 bg-white text-sm font-medium text-[#003049] hover:bg-gray-50 inline-flex items-center gap-2 justify-center">
+          <CalendarIcon size={14} className="text-gray-400" />{label}
+        </button>
+        {open && (
+          <div className="absolute z-30 mt-1 left-1/2 -translate-x-1/2 w-72 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+            <div className="flex items-center justify-between mb-2">
+              <button type="button" onClick={() => setViewMonth(m => new Date(m.getFullYear(), m.getMonth() - 1, 1))} className="p-1 rounded hover:bg-gray-100"><ChevronLeft size={16} /></button>
+              <span className="text-sm font-semibold text-[#003049]">{MONTHS[viewMonth.getMonth()]} {viewMonth.getFullYear()}</span>
+              <button type="button" onClick={() => setViewMonth(m => new Date(m.getFullYear(), m.getMonth() + 1, 1))} className="p-1 rounded hover:bg-gray-100"><ChevronRight size={16} /></button>
+            </div>
+            <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-gray-400 mb-1">
+              {WEEKDAYS.map(w => <div key={w}>{w}</div>)}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {cells.map((d, i) => {
+                if (!d) return <div key={i} />;
+                const iso = isoLocal(d);
+                const cnt = counts[iso] || 0;
+                const isSel = iso === value;
+                const isToday = iso === today;
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => pick(iso)}
+                    className={`relative h-9 rounded text-sm flex items-center justify-center ${isSel ? 'bg-[#c1121f] text-white' : isToday ? 'bg-amber-50 text-[#003049]' : 'hover:bg-gray-100 text-gray-700'}`}
+                  >
+                    {d.getDate()}
+                    {cnt > 0 && (
+                      <span className={`absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] font-semibold flex items-center justify-center ${isSel ? 'bg-white text-[#c1121f]' : 'bg-[#c1121f] text-white'}`}>{cnt}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex justify-between mt-2 pt-2 border-t border-gray-100">
+              <button type="button" onClick={() => pick(today)} className="text-xs text-[#c1121f] hover:underline">Today</button>
+              {value && <button type="button" onClick={() => { onPick(''); setOpen(false); }} className="text-xs text-gray-500 hover:underline">Clear date</button>}
+            </div>
+          </div>
+        )}
+      </div>
+      <button type="button" onClick={() => onPick(addDays(current, 1))} title="Next day" className="p-1.5 rounded border border-gray-200 hover:bg-gray-50 text-gray-600"><ChevronRight size={16} /></button>
+    </div>
+  );
+}
+
+// Checkbox dropdown for the multi-value status filter. Uses native <details> so
+// it needs no outside-click wiring; the summary shows the current selection.
+function StatusMultiSelect({ selected, onChange }) {
+  const toggle = (s) => {
+    onChange(selected.includes(s) ? selected.filter(x => x !== s) : [...selected, s]);
+  };
+  const label = (selected.length === 0 || selected.length === STATUS_MULTI_OPTIONS.length)
+    ? 'All statuses'
+    : `${selected.length} selected`;
+  return (
+    <details className="relative">
+      <summary className="list-none cursor-pointer flex items-center justify-between w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30">
+        <span className="text-gray-700 truncate">{label}</span>
+        <ChevronDown size={14} className="text-gray-400 shrink-0" />
+      </summary>
+      <div className="absolute z-20 mt-1 w-60 bg-white border border-gray-200 rounded-lg shadow-lg p-1 max-h-64 overflow-auto">
+        {STATUS_MULTI_OPTIONS.map(s => (
+          <label key={s} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer text-sm">
+            <input type="checkbox" checked={selected.includes(s)} onChange={() => toggle(s)} />
+            <span className="text-gray-700">{s}</span>
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
 
 export default function GRNList() {
   const { canEdit } = useRBAC();
@@ -122,7 +256,11 @@ export default function GRNList() {
     const ps = overrides.pageSize ?? pageSize;
     const params = { page: p, page_size: ps, sort_by: s.key, sort_dir: s.dir, vendor: v };
     Object.entries(f).forEach(([k, val]) => {
-      if (k === 'grn_status' && val === 'All') return;
+      if (k === 'grn_status') {
+        // Empty selection = no status filter (show all). Otherwise comma-join.
+        if (Array.isArray(val) && val.length) params[k] = val.join(',');
+        return;
+      }
       if (val) params[k] = val;
     });
     return params;
@@ -136,13 +274,18 @@ export default function GRNList() {
       .finally(() => setLoading(false));
   }, [buildParams]);
 
-  useEffect(() => { load(); }, [load]);
-
+  // Load on mount and whenever the URL (navigation) changes. Editing filter inputs
+  // does NOT fetch — only an explicit action (Search/Clear/tab/sort/pagination)
+  // does. We pass the seeded values as overrides so the fetch doesn't race the
+  // async setState.
   useEffect(() => {
-    if (searchParams.toString() === '') return;
-    setFilters(seededFiltersFromURL(searchParams));
-    setVendorTab(seededVendorTabFromURL(searchParams));
+    const f = seededFiltersFromURL(searchParams);
+    const v = seededVendorTabFromURL(searchParams);
+    setFilters(f);
+    setVendorTab(v);
     setPage(1);
+    load({ filters: f, vendor: v, page: 1 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   useEffect(() => {
@@ -159,6 +302,18 @@ export default function GRNList() {
   const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
   const applySearch = () => { setPage(1); load({ page: 1 }); };
   const clearFilters = () => { const f = defaultFilters(); setFilters(f); setPage(1); load({ filters: f, page: 1 }); };
+
+  // The date navigator sets a single appointment day (from = to) and loads
+  // immediately — it's a navigation control, not one of the Search-button filters.
+  const apptValue = (filters.appointment_date_from && filters.appointment_date_from === filters.appointment_date_to)
+    ? filters.appointment_date_from
+    : '';
+  const pickAppointmentDay = (iso) => {
+    const f = { ...filters, appointment_date_from: iso || '', appointment_date_to: iso || '' };
+    setFilters(f);
+    setPage(1);
+    load({ filters: f, page: 1 });
+  };
 
   const switchTab = (key) => {
     setVendorTab(key);
@@ -292,6 +447,7 @@ export default function GRNList() {
           <h1 className="text-2xl font-bold text-[#003049]">GRN</h1>
           <p className="text-gray-500 text-sm">{total} order{total !== 1 ? 's' : ''} · {vendorTab}</p>
         </div>
+        <AppointmentDateNav vendor={vendorTab} value={apptValue} onPick={pickAppointmentDay} />
         <Button variant="outline" onClick={downloadXLSX} loading={exporting}>
           <Download size={16} />Download XLSX
         </Button>
@@ -314,9 +470,7 @@ export default function GRNList() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
-            <select value={filters.grn_status} onChange={e => setFilter('grn_status', e.target.value)} className={inputCls}>
-              {STATUS_FILTER_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <StatusMultiSelect selected={filters.grn_status} onChange={v => setFilter('grn_status', v)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Appointment From</label>
@@ -463,6 +617,8 @@ export default function GRNList() {
                           );
                         case 'courier_name':
                           return <td key={col.key} className="px-3 py-2 text-gray-700 whitespace-nowrap">{po.courier_name || '—'}</td>;
+                        case 'po_id':
+                          return <td key={col.key} className="px-3 py-2 font-mono font-semibold text-[#003049] whitespace-nowrap">{po.po_id || '—'}</td>;
                         case 'vendor_po_id':
                           return <td key={col.key} className="px-3 py-2 font-mono text-gray-700 whitespace-nowrap">{po.vendor_po_id || '—'}</td>;
                         case 'total_qty':

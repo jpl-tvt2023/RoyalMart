@@ -120,8 +120,13 @@ export default function BuiltyList() {
       .catch(() => {});
   }, [filters]);
 
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => { loadCounts(); }, [loadCounts]);
+  // Load (and vendor-tab counts) on mount only. Editing filter inputs does NOT
+  // fetch — only an explicit action (Search/Clear/tab/sort/pagination) does.
+  useEffect(() => {
+    load();
+    loadCounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     listCities()
@@ -135,8 +140,8 @@ export default function BuiltyList() {
   useEffect(() => { setEdits({}); }, [items]);
 
   const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
-  const applySearch = () => { setPage(1); load({ page: 1 }); };
-  const clearFilters = () => { const f = defaultFilters(); setFilters(f); setPage(1); load({ filters: f, page: 1 }); };
+  const applySearch = () => { setPage(1); load({ page: 1 }); loadCounts(); };
+  const clearFilters = () => { const f = defaultFilters(); setFilters(f); setPage(1); load({ filters: f, page: 1 }); loadCounts(f); };
 
   const switchTab = (key) => {
     setVendorTab(key);

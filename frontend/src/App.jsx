@@ -7,7 +7,6 @@ import Login from './pages/Login';
 import ForcePasswordReset from './pages/ForcePasswordReset';
 import Dashboard from './pages/Dashboard';
 import UserManagement from './pages/admin/UserManagement';
-import TeamManagement from './pages/admin/TeamManagement';
 import PurchaseOrdersList from './pages/PurchaseOrders/PurchaseOrdersList';
 import PurchaseOrderImport from './pages/PurchaseOrders/PurchaseOrderImport';
 import PurchaseOrderDetail from './pages/PurchaseOrders/PurchaseOrderDetail';
@@ -46,10 +45,6 @@ export default function App() {
 
           <Route path="/admin/users" element={
             <ProtectedRoute roles={ADMIN_ONLY}><UserManagement /></ProtectedRoute>
-          } />
-
-          <Route path="/admin/teams" element={
-            <ProtectedRoute roles={ADMIN_ONLY}><TeamManagement /></ProtectedRoute>
           } />
 
           <Route path="/products" element={

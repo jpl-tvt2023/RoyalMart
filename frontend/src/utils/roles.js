@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, ClipboardList, Package, Truck, ClipboardCheck,
-  Tag, Settings, Users, UsersRound, SlidersHorizontal,
+  Tag, Settings, Users, SlidersHorizontal,
   ShoppingCart, PackageSearch,
 } from 'lucide-react';
 
@@ -98,13 +98,6 @@ export const NAV = [
         path: '/admin/users',
         icon: Users,
         description: 'Accounts, roles & access',
-        roles: ADMIN_ONLY,
-      },
-      {
-        label: 'Team Management',
-        path: '/admin/teams',
-        icon: UsersRound,
-        description: 'Warehouse teams & members',
         roles: ADMIN_ONLY,
       },
       {
