@@ -37,6 +37,11 @@ function parseIndianDate(raw) {
   m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
   if (m) return `${m[3]}-${pad2(m[2])}-${pad2(m[1])}`;
 
+  // 2-digit year (e.g. Flipkart Minutes "24-06-26" → 2026-06-24). Checked after
+  // the 4-digit branch so full years keep priority.
+  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})(?!\d)/);
+  if (m) return `20${m[3]}-${pad2(m[2])}-${pad2(m[1])}`;
+
   return null;
 }
 

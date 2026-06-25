@@ -2,6 +2,8 @@ const parsers = {
   Zepto:   require('./zepto'),
   Scootsy: require('./scootsy'),
   Blinkit: require('./blinkit'),
+  Now:     require('./now'),      // Amazon Now (PDF)
+  Minutes: require('./minutes'),  // Flipkart Minutes (binary .xls)
 };
 
 function hasParser(vendor) {

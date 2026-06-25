@@ -4,12 +4,21 @@ const auth = require('../middleware/auth');
 const { allowRoles, ALL_ROLES } = require('../middleware/rbac');
 const c = require('../controllers/marketplacePO.controller');
 
+// Accept PDF (most vendors) and Excel (Flipkart Minutes ships legacy binary
+// .xls). Browsers report .xls inconsistently (often application/octet-stream),
+// so gate on the extension as the primary signal.
+const ACCEPTED_MIME = new Set([
+  'application/pdf',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/octet-stream',
+]);
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf' || /\.pdf$/i.test(file.originalname)) cb(null, true);
-    else cb(new Error('Only PDF files are accepted'));
+    if (/\.(pdf|xls|xlsx)$/i.test(file.originalname) || ACCEPTED_MIME.has(file.mimetype)) cb(null, true);
+    else cb(new Error('Only PDF or Excel (.xls/.xlsx) files are accepted'));
   },
 });
 

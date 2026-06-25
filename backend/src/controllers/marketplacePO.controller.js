@@ -54,7 +54,7 @@ async function parsePreview(req, res, next) {
       });
     }
     if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ message: 'PDF file is required' });
+      return res.status(400).json({ message: 'File is required' });
     }
 
     let parsed;
