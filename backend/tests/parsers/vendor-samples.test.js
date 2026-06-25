@@ -4,16 +4,21 @@ const { parse } = require('../../src/parsers/marketplacePO');
 
 const SAMPLES_ROOT = path.join(__dirname, '..', '..', 'src', 'parsers', 'marketplacePO', 'samples');
 
-// Vendor -> sample subfolder. Drop multi-page PO PDFs into these folders and they
-// become regression tests automatically (each asserts a well-formed parse).
+// Vendor -> sample subfolder. Drop PO files (PDF, or .xls/.xlsx for Flipkart
+// Minutes) into these folders and they become regression tests automatically
+// (each asserts a well-formed parse).
 const VENDORS = {
   Blinkit: 'blinkit',
   Zepto: 'zepto',
+  Now: 'Now',
+  Minutes: 'Minutes',
 };
 
-function pdfsIn(dir) {
+function samplesIn(dir) {
   if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.pdf')).map(f => path.join(dir, f));
+  return fs.readdirSync(dir)
+    .filter(f => /\.(pdf|xls|xlsx)$/i.test(f))
+    .map(f => path.join(dir, f));
 }
 
 function assertWellFormed(result) {
@@ -28,9 +33,9 @@ function assertWellFormed(result) {
 
 describe('Vendor PO parsers — sample regression', () => {
   for (const [vendor, sub] of Object.entries(VENDORS)) {
-    const files = pdfsIn(path.join(SAMPLES_ROOT, sub));
+    const files = samplesIn(path.join(SAMPLES_ROOT, sub));
     if (files.length === 0) {
-      it.skip(`${vendor}: no samples (add PDFs under samples/${sub}/)`, () => {});
+      it.skip(`${vendor}: no samples (add files under samples/${sub}/)`, () => {});
       continue;
     }
     test.each(files)(`${vendor} parses: %s`, async (file) => {

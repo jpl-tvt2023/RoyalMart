@@ -30,7 +30,7 @@ export default function PurchaseOrderImport() {
   const handleParse = async (e) => {
     e.preventDefault();
     if (!vendor) return toast.error('Select a vendor');
-    if (!file) return toast.error('Choose a PDF file');
+    if (!file) return toast.error('Choose a file');
     setParsing(true);
     try {
       const data = await parsePreview(file, vendor);
@@ -95,7 +95,7 @@ export default function PurchaseOrderImport() {
     <AppShell>
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-[#003049]">Add Purchase Order</h1>
-        <p className="text-gray-500 text-sm">Upload a PDF to import, or add a PO manually.</p>
+        <p className="text-gray-500 text-sm">Upload a PDF or Excel file to import, or add a PO manually.</p>
       </div>
 
       {!summary && (
@@ -108,14 +108,14 @@ export default function PurchaseOrderImport() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">PO PDF</label>
-            <input type="file" accept="application/pdf,.pdf" onChange={e => setFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0 file:bg-[#003049] file:text-white file:cursor-pointer" />
-            <p className="text-xs text-gray-400 mt-1">Max 10 MB. PDF files only. Leave blank to add manually.</p>
+            <label className="block text-sm font-medium text-gray-700 mb-1">PO File</label>
+            <input type="file" accept="application/pdf,.pdf,application/vnd.ms-excel,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx" onChange={e => setFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0 file:bg-[#003049] file:text-white file:cursor-pointer" />
+            <p className="text-xs text-gray-400 mt-1">Max 10 MB. PDF or Excel (.xls/.xlsx). Leave blank to add manually.</p>
           </div>
           <div className="flex gap-3 justify-end flex-wrap">
             <Button type="button" variant="ghost" onClick={() => navigate('/purchase-orders')}>Cancel</Button>
             <Button type="button" variant="outline" onClick={handleAddManually}><Pencil size={16} />Add Manually</Button>
-            <Button type="submit" loading={parsing}><Upload size={16} />Parse PDF</Button>
+            <Button type="submit" loading={parsing}><Upload size={16} />Parse File</Button>
           </div>
         </form>
       )}
@@ -147,7 +147,7 @@ export default function PurchaseOrderImport() {
               {parserMissing.message}
             </p>
             <p className="text-sm text-gray-700">
-              The vendor <span className="font-semibold">{parserMissing.vendor}</span> exists in the system but does not yet have a PDF parser implementation. Until a parser is added in code, POs for this vendor cannot be uploaded via PDF. You can still add the PO manually from this screen.
+              The vendor <span className="font-semibold">{parserMissing.vendor}</span> exists in the system but does not yet have a parser implementation. Until a parser is added in code, POs for this vendor cannot be uploaded as a file. You can still add the PO manually from this screen.
             </p>
             <div className="flex justify-end">
               <Button onClick={() => setParserMissing(null)}>OK</Button>

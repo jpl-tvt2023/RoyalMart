@@ -1,5 +1,3 @@
-const crypto = require('crypto');
-
 const MIN_LENGTH = 8;
 const MAX_LENGTH = 128; // guard against absurd inputs (bcrypt only uses first 72 bytes)
 
@@ -15,40 +13,10 @@ function validateComplexity(password) {
   return null;
 }
 
-// Breached-password check via HaveIBeenPwned k-anonymity range API.
-// Only the first 5 chars of the SHA-1 hash leave the server; the full password
-// (and full hash) never do. Fails open on network/API error so a HIBP outage
-// can't lock users out of changing their password.
-async function isBreached(password) {
-  try {
-    const sha1 = crypto.createHash('sha1').update(password).digest('hex').toUpperCase();
-    const prefix = sha1.slice(0, 5);
-    const suffix = sha1.slice(5);
-    const res = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`, {
-      headers: { 'Add-Padding': 'true' },
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!res.ok) return false;
-    const body = await res.text();
-    for (const line of body.split('\n')) {
-      const [hashSuffix, count] = line.trim().split(':');
-      if (hashSuffix === suffix && Number(count) > 0) return true;
-    }
-    return false;
-  } catch {
-    return false; // fail open
-  }
-}
-
-// Full validation: complexity (sync) then breach check (async).
-// Returns an error string, or null if the password is acceptable.
+// Full validation: complexity only. (Breach check removed — any password meeting
+// the complexity criteria is accepted.) Kept async so callers can keep awaiting it.
 async function validatePassword(password) {
-  const complexityError = validateComplexity(password);
-  if (complexityError) return complexityError;
-  if (await isBreached(password)) {
-    return 'This password has appeared in a known data breach. Please choose a different one.';
-  }
-  return null;
+  return validateComplexity(password);
 }
 
-module.exports = { validateComplexity, isBreached, validatePassword, MIN_LENGTH, MAX_LENGTH };
+module.exports = { validateComplexity, validatePassword, MIN_LENGTH, MAX_LENGTH };

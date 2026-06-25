@@ -5,12 +5,12 @@ describe('Auth — login flow', () => {
   test('POST /api/auth/login — valid seeded admin returns token + user', async () => {
     const res = await request(app)
       .post('/api/auth/login')
-      .send({ email: 'admin@royalmart.in', password: 'RoyalMart#Admin' });
+      .send({ username: 'admin', password: 'RoyalMart#Admin' });
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('accessToken');
     expect(res.body.user).toMatchObject({
-      email: 'admin@royalmart.in',
+      username: 'admin',
       roles: expect.arrayContaining(['Admin']),
     });
     expect(res.body.user.is_first_login).toBeTruthy();
@@ -19,15 +19,15 @@ describe('Auth — login flow', () => {
   test('POST /api/auth/login — wrong password returns 401', async () => {
     const res = await request(app)
       .post('/api/auth/login')
-      .send({ email: 'admin@royalmart.in', password: 'wrong-password' });
+      .send({ username: 'admin', password: 'wrong-password' });
 
     expect(res.status).toBe(401);
   });
 
-  test('POST /api/auth/login — unknown email returns 401', async () => {
+  test('POST /api/auth/login — unknown user ID returns 401', async () => {
     const res = await request(app)
       .post('/api/auth/login')
-      .send({ email: 'nobody@example.com', password: 'whatever' });
+      .send({ username: 'nobody', password: 'whatever' });
 
     expect(res.status).toBe(401);
   });

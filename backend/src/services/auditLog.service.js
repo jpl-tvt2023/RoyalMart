@@ -1,5 +1,13 @@
 const db = require('../config/db');
 
+// User account change history is retained for this many days; older `user`
+// audit entries are purged (other entity types keep their full history).
+const USER_HISTORY_RETENTION_DAYS = 31;
+// Throttle the opportunistic purge so it runs at most once per hour per process
+// (the prod backend is serverless, so we can't rely on a long-running cron there).
+const PURGE_THROTTLE_MS = 60 * 60 * 1000;
+let lastPurgeAt = 0;
+
 /**
  * Record an audit entry. `changes` is an optional array of
  * { field, old, new } objects describing the field-level diff; it is
@@ -20,6 +28,31 @@ async function logAction({ client, userId, actionType, description, entityType, 
       changes && changes.length ? JSON.stringify(changes) : null,
     ],
   });
+
+  // Opportunistic, fire-and-forget retention cleanup — never blocks the write.
+  maybePurgeUserHistory().catch(() => {});
+}
+
+/**
+ * Delete `user` audit entries older than the retention window. Idempotent and
+ * cheap (indexed on entity_type, timestamp). Returns the number of rows removed.
+ */
+async function purgeUserHistory() {
+  const { rowsAffected } = await db.execute({
+    sql: `DELETE FROM audit_logs
+          WHERE entity_type = 'user'
+            AND timestamp < datetime('now', ?)`,
+    args: [`-${USER_HISTORY_RETENTION_DAYS} days`],
+  });
+  return rowsAffected || 0;
+}
+
+// Run purgeUserHistory at most once per throttle window per process.
+async function maybePurgeUserHistory() {
+  const now = Date.now();
+  if (now - lastPurgeAt < PURGE_THROTTLE_MS) return;
+  lastPurgeAt = now;
+  await purgeUserHistory();
 }
 
 /**
@@ -41,4 +74,4 @@ function diffFields(before, after, fields) {
   return changes;
 }
 
-module.exports = { logAction, diffFields };
+module.exports = { logAction, diffFields, purgeUserHistory, USER_HISTORY_RETENTION_DAYS };
