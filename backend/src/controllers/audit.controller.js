@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { USER_HISTORY_RETENTION_DAYS } = require('../services/auditLog.service');
 
 // Foreign-key fields per entity type, mapped to the source table they reference.
 // Their stored IDs are resolved to human-readable labels before returning.
@@ -76,6 +77,11 @@ async function getEntityHistory(req, res) {
   // entity_id may be numeric (most tables) or textual (marketplace_pos.po_id),
   // so match against both the INTEGER entity_id and the TEXT entity_ref.
   const key = String(entityId);
+  // User account history is retention-limited to the last N days; other entity
+  // types keep their full history.
+  const retentionClause = String(entityType) === 'user'
+    ? `AND a.timestamp >= datetime('now', '-${USER_HISTORY_RETENTION_DAYS} days')`
+    : '';
   const { rows } = await db.execute({
     sql: `SELECT a.id, a.action_type, a.description, a.entity_type, a.entity_id,
                  a.entity_ref, a.changes, a.timestamp, a.user_id, u.name AS user_name
@@ -83,6 +89,7 @@ async function getEntityHistory(req, res) {
           LEFT JOIN users u ON u.id = a.user_id
           WHERE a.entity_type = ?
             AND (CAST(a.entity_id AS TEXT) = ? OR a.entity_ref = ?)
+            ${retentionClause}
           ORDER BY a.timestamp DESC, a.id DESC`,
     args: [String(entityType), key, key],
   });
