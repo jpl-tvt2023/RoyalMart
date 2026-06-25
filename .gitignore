@@ -8,13 +8,3 @@ coverage/
 backend/tests/.tmp/
 PRODUCT_OVERVIEW.html
 PRODUCT_OVERVIEW.md
-backend/src/parsers/marketplacePO/samples/Minutes/purchase_order_FCAWG08341319.xls
-backend/src/parsers/marketplacePO/samples/Minutes/purchase_order_FCAWG08341637.xls
-backend/src/parsers/marketplacePO/samples/Minutes/purchase_order_FPSWN08342995.xls
-backend/src/parsers/marketplacePO/samples/Minutes/purchase_order_FSGWN08342370.xls
-backend/src/parsers/marketplacePO/samples/Minutes/purchase_order_FSGWN08342991.xls
-backend/src/parsers/marketplacePO/samples/Now/8766c57f-9650-4b67-ad90-e2367aca8203.pdf
-backend/src/parsers/marketplacePO/samples/Now/031969eb-72f2-446c-b00a-bff5edce655d.pdf
-backend/src/parsers/marketplacePO/samples/Now/bdd9c414-8095-4e38-b9ab-69aeee51391f.pdf
-backend/src/parsers/marketplacePO/samples/Now/c8bf08ec-d52f-4cb5-b7bf-e1770366d8e1.pdf
-backend/src/parsers/marketplacePO/samples/Now/cf32acbf-9ace-4e0c-ab45-9f8ec24c52a7.pdf
