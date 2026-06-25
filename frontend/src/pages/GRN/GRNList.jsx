@@ -73,14 +73,13 @@ const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n
 const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-// Default the GRN view to today's appointments (owner request). The in-calendar
-// "Clear date" still lets the user switch to all dates.
+// The GRN view opens with no appointment-date filter (shows all dates). The user
+// narrows by date via the date navigator or the Today/Yesterday quick buttons.
 const defaultFilters = () => {
-  const today = isoLocal(new Date());
   return {
     grn_status:             [...DEFAULT_STATUS_SELECTION],
-    appointment_date_from:  today,
-    appointment_date_to:    today,
+    appointment_date_from:  '',
+    appointment_date_to:    '',
     city:                   '',
     courier_id:             '',
   };
@@ -537,8 +536,24 @@ export default function GRNList() {
         </div>
       </div>
 
-      <div className="mb-2">
+      <div className="mb-2 flex items-center gap-2 flex-wrap">
         <AppointmentDateNav vendor={vendorTab} value={apptValue} onPick={pickAppointmentDay} />
+        {[
+          { label: 'Today', iso: isoLocal(new Date()) },
+          { label: 'Yesterday', iso: addDays(isoLocal(new Date()), -1) },
+        ].map(({ label, iso }) => {
+          const active = apptValue === iso;
+          return (
+            <button
+              key={label}
+              type="button"
+              onClick={() => pickAppointmentDay(iso)}
+              className={`px-3 py-1.5 rounded border text-sm font-medium ${active ? 'bg-[#c1121f] text-white border-[#c1121f]' : 'border-gray-200 bg-white text-[#003049] hover:bg-gray-50'}`}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
