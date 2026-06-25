@@ -166,9 +166,7 @@ export default function PurchaseOrderDetail() {
                 <tbody>
                   {lines.map((ln, idx) => (
                     <tr key={idx} className="border-b border-gray-100">
-                      <td className="px-3 py-2">
-                        <input type="number" min={1} value={ln.line_no || ''} onChange={e => updateLine(idx, { line_no: Number(e.target.value) })} className={cellCls} />
-                      </td>
+                      <td className="px-3 py-2 text-gray-700">{idx + 1}</td>
                       <td className="px-3 py-2">
                         <input value={ln.item_code || ''} onChange={e => updateLine(idx, { item_code: e.target.value })} className={cellCls} />
                       </td>
