@@ -6,9 +6,9 @@ import Login from '../Login';
 import { renderWithProviders } from '../../test/renderWithProviders';
 
 describe('Login page', () => {
-  test('renders email + password fields and sign-in button', () => {
+  test('renders user ID + password fields and sign-in button', () => {
     renderWithProviders(<Login />);
-    expect(screen.getByLabelText(/email address/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/user id/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument();
   });

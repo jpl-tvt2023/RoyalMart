@@ -15,7 +15,7 @@ const BCRYPT_COST = 12;
 
 function signAccess(user) {
   return jwt.sign(
-    { id: user.id, email: user.email, name: user.name, roles: user.roles || [] },
+    { id: user.id, username: user.username, name: user.name, roles: user.roles || [] },
     JWT_ACCESS_SECRET,
     { expiresIn: JWT_ACCESS_EXPIRY }
   );
@@ -35,21 +35,22 @@ function signRefresh(userId) {
 
 async function login(req, res, next) {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ message: 'Email and password are required' });
+    const { password } = req.body;
+    const username = (req.body.username || '').trim().toLowerCase();
+    if (!username || !password) {
+      return res.status(400).json({ message: 'User ID and password are required' });
     }
-    const { rows } = await db.execute({ sql: 'SELECT * FROM users WHERE email = ?', args: [email] });
+    const { rows } = await db.execute({ sql: 'SELECT * FROM users WHERE username = ?', args: [username] });
     const user = rows[0];
     if (!user) {
-      await logAction({ actionType: 'LOGIN_FAILED', description: `Failed login for unknown email ${email}`, entityType: 'user' });
-      return res.status(401).json({ message: 'Invalid credentials' });
+      await logAction({ actionType: 'LOGIN_FAILED', description: `Failed login for unknown user ID ${username}`, entityType: 'user' });
+      return res.status(401).json({ message: 'No account found with that user ID' });
     }
 
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
-      await logAction({ userId: user.id, actionType: 'LOGIN_FAILED', description: `Failed login (bad password) for ${user.email}`, entityType: 'user', entityId: user.id });
-      return res.status(401).json({ message: 'Invalid credentials' });
+      await logAction({ userId: user.id, actionType: 'LOGIN_FAILED', description: `Failed login (bad password) for ${user.username}`, entityType: 'user', entityId: user.id });
+      return res.status(401).json({ message: 'Incorrect password' });
     }
 
     // Second factor (only for users who have enrolled & enabled TOTP).
@@ -60,7 +61,7 @@ async function login(req, res, next) {
       }
       const mfaValid = authenticator.verify({ token: String(mfaToken), secret: user.mfa_secret });
       if (!mfaValid) {
-        await logAction({ userId: user.id, actionType: 'LOGIN_FAILED', description: `Failed login (bad MFA code) for ${user.email}`, entityType: 'user', entityId: user.id });
+        await logAction({ userId: user.id, actionType: 'LOGIN_FAILED', description: `Failed login (bad MFA code) for ${user.username}`, entityType: 'user', entityId: user.id });
         return res.status(401).json({ message: 'Invalid credentials' });
       }
     }
@@ -81,7 +82,7 @@ async function login(req, res, next) {
 
     res.json({
       accessToken,
-      user: { id: user.id, name: user.name, email: user.email, roles: user.roles, is_first_login: !!user.is_first_login },
+      user: { id: user.id, name: user.name, username: user.username, roles: user.roles, is_first_login: !!user.is_first_login },
     });
   } catch (err) { next(err); }
 }
@@ -151,7 +152,7 @@ async function mfaEnroll(req, res, next) {
       sql: 'UPDATE users SET mfa_secret = ?, mfa_enabled = 0 WHERE id = ?',
       args: [secret, req.user.id],
     });
-    const otpauthUrl = authenticator.keyuri(req.user.email, MFA_ISSUER, secret);
+    const otpauthUrl = authenticator.keyuri(req.user.username, MFA_ISSUER, secret);
     res.json({ secret, otpauthUrl });
   } catch (err) { next(err); }
 }

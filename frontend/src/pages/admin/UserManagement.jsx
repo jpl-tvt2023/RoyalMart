@@ -11,10 +11,11 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../../context/AuthContext';
 import { ROLES, BASE_ROLES, POC_ROLES } from '../../utils/roles';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
+import PasswordCriteria from '../../components/shared/PasswordCriteria';
 
 const roleColors = { Admin: 'red', Owner: 'purple', Employee: 'blue', Office_POC: 'orange', Warehouse_POC: 'green' };
 
-const EMPTY_FORM = { name: '', email: '', roles: [ROLES.EMPLOYEE], password: '' };
+const EMPTY_FORM = { name: '', username: '', roles: [ROLES.EMPLOYEE], password: '' };
 
 export default function UserManagement() {
   const { user: me } = useAuth();
@@ -34,7 +35,7 @@ export default function UserManagement() {
   useEffect(load, []);
 
   const openAdd = () => { setForm(EMPTY_FORM); setModal('add'); };
-  const openEdit = (u) => { setForm({ name: u.name, email: u.email, roles: u.roles || [], password: '' }); setModal({ type: 'edit', id: u.id }); };
+  const openEdit = (u) => { setForm({ name: u.name, username: u.username, roles: u.roles || [], password: '' }); setModal({ type: 'edit', id: u.id }); };
 
   // Roles = one base access role (Admin/Owner/Employee) + optional POC tags.
   const baseRole = form.roles.find(r => BASE_ROLES.includes(r)) || '';
@@ -54,7 +55,7 @@ export default function UserManagement() {
     setSaving(true);
     try {
       if (modal === 'add') {
-        await createUser({ name: form.name, email: form.email, password: form.password, roles: form.roles });
+        await createUser({ name: form.name, username: form.username, password: form.password, roles: form.roles });
         toast.success('User created');
       } else {
         await updateUser(modal.id, { name: form.name, roles: form.roles });
@@ -70,12 +71,19 @@ export default function UserManagement() {
   const handleDelete = async () => {
     setSaving(true);
     try {
-      await deleteUser(confirmDelete.id);
+      await deleteUser(confirmDelete.id, { force: confirmDelete.force });
       toast.success('User deleted');
       setConfirmDelete(null);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Delete failed');
+      const data = err.response?.data;
+      // User is a POC on some POs — switch the dialog to a force-unassign confirmation.
+      if (data?.requiresPocUnassign) {
+        setConfirmDelete(c => ({ ...c, force: true, message: data.message }));
+      } else {
+        toast.error(data?.message || 'Delete failed');
+        setConfirmDelete(null);
+      }
     } finally { setSaving(false); }
   };
 
@@ -108,7 +116,7 @@ export default function UserManagement() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                {['Name', 'Email', 'Roles', 'First Login?', 'Joined', 'Actions'].map(h => (
+                {['Name', 'User ID', 'Roles', 'First Login?', 'Joined', 'Actions'].map(h => (
                   <th key={h} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -121,7 +129,7 @@ export default function UserManagement() {
               ) : users.map(u => (
                 <tr key={u.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3 font-medium text-gray-900">{u.name}</td>
-                  <td className="px-4 py-3 text-gray-600">{u.email}</td>
+                  <td className="px-4 py-3 text-gray-600">{u.username}</td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
                       {(u.roles || []).map(r => (
@@ -163,8 +171,9 @@ export default function UserManagement() {
           </div>
           {modal === 'add' && (
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-              <input type="email" required value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]" />
+              <label className="block text-sm font-medium text-gray-700 mb-1">User ID</label>
+              <input type="text" required autoCapitalize="none" autoCorrect="off" value={form.username} onChange={e => setForm(f => ({ ...f, username: e.target.value.toLowerCase() }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]" placeholder="e.g. mukesh" />
+              <p className="text-xs text-gray-400 mt-1">Lowercase letters, numbers, dot, underscore or hyphen (3-30 chars). This is what the user logs in with.</p>
             </div>
           )}
           <div>
@@ -209,6 +218,7 @@ export default function UserManagement() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Temporary Password</label>
               <input type="text" required value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]" placeholder="Min. 8 characters" />
+              <PasswordCriteria password={form.password} />
               <p className="text-xs text-gray-400 mt-1">User will be forced to change this on first login</p>
             </div>
           )}
@@ -224,6 +234,7 @@ export default function UserManagement() {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">New Temporary Password</label>
             <input type="text" required value={resetPwd} onChange={e => setResetPwd(e.target.value)} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]" placeholder="Min. 8 characters" />
+            <PasswordCriteria password={resetPwd} />
             <p className="text-xs text-gray-400 mt-1">User will be forced to change this on next login</p>
           </div>
           <div className="flex gap-3 justify-end">
@@ -237,9 +248,10 @@ export default function UserManagement() {
         isOpen={!!confirmDelete}
         onClose={() => setConfirmDelete(null)}
         onConfirm={handleDelete}
-        title="Delete User"
-        message={`Are you sure you want to delete ${confirmDelete?.name}? This action cannot be undone.`}
-        confirmLabel="Delete"
+        title={confirmDelete?.force ? 'Unassign & Delete User' : 'Delete User'}
+        message={confirmDelete?.message
+          || `Are you sure you want to delete ${confirmDelete?.name}? This action cannot be undone.`}
+        confirmLabel={confirmDelete?.force ? 'Unassign & Delete' : 'Delete'}
         loading={saving}
       />
     </AppShell>
