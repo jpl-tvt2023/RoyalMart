@@ -4,6 +4,8 @@ import { useAuth } from '../context/AuthContext';
 import { changePassword } from '../api/auth.api';
 import { Package2, Eye, EyeOff } from 'lucide-react';
 import toast from 'react-hot-toast';
+import PasswordCriteria from '../components/shared/PasswordCriteria';
+import { meetsPasswordPolicy } from '../utils/passwordPolicy';
 
 export default function ForcePasswordReset() {
   const { user, refreshUser } = useAuth();
@@ -18,8 +20,8 @@ export default function ForcePasswordReset() {
       toast.error('Passwords do not match');
       return;
     }
-    if (form.newPassword.length < 8) {
-      toast.error('Password must be at least 8 characters');
+    if (!meetsPasswordPolicy(form.newPassword)) {
+      toast.error('Password does not meet all the requirements');
       return;
     }
     setLoading(true);
@@ -72,6 +74,7 @@ export default function ForcePasswordReset() {
                 </div>
               </div>
             ))}
+            <PasswordCriteria password={form.newPassword} />
             <button
               type="submit"
               disabled={loading}

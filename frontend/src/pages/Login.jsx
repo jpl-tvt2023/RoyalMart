@@ -7,7 +7,7 @@ import toast from 'react-hot-toast';
 export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [form, setForm] = useState({ email: '', password: '' });
+  const [form, setForm] = useState({ username: '', password: '' });
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -15,7 +15,7 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     try {
-      const user = await login(form.email, form.password);
+      const user = await login(form.username.trim().toLowerCase(), form.password);
       if (user.is_first_login) {
         navigate('/force-reset');
       } else {
@@ -43,15 +43,17 @@ export default function Login() {
           <h2 className="text-xl font-semibold text-[#003049] mb-6">Sign In</h2>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label htmlFor="login-email" className="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+              <label htmlFor="login-username" className="block text-sm font-medium text-gray-700 mb-1">User ID</label>
               <input
-                id="login-email"
-                type="email"
+                id="login-username"
+                type="text"
+                autoCapitalize="none"
+                autoCorrect="off"
                 required
-                value={form.email}
-                onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+                value={form.username}
+                onChange={e => setForm(f => ({ ...f, username: e.target.value.toLowerCase() }))}
                 className="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f] text-sm"
-                placeholder="you@royalmart.in"
+                placeholder="your user ID"
               />
             </div>
             <div>
