@@ -168,7 +168,7 @@ function AppointmentDateNav({ vendor, value, onPick }) {
           <CalendarIcon size={14} className="text-gray-400" />{label}
         </button>
         {open && (
-          <div className="absolute z-30 mt-1 left-1/2 -translate-x-1/2 w-72 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+          <div className="absolute z-30 mt-1 left-1/2 -translate-x-1/2 w-72 max-w-[calc(100vw-1rem)] bg-white border border-gray-200 rounded-lg shadow-lg p-3">
             <div className="flex items-center justify-between mb-2">
               <button type="button" onClick={() => setViewMonth(m => new Date(m.getFullYear(), m.getMonth() - 1, 1))} className="p-1 rounded hover:bg-gray-100"><ChevronLeft size={16} /></button>
               <span className="text-sm font-semibold text-[#003049]">{MONTHS[viewMonth.getMonth()]} {viewMonth.getFullYear()}</span>
@@ -489,6 +489,9 @@ export default function GRNList() {
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 disabled:bg-gray-50 disabled:text-gray-400';
   const cellCls = 'w-full px-2 py-1 border border-gray-200 rounded text-sm bg-white focus:outline-none focus:ring-1 focus:ring-[#c1121f]/40 disabled:bg-gray-100 disabled:text-gray-400';
+  // GRN status labels are long (e.g. "Delivered - GRN Received"): give the in-cell
+  // dropdown a min-width so the value stays readable; the table scrolls instead.
+  const cellSelectCls = `${cellCls} min-w-[13rem]`;
 
   const SortIcon = ({ colKey }) => {
     if (sort.key !== colKey) return <ArrowUpDown size={12} className="text-gray-300" />;
@@ -680,7 +683,7 @@ export default function GRNList() {
                                     setEdit(po.po_id, patch);
                                   }}
                                   onKeyDown={onKey}
-                                  className={cellCls}
+                                  className={cellSelectCls}
                                 >
                                   {GRN_STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
                                 </select>

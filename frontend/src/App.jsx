@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/shared/ProtectedRoute';
+import TitleManager from './components/layout/TitleManager';
 
 import Login from './pages/Login';
 import ForcePasswordReset from './pages/ForcePasswordReset';
@@ -22,6 +23,7 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <TitleManager />
         <Toaster
           position="top-center"
           containerStyle={{ top: 70 }}
