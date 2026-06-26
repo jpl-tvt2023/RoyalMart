@@ -9,8 +9,7 @@ import Badge from '../../components/ui/Badge';
 import Modal from '../../components/ui/Modal';
 import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
-import { listOrderSummary, updateOrderSummary, bulkUpdateOrderSummary } from '../../api/orderSummary.api';
-import { getUsers } from '../../api/users.api';
+import { listOrderSummary, updateOrderSummary, bulkUpdateOrderSummary, getPocUsers } from '../../api/orderSummary.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
@@ -143,9 +142,8 @@ export default function OrderSummaryList() {
   }, 0);
 
   useEffect(() => {
-    getUsers()
-      .then(r => {
-        const users = r.data || [];
+    getPocUsers()
+      .then(users => {
         // Only users explicitly tagged with the POC role are assignable —
         // Admin/Owner are NOT auto-included (that's why qualifiesAs isn't used here).
         setOfficePocs(sortByText(users.filter(u => (u.roles || []).includes('Office_POC')), u => u.name));

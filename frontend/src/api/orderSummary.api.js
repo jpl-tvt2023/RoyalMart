@@ -34,3 +34,10 @@ export async function getGrnAppointmentCounts(vendor, from, to) {
   const { data } = await api.get('/order-summary/grn-appointment-counts', { params: { vendor, from, to } });
   return data;
 }
+
+// Assignable POC users (Office_POC/Warehouse_POC tagged), available to all roles —
+// used to populate the Office/Warehouse POC dropdowns.
+export async function getPocUsers() {
+  const { data } = await api.get('/order-summary/poc-users');
+  return data.data || [];
+}
