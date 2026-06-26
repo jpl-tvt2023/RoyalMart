@@ -11,6 +11,7 @@ router.get('/counts-by-vendor',   auth, canView,  c.countsByVendor);
 router.get('/counts-by-poc',      auth, canView,  c.countsByPoc);
 router.get('/grn-appointments',   auth, canView,  c.grnAppointments);
 router.get('/grn-appointment-counts', auth, canView, c.grnAppointmentCounts);
+router.get('/poc-users',          auth, canView,  c.pocUsers);
 router.patch('/bulk',             auth, canWrite, c.bulkUpdate);
 router.patch('/:poId',            auth, canWrite, c.updateOne);
 

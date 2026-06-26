@@ -9,8 +9,7 @@ import Badge from '../../components/ui/Badge';
 import Modal from '../../components/ui/Modal';
 import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
-import { listOrderSummary, updateOrderSummary, bulkUpdateOrderSummary } from '../../api/orderSummary.api';
-import { getUsers } from '../../api/users.api';
+import { listOrderSummary, updateOrderSummary, bulkUpdateOrderSummary, getPocUsers } from '../../api/orderSummary.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
@@ -143,9 +142,8 @@ export default function OrderSummaryList() {
   }, 0);
 
   useEffect(() => {
-    getUsers()
-      .then(r => {
-        const users = r.data || [];
+    getPocUsers()
+      .then(users => {
         // Only users explicitly tagged with the POC role are assignable —
         // Admin/Owner are NOT auto-included (that's why qualifiesAs isn't used here).
         setOfficePocs(sortByText(users.filter(u => (u.roles || []).includes('Office_POC')), u => u.name));
@@ -339,6 +337,9 @@ export default function OrderSummaryList() {
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 disabled:bg-gray-50 disabled:text-gray-400';
   const cellCls = 'w-full px-2 py-1 border border-gray-200 rounded text-sm bg-white focus:outline-none focus:ring-1 focus:ring-[#c1121f]/40 disabled:bg-gray-100 disabled:text-gray-400';
+  // In-cell dropdowns hold names/labels: keep a readable min-width so they don't
+  // collapse on narrow screens — the table scrolls horizontally instead.
+  const cellSelectCls = `${cellCls} min-w-[9rem]`;
 
   const SortIcon = ({ colKey }) => {
     if (sort.key !== colKey) return <ArrowUpDown size={12} className="text-gray-300" />;
@@ -597,7 +598,7 @@ export default function OrderSummaryList() {
                                   value={editOffice == null ? '' : String(editOffice)}
                                   onChange={e => setEdit(po.po_id, { office_poc: e.target.value })}
                                   onKeyDown={onKey}
-                                  className={cellCls}
+                                  className={cellSelectCls}
                                 >
                                   <option value="">— Unassigned —</option>
                                   {officePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
@@ -616,7 +617,7 @@ export default function OrderSummaryList() {
                                   value={editWarehouse == null ? '' : String(editWarehouse)}
                                   onChange={e => setEdit(po.po_id, { warehouse_poc: e.target.value })}
                                   onKeyDown={onKey}
-                                  className={cellCls}
+                                  className={cellSelectCls}
                                 >
                                   <option value="">— Unassigned —</option>
                                   {warehousePocs.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
@@ -644,7 +645,7 @@ export default function OrderSummaryList() {
                                     setEdit(po.po_id, patch);
                                   }}
                                   onKeyDown={onKey}
-                                  className={cellCls}
+                                  className={cellSelectCls}
                                 >
                                   <option value="Open">Open</option>
                                   <option value="Closed">Closed</option>
@@ -688,7 +689,7 @@ export default function OrderSummaryList() {
                                     setEdit(po.po_id, patch);
                                   }}
                                   onKeyDown={onKey}
-                                  className={cellCls}
+                                  className={cellSelectCls}
                                 >
                                   <option value="">— Unassigned —</option>
                                   {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}

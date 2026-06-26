@@ -9,6 +9,7 @@ import Badge from '../../components/ui/Badge';
 import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { listOrderSummary, updateOrderSummary, getGrnAppointmentCounts } from '../../api/orderSummary.api';
+import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { sortByText } from '../../utils/sort';
@@ -19,12 +20,6 @@ const DIRTY_ROW = 'bg-amber-50/60';
 const UNSAVED_LEGEND = [{ swatch: DIRTY_ROW, label: 'Unsaved changes' }];
 import { useRBAC } from '../../hooks/useRBAC';
 
-const VENDOR_TABS = [
-  { key: 'Blinkit', label: 'Blinkit' },
-  { key: 'Scootsy', label: 'Scootsy' },
-  { key: 'Zepto',   label: 'Zepto' },
-];
-
 const GRN_STATUS_OPTIONS = [
   'Pending',
   'Out For Delivery',
@@ -33,9 +28,9 @@ const GRN_STATUS_OPTIONS = [
   'Delivered - GRN Received',
 ];
 // Selectable values for the multiselect status filter (includes the computed
-// 'Yet to Dispatch'). Default selection is everything except
-// 'Delivered - GRN Received' (the only fully-closed state), so the active pipeline
-// — including GRN-pending deliveries — shows first.
+// 'Yet to Dispatch'). Default selection is the active in-flight pipeline:
+// 'Returned to Vendor' and the fully-closed 'Delivered - GRN Received' are left
+// out of the initial view (the user can still select them).
 const STATUS_MULTI_OPTIONS = [
   'Yet to Dispatch',
   'Pending',
@@ -48,7 +43,6 @@ const DEFAULT_STATUS_SELECTION = [
   'Yet to Dispatch',
   'Pending',
   'Out For Delivery',
-  'Returned to Vendor',
   'Delivered - GRN Pending',
 ];
 
@@ -97,7 +91,9 @@ const seededFiltersFromURL = (params) => {
 };
 const seededVendorTabFromURL = (params) => {
   const v = params?.get('vendor');
-  return ['Blinkit', 'Scootsy', 'Zepto'].includes(v) ? v : 'Blinkit';
+  // Accept any vendor passed in the URL; the active-vendor list loads async and
+  // reconciles the tab afterwards. Default to Blinkit when none is given.
+  return v ? v : 'Blinkit';
 };
 
 const buildColumns = (vendorTab) => [
@@ -172,7 +168,7 @@ function AppointmentDateNav({ vendor, value, onPick }) {
           <CalendarIcon size={14} className="text-gray-400" />{label}
         </button>
         {open && (
-          <div className="absolute z-30 mt-1 left-1/2 -translate-x-1/2 w-72 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+          <div className="absolute z-30 mt-1 left-1/2 -translate-x-1/2 w-72 max-w-[calc(100vw-1rem)] bg-white border border-gray-200 rounded-lg shadow-lg p-3">
             <div className="flex items-center justify-between mb-2">
               <button type="button" onClick={() => setViewMonth(m => new Date(m.getFullYear(), m.getMonth() - 1, 1))} className="p-1 rounded hover:bg-gray-100"><ChevronLeft size={16} /></button>
               <span className="text-sm font-semibold text-[#003049]">{MONTHS[viewMonth.getMonth()]} {viewMonth.getFullYear()}</span>
@@ -264,6 +260,7 @@ export default function GRNList() {
   const { canEdit } = useRBAC();
 
   const [searchParams] = useSearchParams();
+  const [vendorTabs, setVendorTabs] = useState([]);
   const [vendorTab, setVendorTab] = useState(() => seededVendorTabFromURL(searchParams));
   const [filters, setFilters] = useState(() => seededFiltersFromURL(searchParams));
   const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
@@ -324,6 +321,15 @@ export default function GRNList() {
   }, [searchParams]);
 
   useEffect(() => {
+    listVendors()
+      .then(rows => {
+        const active = rows.filter(v => v.is_active).map(v => ({ key: v.name, label: v.name }));
+        setVendorTabs(active);
+        // Reconcile the current tab against the loaded vendor list (e.g. a stale
+        // URL vendor) by falling back to the first available vendor.
+        setVendorTab(curr => (active.some(t => t.key === curr) ? curr : (active[0]?.key || curr)));
+      })
+      .catch(() => {});
     listCities()
       .then(rows => setCities(sortByText(rows.filter(c => c.is_active).map(c => c.name))))
       .catch(() => {});
@@ -345,6 +351,22 @@ export default function GRNList() {
     : '';
   const pickAppointmentDay = (iso) => {
     const f = { ...filters, appointment_date_from: iso || '', appointment_date_to: iso || '' };
+    setFilters(f);
+    setPage(1);
+    load({ filters: f, page: 1 });
+  };
+
+  // Today/Yesterday quick buttons: show ALL POs for that appointment day,
+  // ignoring status and any other applied filters (all statuses selected,
+  // city/courier cleared).
+  const pickApptDayAllFilters = (iso) => {
+    const f = {
+      grn_status:            [...STATUS_MULTI_OPTIONS],
+      appointment_date_from: iso,
+      appointment_date_to:   iso,
+      city:                  '',
+      courier_id:            '',
+    };
     setFilters(f);
     setPage(1);
     load({ filters: f, page: 1 });
@@ -467,6 +489,9 @@ export default function GRNList() {
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 disabled:bg-gray-50 disabled:text-gray-400';
   const cellCls = 'w-full px-2 py-1 border border-gray-200 rounded text-sm bg-white focus:outline-none focus:ring-1 focus:ring-[#c1121f]/40 disabled:bg-gray-100 disabled:text-gray-400';
+  // GRN status labels are long (e.g. "Delivered - GRN Received"): give the in-cell
+  // dropdown a min-width so the value stays readable; the table scrolls instead.
+  const cellSelectCls = `${cellCls} min-w-[13rem]`;
 
   const SortIcon = ({ colKey }) => {
     if (sort.key !== colKey) return <ArrowUpDown size={12} className="text-gray-300" />;
@@ -488,7 +513,7 @@ export default function GRNList() {
       </div>
 
       <div className="flex gap-1 mb-4 border-b border-gray-200">
-        {VENDOR_TABS.map(t => (
+        {vendorTabs.map(t => (
           <button
             key={t.key}
             type="button"
@@ -547,7 +572,7 @@ export default function GRNList() {
             <button
               key={label}
               type="button"
-              onClick={() => pickAppointmentDay(iso)}
+              onClick={() => pickApptDayAllFilters(iso)}
               className={`px-3 py-1.5 rounded border text-sm font-medium ${active ? 'bg-[#c1121f] text-white border-[#c1121f]' : 'border-gray-200 bg-white text-[#003049] hover:bg-gray-50'}`}
             >
               {label}
@@ -658,7 +683,7 @@ export default function GRNList() {
                                     setEdit(po.po_id, patch);
                                   }}
                                   onKeyDown={onKey}
-                                  className={cellCls}
+                                  className={cellSelectCls}
                                 >
                                   {GRN_STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
                                 </select>

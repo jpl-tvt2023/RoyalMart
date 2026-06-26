@@ -120,10 +120,12 @@ export default function ProcurementPage() {
   const { pos, raw_products } = data;
 
   // Sticky column classes: Raw Product frozen at left:0, Total at left:14rem.
-  const stickyName = 'sticky left-0 z-10 bg-white';
-  const stickyTotal = 'sticky left-56 z-10 bg-white';
-  const stickyNameHead = 'sticky left-0 z-20 bg-gray-50';
-  const stickyTotalHead = 'sticky left-56 z-20 bg-gray-50';
+  // Freeze only from md+ — on phones the two frozen columns (14rem + 9rem)
+  // would be wider than the viewport, so let them scroll normally instead.
+  const stickyName = 'md:sticky md:left-0 z-10 bg-white';
+  const stickyTotal = 'md:sticky md:left-56 z-10 bg-white';
+  const stickyNameHead = 'md:sticky md:left-0 z-20 bg-gray-50';
+  const stickyTotalHead = 'md:sticky md:left-56 z-20 bg-gray-50';
 
   return (
     <AppShell>

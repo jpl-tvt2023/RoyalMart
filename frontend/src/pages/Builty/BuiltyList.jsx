@@ -8,6 +8,7 @@ import Modal from '../../components/ui/Modal';
 import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { listOrderSummary, updateOrderSummary, getOrderSummaryCountsByVendor } from '../../api/orderSummary.api';
+import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { formatDateTime } from '../../utils/formatters';
@@ -19,12 +20,6 @@ import { useRBAC } from '../../hooks/useRBAC';
 // legend swatch and the actual row colour can't drift apart).
 const DIRTY_ROW = 'bg-amber-50/60';
 const UNSAVED_LEGEND = [{ swatch: DIRTY_ROW, label: 'Unsaved changes' }];
-
-const VENDOR_TABS = [
-  { key: 'Blinkit', label: 'Blinkit' },
-  { key: 'Scootsy', label: 'Scootsy' },
-  { key: 'Zepto',   label: 'Zepto' },
-];
 
 const isoLocal = (d) => {
   const y = d.getFullYear();
@@ -63,6 +58,7 @@ const COLUMNS = [
 export default function BuiltyList() {
   const { canEdit } = useRBAC();
 
+  const [vendorTabs, setVendorTabs] = useState([]);
   const [vendorTab, setVendorTab] = useState('Blinkit');
   const [filters, setFilters] = useState(defaultFilters);
   const [sort, setSort] = useState({ key: 'po_id', dir: 'desc' });
@@ -75,7 +71,7 @@ export default function BuiltyList() {
 
   const [cities, setCities] = useState([]);
   const [couriers, setCouriers] = useState([]);
-  const [vendorCounts, setVendorCounts] = useState({ Blinkit: 0, Scootsy: 0, Zepto: 0 });
+  const [vendorCounts, setVendorCounts] = useState({});
   const activeCouriers = couriers.filter(c => c.is_active);
   const [edits, setEdits] = useState({});
   const [savingId, setSavingId] = useState(null);
@@ -112,11 +108,7 @@ export default function BuiltyList() {
       if (val) params[k] = val;
     });
     getOrderSummaryCountsByVendor(params)
-      .then(res => setVendorCounts({
-        Blinkit: res.counts?.Blinkit || 0,
-        Scootsy: res.counts?.Scootsy || 0,
-        Zepto:   res.counts?.Zepto   || 0,
-      }))
+      .then(res => setVendorCounts(res.counts || {}))
       .catch(() => {});
   }, [filters]);
 
@@ -129,6 +121,9 @@ export default function BuiltyList() {
   }, []);
 
   useEffect(() => {
+    listVendors()
+      .then(rows => setVendorTabs(rows.filter(v => v.is_active).map(v => ({ key: v.name, label: v.name }))))
+      .catch(() => {});
     listCities()
       .then(rows => setCities(sortByText(rows.filter(c => c.is_active).map(c => c.name))))
       .catch(() => {});
@@ -245,7 +240,7 @@ export default function BuiltyList() {
       </div>
 
       <div className="flex gap-1 mb-4 border-b border-gray-200">
-        {VENDOR_TABS.map(t => (
+        {vendorTabs.map(t => (
           <button
             key={t.key}
             type="button"

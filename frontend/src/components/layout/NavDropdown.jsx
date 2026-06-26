@@ -54,7 +54,7 @@ export default function NavDropdown({ label, icon: Icon, items }) {
       {open && (
         <div
           role="menu"
-          className="absolute left-0 top-full mt-1.5 w-64 rounded-xl bg-white shadow-lg ring-1 ring-black/5 p-1.5 z-30"
+          className="absolute left-0 top-full mt-1.5 w-64 max-w-[calc(100vw-1rem)] rounded-xl bg-white shadow-lg ring-1 ring-black/5 p-1.5 z-30"
         >
           {items.map(it => (
             <NavLink

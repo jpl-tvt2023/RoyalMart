@@ -257,7 +257,7 @@ function VendorMappingsTab() {
       </div>
 
       <div className="mb-4 flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-[220px] max-w-md">
+        <div className="relative flex-1 min-w-0 sm:min-w-[220px] max-w-md">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by SKU, vendor, or description…" className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]" />
         </div>

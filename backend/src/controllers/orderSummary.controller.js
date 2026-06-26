@@ -732,7 +732,7 @@ async function grnAppointments(req, res, next) {
                    COALESCE(SUM(CASE WHEN ${COMPUTED_GRN_STATUS_SQL} = 'Delivered - GRN Received' THEN 1 ELSE 0 END), 0) AS fulfilled
             FROM marketplace_pos p
             WHERE appointment_date = ?
-              AND vendor IN ('Blinkit', 'Scootsy', 'Zepto')
+              AND vendor IN (SELECT name FROM vendors WHERE is_active = 1)
             GROUP BY vendor
             ORDER BY vendor`,
       args: [date],
@@ -754,7 +754,7 @@ async function grnAppointmentCounts(req, res, next) {
     const conditions = ['p.appointment_date >= ?', 'p.appointment_date <= ?'];
     const args = [from, to];
     if (vendor) { conditions.push('p.vendor = ?'); args.push(vendor); }
-    else { conditions.push("p.vendor IN ('Blinkit', 'Scootsy', 'Zepto')"); }
+    else { conditions.push('p.vendor IN (SELECT name FROM vendors WHERE is_active = 1)'); }
     const { rows } = await db.execute({
       sql: `SELECT p.appointment_date,
                    COUNT(*) AS count,
@@ -769,4 +769,26 @@ async function grnAppointmentCounts(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, updateOne, bulkUpdate, countsByVendor, countsByPoc, grnAppointments, grnAppointmentCounts };
+// Assignable POC roster for the Office/Warehouse POC dropdowns. Returns only
+// users tagged Office_POC/Warehouse_POC (id, name, roles) and is open to all
+// roles — unlike the Admin-only GET /users — so Employees can assign POCs.
+async function pocUsers(req, res, next) {
+  try {
+    const { rows } = await db.execute(
+      `SELECT u.id, u.name, ur.role
+       FROM users u
+       JOIN user_roles ur ON ur.user_id = u.id
+       WHERE ur.role IN ('Office_POC', 'Warehouse_POC')
+       ORDER BY u.name COLLATE NOCASE`
+    );
+    const byId = new Map();
+    for (const r of rows) {
+      const entry = byId.get(r.id) || { id: r.id, name: r.name, roles: [] };
+      entry.roles.push(r.role);
+      byId.set(r.id, entry);
+    }
+    res.json({ data: [...byId.values()] });
+  } catch (err) { next(err); }
+}
+
+module.exports = { list, updateOne, bulkUpdate, countsByVendor, countsByPoc, grnAppointments, grnAppointmentCounts, pocUsers };

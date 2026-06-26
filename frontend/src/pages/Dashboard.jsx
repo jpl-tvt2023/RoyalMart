@@ -4,6 +4,7 @@ import AppShell from '../components/layout/AppShell';
 import Legend from '../components/ui/Legend';
 import { listPOs } from '../api/marketplacePO.api';
 import { listOrderSummary, getGrnAppointmentsByDate, getOrderSummaryCountsByPoc } from '../api/orderSummary.api';
+import { listVendors } from '../api/vendors.api';
 import { ClipboardList, Truck, CalendarClock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useRBAC } from '../hooks/useRBAC';
@@ -66,11 +67,9 @@ function StatCard({ to, label, value, icon: Icon, color }) {
   );
 }
 
-const GRN_VENDORS = ['Blinkit', 'Scootsy', 'Zepto'];
-
-function GrnAppointmentTable({ title, date, rows, navigate }) {
+function GrnAppointmentTable({ title, date, rows, navigate, vendors }) {
   const byVendor = Object.fromEntries((rows || []).map(r => [r.vendor, r]));
-  const fullRows = GRN_VENDORS.map(v => byVendor[v] || { vendor: v, total: 0, fulfilled: 0 });
+  const fullRows = (vendors || []).map(v => byVendor[v] || { vendor: v, total: 0, fulfilled: 0 });
   const totals = fullRows.reduce(
     (acc, r) => ({ total: acc.total + Number(r.total || 0), fulfilled: acc.fulfilled + Number(r.fulfilled || 0) }),
     { total: 0, fulfilled: 0 }
@@ -198,6 +197,13 @@ export default function Dashboard() {
 
   const [state, setState] = useState({});
   const [loading, setLoading] = useState(true);
+  const [grnVendors, setGrnVendors] = useState([]);
+
+  useEffect(() => {
+    listVendors()
+      .then(rows => setGrnVendors(rows.filter(v => v.is_active).map(v => v.name)))
+      .catch(() => {});
+  }, []);
 
   const todayStr      = todayISO();
   const yestStr       = previousWorkingDayISO();
@@ -288,8 +294,8 @@ export default function Dashboard() {
             <section className="mt-6">
               <h2 className="text-sm font-semibold text-[#003049] mb-2">GRN Appointment Summary</h2>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                <GrnAppointmentTable title="Today" date={todayStr} rows={state.grnToday ?? []} navigate={navigate} />
-                <GrnAppointmentTable title={yesterdayLabel()} date={yestStr} rows={state.grnYesterday ?? []} navigate={navigate} />
+                <GrnAppointmentTable title="Today" date={todayStr} rows={state.grnToday ?? []} navigate={navigate} vendors={grnVendors} />
+                <GrnAppointmentTable title={yesterdayLabel()} date={yestStr} rows={state.grnYesterday ?? []} navigate={navigate} vendors={grnVendors} />
               </div>
             </section>
           )}
