@@ -8,7 +8,7 @@ import Button from '../../components/ui/Button';
 import Badge from '../../components/ui/Badge';
 import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
-import { listOrderSummary, updateOrderSummary, getGrnAppointmentCounts } from '../../api/orderSummary.api';
+import { listOrderSummary, updateOrderSummary, getGrnAppointmentCounts, getOrderSummaryCountsByVendor } from '../../api/orderSummary.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
@@ -270,6 +270,7 @@ export default function GRNList() {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [vendorCounts, setVendorCounts] = useState({});
 
   const [cities, setCities] = useState([]);
   const [couriers, setCouriers] = useState([]);
@@ -306,6 +307,23 @@ export default function GRNList() {
       .finally(() => setLoading(false));
   }, [buildParams]);
 
+  // Per-vendor row counts shown beside each tab name. Honors the current filter
+  // set (grn_status array → comma-join) so each tab's count matches its content.
+  const loadCounts = useCallback((overrideFilters) => {
+    const f = overrideFilters ?? filters;
+    const params = {};
+    Object.entries(f).forEach(([k, val]) => {
+      if (k === 'grn_status') {
+        if (Array.isArray(val) && val.length) params[k] = val.join(',');
+        return;
+      }
+      if (val) params[k] = val;
+    });
+    getOrderSummaryCountsByVendor(params)
+      .then(res => setVendorCounts(res.counts || {}))
+      .catch(() => {});
+  }, [filters]);
+
   // Load on mount and whenever the URL (navigation) changes. Editing filter inputs
   // does NOT fetch — only an explicit action (Search/Clear/tab/sort/pagination)
   // does. We pass the seeded values as overrides so the fetch doesn't race the
@@ -317,6 +335,7 @@ export default function GRNList() {
     setVendorTab(v);
     setPage(1);
     load({ filters: f, vendor: v, page: 1 });
+    loadCounts(f);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -341,8 +360,8 @@ export default function GRNList() {
   useEffect(() => { setEdits({}); }, [items]);
 
   const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
-  const applySearch = () => { setPage(1); load({ page: 1 }); };
-  const clearFilters = () => { const f = defaultFilters(); setFilters(f); setPage(1); load({ filters: f, page: 1 }); };
+  const applySearch = () => { setPage(1); load({ page: 1 }); loadCounts(); };
+  const clearFilters = () => { const f = defaultFilters(); setFilters(f); setPage(1); load({ filters: f, page: 1 }); loadCounts(f); };
 
   // The date navigator sets a single appointment day (from = to) and loads
   // immediately — it's a navigation control, not one of the Search-button filters.
@@ -354,6 +373,7 @@ export default function GRNList() {
     setFilters(f);
     setPage(1);
     load({ filters: f, page: 1 });
+    loadCounts(f);
   };
 
   // Today/Yesterday quick buttons: show ALL POs for that appointment day,
@@ -370,6 +390,7 @@ export default function GRNList() {
     setFilters(f);
     setPage(1);
     load({ filters: f, page: 1 });
+    loadCounts(f);
   };
 
   const switchTab = (key) => {
@@ -520,7 +541,7 @@ export default function GRNList() {
             onClick={() => switchTab(t.key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${vendorTab === t.key ? 'border-[#c1121f] text-[#c1121f]' : 'border-transparent text-gray-500 hover:text-[#003049]'}`}
           >
-            {t.label}
+            {t.label} <span className="ml-1 text-gray-400">({vendorCounts[t.key] ?? 0})</span>
           </button>
         ))}
       </div>
