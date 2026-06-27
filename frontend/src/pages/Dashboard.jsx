@@ -192,7 +192,7 @@ export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { canAccess } = useRBAC();
-  const canSeeGRN    = canAccess('Admin', 'Owner', 'Office_POC', 'Warehouse_POC');
+  const canSeeGRN    = canAccess('Admin', 'Owner', 'Employee', 'Office_POC', 'Warehouse_POC');
   const canSeeExpiry = canAccess('Admin', 'Owner', 'Employee', 'Office_POC', 'Warehouse_POC');
 
   const [state, setState] = useState({});

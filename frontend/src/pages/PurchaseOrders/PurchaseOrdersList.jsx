@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Pencil, Trash2, FileText, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { Plus, Pencil, Trash2, RotateCcw, FileText, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
@@ -8,16 +8,16 @@ import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Badge from '../../components/ui/Badge';
 import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
-import { listPOs, deletePO } from '../../api/marketplacePO.api';
+import { listPOs, deletePO, restorePO } from '../../api/marketplacePO.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { formatDateTime } from '../../utils/formatters';
 import { sortByText } from '../../utils/sort';
 
-const STATUS_COLORS = { Open: 'blue', Closed: 'green' };
+const STATUS_COLORS = { Open: 'blue', Closed: 'green', Deleted: 'gray' };
 
 const defaultFilters = () => ({
-  po_id: '', vendor: '', vendor_po_id: '', city: '',
+  po_id: '', vendor: '', vendor_po_id: '', city: '', sku_code: '',
   po_date_from: '', po_date_to: '',
   po_expiry_date_from: '', po_expiry_date_to: '',
   status: 'Open',
@@ -80,6 +80,8 @@ export default function PurchaseOrdersList() {
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('purchaseOrders', 25));
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [confirmRestore, setConfirmRestore] = useState(null);
+  const [restoring, setRestoring] = useState(false);
   const [vendors, setVendors] = useState([]);
   const [cities, setCities] = useState([]);
 
@@ -157,6 +159,18 @@ export default function PurchaseOrdersList() {
     } finally { setDeleting(false); }
   };
 
+  const handleRestore = async () => {
+    setRestoring(true);
+    try {
+      await restorePO(confirmRestore.po_id);
+      toast.success(`Restored ${confirmRestore.po_id}`);
+      setConfirmRestore(null);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Restore failed');
+    } finally { setRestoring(false); }
+  };
+
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30';
 
   const SortIcon = ({ colKey }) => {
@@ -182,6 +196,7 @@ export default function PurchaseOrdersList() {
               <option value="Open">Open</option>
               <option value="Closed">Closed</option>
               <option value="All">All</option>
+              <option value="Deleted">Deleted</option>
             </select>
           </div>
           <div>
@@ -205,6 +220,10 @@ export default function PurchaseOrdersList() {
               <option value="">All cities</option>
               {cities.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Internal SKU</label>
+            <input value={filters.sku_code} onChange={e => setFilter('sku_code', e.target.value)} onKeyDown={onSearchKey} placeholder="Search SKU code..." className={inputCls} />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">PO Date From</label>
@@ -277,7 +296,11 @@ export default function PurchaseOrdersList() {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1">
                       <Link to={`/purchase-orders/${po.po_id}`} title="View/Edit" className="p-1.5 rounded hover:bg-blue-50 text-blue-500"><Pencil size={14} /></Link>
-                      <button onClick={() => setConfirmDelete(po)} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-red-500"><Trash2 size={14} /></button>
+                      {po.status === 'Deleted' ? (
+                        <button onClick={() => setConfirmRestore(po)} title="Restore" className="p-1.5 rounded hover:bg-green-50 text-green-600"><RotateCcw size={14} /></button>
+                      ) : (
+                        <button onClick={() => setConfirmDelete(po)} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-red-500"><Trash2 size={14} /></button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -303,9 +326,19 @@ export default function PurchaseOrdersList() {
         onClose={() => setConfirmDelete(null)}
         onConfirm={handleDelete}
         title="Delete Purchase Order"
-        message={`Delete ${confirmDelete?.po_id} (${confirmDelete?.vendor} ${confirmDelete?.vendor_po_id})? This cannot be undone.`}
+        message={`Delete ${confirmDelete?.po_id} (${confirmDelete?.vendor} ${confirmDelete?.vendor_po_id})? It will be hidden from the list but can be restored from the Deleted filter.`}
         confirmLabel="Delete"
         loading={deleting}
+      />
+
+      <ConfirmDialog
+        isOpen={!!confirmRestore}
+        onClose={() => setConfirmRestore(null)}
+        onConfirm={handleRestore}
+        title="Restore Purchase Order"
+        message={`Restore ${confirmRestore?.po_id} (${confirmRestore?.vendor} ${confirmRestore?.vendor_po_id})? It will become an Open order again.`}
+        confirmLabel="Restore"
+        loading={restoring}
       />
     </AppShell>
   );

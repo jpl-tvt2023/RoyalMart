@@ -69,6 +69,10 @@ async function parsePreview(req, res, next) {
     // vendor's code→product map, then attach per line.
     parsed.lines = await enrichLinesWithInternalSku(vendor, parsed.lines);
 
+    // City is intentionally not extracted from the file — the user selects it
+    // manually during the preview phase (vendor addresses are unreliable).
+    parsed.city = null;
+
     await logAction({
       userId: req.user.id,
       actionType: 'MARKETPLACE_PO_PARSE',
@@ -118,7 +122,7 @@ function buildOrderBy(query, columnMap, defaultExpr = 'p.updated_at DESC') {
 async function list(req, res, next) {
   try {
     const {
-      po_id, vendor, vendor_po_id, city,
+      po_id, vendor, vendor_po_id, city, sku_code,
       po_date_from, po_date_to,
       po_expiry_date_from, po_expiry_date_to,
       status,
@@ -133,7 +137,18 @@ async function list(req, res, next) {
     if (po_date_to)   { conditions.push('p.po_date <= ?'); args.push(po_date_to); }
     if (po_expiry_date_from) { conditions.push('p.po_expiry_date >= ?'); args.push(po_expiry_date_from); }
     if (po_expiry_date_to)   { conditions.push('p.po_expiry_date <= ?'); args.push(po_expiry_date_to); }
-    if (status && VALID_STATUSES.includes(status)) { conditions.push('p.status = ?'); args.push(status); }
+    if (status === 'Deleted') { conditions.push("p.status = 'Deleted'"); }
+    else if (status && VALID_STATUSES.includes(status)) { conditions.push('p.status = ?'); args.push(status); }
+    else { conditions.push("p.status <> 'Deleted'"); }
+    if (sku_code) {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM marketplace_po_lines l
+        JOIN product_vendor_codes pvc ON pvc.vendor = p.vendor AND pvc.vendor_item_code = l.item_code
+        JOIN products pr ON pr.id = pvc.product_id
+        WHERE l.po_id = p.po_id AND pr.sku_code LIKE ?
+      )`);
+      args.push(`%${sku_code}%`);
+    }
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
     const orderBy = buildOrderBy(req.query, PO_SORT_COLUMNS);
@@ -245,6 +260,7 @@ async function create(req, res, next) {
         await tx.execute({
           sql: `UPDATE marketplace_pos
                 SET po_date = ?, po_expiry_date = ?, city = ?, party_name = ?,
+                    status = CASE WHEN status = 'Deleted' THEN 'Open' ELSE status END,
                     updated_by = ?, updated_at = datetime('now')
                 WHERE po_id = ?`,
           args: [po_date || null, po_expiry_date || null, city || null, cleanPartyName, req.user.id, poId],
@@ -381,14 +397,16 @@ async function remove(req, res, next) {
   try {
     const { poId } = req.params;
     const { rowsAffected } = await db.execute({
-      sql: 'DELETE FROM marketplace_pos WHERE po_id = ?',
-      args: [poId],
+      sql: `UPDATE marketplace_pos
+            SET status = 'Deleted', updated_by = ?, updated_at = datetime('now')
+            WHERE po_id = ? AND status <> 'Deleted'`,
+      args: [req.user.id, poId],
     });
     if (!rowsAffected) return res.status(404).json({ message: 'PO not found' });
     await logAction({
       userId: req.user.id,
       actionType: 'MARKETPLACE_PO_DELETE',
-      description: `Deleted PO ${poId}`,
+      description: `Soft-deleted PO ${poId}`,
       entityType: 'marketplace_po',
       entityRef: poId,
     });
@@ -396,4 +414,25 @@ async function remove(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { parsePreview, list, getOne, create, update, remove, buildPagination, buildOrderBy };
+async function restore(req, res, next) {
+  try {
+    const { poId } = req.params;
+    const { rowsAffected } = await db.execute({
+      sql: `UPDATE marketplace_pos
+            SET status = 'Open', updated_by = ?, updated_at = datetime('now')
+            WHERE po_id = ? AND status = 'Deleted'`,
+      args: [req.user.id, poId],
+    });
+    if (!rowsAffected) return res.status(404).json({ message: 'Deleted PO not found' });
+    await logAction({
+      userId: req.user.id,
+      actionType: 'MARKETPLACE_PO_RESTORE',
+      description: `Restored PO ${poId}`,
+      entityType: 'marketplace_po',
+      entityRef: poId,
+    });
+    res.json({ po_id: poId, restored: true });
+  } catch (err) { next(err); }
+}
+
+module.exports = { parsePreview, list, getOne, create, update, remove, restore, buildPagination, buildOrderBy };

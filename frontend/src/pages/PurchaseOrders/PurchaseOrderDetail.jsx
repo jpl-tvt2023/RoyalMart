@@ -24,6 +24,7 @@ export default function PurchaseOrderDetail() {
         vendor_po_id: po.vendor_po_id || '',
         po_date: po.po_date || '',
         po_expiry_date: po.po_expiry_date || '',
+        appointment_date: po.appointment_date || '',
         city: po.city || '',
         lines: (po.lines || []).map(l => ({ ...l })),
       }))
@@ -140,6 +141,9 @@ export default function PurchaseOrderDetail() {
               </Field>
               <Field label="Exp Date">
                 <input type="date" value={form.po_expiry_date || ''} onChange={e => set({ po_expiry_date: e.target.value })} className={inputCls} />
+              </Field>
+              <Field label="Appointment Date">
+                <input disabled value={form.appointment_date || ''} className={`${inputCls} bg-gray-50 text-gray-600`} placeholder="Set on GRN screen" />
               </Field>
             </div>
           </div>
