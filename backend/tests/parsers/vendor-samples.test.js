@@ -12,6 +12,8 @@ const VENDORS = {
   Zepto: 'zepto',
   Now: 'Now',
   Minutes: 'Minutes',
+  Amazon: 'Amazon',
+  Flipkart: 'Flipkart',
 };
 
 function samplesIn(dir) {
