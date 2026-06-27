@@ -13,7 +13,8 @@ function pdfsIn(dir) {
 
 const legacyFiles = pdfsIn(path.join(SAMPLES, 'legacy'));
 const otbFiles = pdfsIn(path.join(SAMPLES, 'otb'));
-const allFiles = [...legacyFiles, ...otbFiles];
+const exceptionFiles = pdfsIn(path.join(SAMPLES, 'exception'));
+const allFiles = [...legacyFiles, ...otbFiles, ...exceptionFiles];
 
 // A successful Scootsy parse yields a PO number and at least one line item;
 // every line has an item code and a positive quantity.
@@ -44,6 +45,18 @@ describe('Scootsy parser (legacy + OTB layouts)', () => {
       const result = await parseScootsy(fs.readFileSync(file));
       assertWellFormed(result);
       expect(result.city).toBeTruthy(); // OTB layout carries a destination city
+    });
+  }
+
+  // Multi-line OTB POs where the wrong (legacy) layout spuriously matches a
+  // single stray row. The dispatcher must keep the layout that recovers MORE
+  // lines, so the full table comes through — not just one line. Guards the
+  // regression where only 1 of 23 lines was parsed.
+  if (exceptionFiles.length) {
+    test.each(exceptionFiles)('recovers the full line-item table: %s', async (file) => {
+      const result = await parseScootsy(fs.readFileSync(file));
+      assertWellFormed(result);
+      expect(result.lines.length).toBeGreaterThan(5);
     });
   }
 });

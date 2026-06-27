@@ -5,22 +5,31 @@ const isValid = (r) => r && r.vendor_po_id && Array.isArray(r.lines) &&
   r.lines.some(l => Number(l.qty) > 0);
 
 // Scootsy ships POs in two layouts (legacy + new "OTB"). The vendor is already
-// known to be Scootsy here, so we detect the layout by trying each parser and
-// taking the first that yields a PO number with at least one valid line. The
-// per-row qty*unitBase≈taxable check inside each parser prevents false positives
-// on the wrong layout, so the order of attempts is safe.
+// known to be Scootsy here, so we run both parsers and keep whichever recovered
+// MORE line items. Picking the first parser that yields any valid line is not
+// safe: the wrong layout can spuriously match a stray row (e.g. legacy's fixed
+// 3-decimal regex matching one OTB row by chance), which would short-circuit the
+// correct layout and drop the rest of the table. The right layout recovers the
+// full table, so it wins on line count. Ties keep legacy (evaluated first).
 async function parseScootsy(buffer) {
-  let legacyErr;
+  const candidates = [];
+  let legacyErr, otbErr;
+
   try {
     const legacy = await parseLegacy(buffer);
-    if (isValid(legacy)) return legacy;
+    if (isValid(legacy)) candidates.push(legacy);
   } catch (e) { legacyErr = e; }
 
-  let otbErr;
   try {
     const otb = await parseOtb(buffer);
-    if (isValid(otb)) return otb;
+    if (isValid(otb)) candidates.push(otb);
   } catch (e) { otbErr = e; }
+
+  if (candidates.length) {
+    // Stable sort: on equal line counts the first-pushed (legacy) is retained.
+    candidates.sort((a, b) => b.lines.length - a.lines.length);
+    return candidates[0];
+  }
 
   const detail = [legacyErr && `legacy: ${legacyErr.message}`, otbErr && `OTB: ${otbErr.message}`]
     .filter(Boolean).join('; ');
