@@ -4,6 +4,8 @@ const parsers = {
   Blinkit: require('./blinkit'),
   Now:     require('./now'),      // Amazon Now (PDF)
   Minutes: require('./minutes'),  // Flipkart Minutes (binary .xls)
+  Amazon:   require('./amazon'),   // Amazon FBA (xlsx)
+  Flipkart: require('./flipkart'), // Flipkart Stock Transfer (PDF)
 };
 
 function hasParser(vendor) {
