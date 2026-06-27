@@ -6,7 +6,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Build the shared "in scope" WHERE for not-yet-ordered POs, optionally bounded
 // by po_date. Returns { where, args } with `po` as the marketplace_pos alias.
 function scopeWhere({ po_date_from, po_date_to }) {
-  const conditions = ['po.procurement_batch_id IS NULL'];
+  const conditions = ['po.procurement_batch_id IS NULL', "po.status <> 'Deleted'"];
   const args = [];
   if (po_date_from && DATE_RE.test(po_date_from)) { conditions.push('po.po_date >= ?'); args.push(po_date_from); }
   if (po_date_to && DATE_RE.test(po_date_to))     { conditions.push('po.po_date <= ?'); args.push(po_date_to); }
@@ -16,7 +16,7 @@ function scopeWhere({ po_date_from, po_date_to }) {
 // Date-range WHERE over po_date only (no ordered filter) — the matrix shows
 // every PO in range, ordered or not. Returns { where, args }.
 function rangeWhere({ po_date_from, po_date_to }) {
-  const conditions = [];
+  const conditions = ["po.status <> 'Deleted'"];
   const args = [];
   if (po_date_from && DATE_RE.test(po_date_from)) { conditions.push('po.po_date >= ?'); args.push(po_date_from); }
   if (po_date_to && DATE_RE.test(po_date_to))     { conditions.push('po.po_date <= ?'); args.push(po_date_to); }
@@ -30,8 +30,8 @@ async function getDefaults(req, res, next) {
   try {
     const { rows } = await db.execute(
       `SELECT
-         (SELECT date(MAX(po_date), '+1 day') FROM marketplace_pos WHERE procurement_batch_id IS NOT NULL AND po_date IS NOT NULL) AS after_last_ordered,
-         (SELECT MIN(po_date) FROM marketplace_pos WHERE po_date IS NOT NULL) AS earliest`
+         (SELECT date(MAX(po_date), '+1 day') FROM marketplace_pos WHERE procurement_batch_id IS NOT NULL AND po_date IS NOT NULL AND status <> 'Deleted') AS after_last_ordered,
+         (SELECT MIN(po_date) FROM marketplace_pos WHERE po_date IS NOT NULL AND status <> 'Deleted') AS earliest`
     );
     res.json({ po_date_from: rows[0]?.after_last_ordered || rows[0]?.earliest || null });
   } catch (err) { next(err); }

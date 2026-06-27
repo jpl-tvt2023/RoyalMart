@@ -106,7 +106,7 @@ async function remove(req, res, next) {
     if (!existing.length) return res.status(404).json({ message: 'Vendor not found' });
 
     const { rows: refs } = await db.execute({
-      sql: 'SELECT COUNT(*) AS n FROM marketplace_pos WHERE vendor = ?',
+      sql: "SELECT COUNT(*) AS n FROM marketplace_pos WHERE vendor = ? AND status <> 'Deleted'",
       args: [existing[0].name],
     });
     if (Number(refs[0]?.n) > 0) {

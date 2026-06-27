@@ -30,5 +30,6 @@ router.get('/:poId',  ...guards, c.getOne);
 router.post('/',      ...guards, c.create);
 router.patch('/:poId',...guards, c.update);
 router.delete('/:poId',...guards, c.remove);
+router.post('/:poId/restore',...guards, c.restore);
 
 module.exports = router;

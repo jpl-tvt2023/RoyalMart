@@ -77,6 +77,7 @@ async function list(req, res, next) {
     if (dispatch_date_from) { conditions.push('p.dispatch_date >= ?'); args.push(dispatch_date_from); }
     if (dispatch_date_to)   { conditions.push('p.dispatch_date <= ?'); args.push(dispatch_date_to); }
     if (status && VALID_STATUSES.includes(status)) { conditions.push('p.status = ?'); args.push(status); }
+    conditions.push("p.status <> 'Deleted'"); // soft-deleted POs never appear in Order Summary
     if (office_poc === 'unassigned') {
       conditions.push('p.office_poc IS NULL');
     } else if (office_poc) {
@@ -175,6 +176,7 @@ async function updateOne(req, res, next) {
     });
     if (!existing.length) return res.status(404).json({ message: 'PO not found' });
     const current = existing[0];
+    if (current.status === 'Deleted') return res.status(409).json({ message: 'PO is deleted. Restore it before editing.' });
 
     const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
 
@@ -252,7 +254,8 @@ async function updateOne(req, res, next) {
                 FROM marketplace_pos
                 WHERE tracking_id = ?
                   AND vendor != ?
-                  AND po_id != ?`,
+                  AND po_id != ?
+                  AND status <> 'Deleted'`,
           args: [nextTrackingId, current.vendor, poId],
         });
         if (crossVendor.length) {
@@ -275,6 +278,7 @@ async function updateOne(req, res, next) {
                   WHERE tracking_id = ?
                     AND vendor = ?
                     AND po_id != ?
+                    AND status <> 'Deleted'
                     AND city IS NOT NULL
                     AND city != ?`,
             args: [nextTrackingId, current.vendor, poId, current.city],
@@ -298,6 +302,7 @@ async function updateOne(req, res, next) {
                 WHERE tracking_id = ?
                   AND vendor = ?
                   AND po_id != ?
+                  AND status <> 'Deleted'
                   AND (city = ? OR city IS NULL OR ? IS NULL)`,
           args: [nextTrackingId, current.vendor, poId, current.city, current.city],
         });
@@ -325,7 +330,7 @@ async function updateOne(req, res, next) {
       }
       if (nextBillNo && nextBillNo !== current.bill_no) {
         const { rows: dup } = await db.execute({
-          sql: 'SELECT po_id, vendor, vendor_po_id FROM marketplace_pos WHERE bill_no = ? AND po_id != ?',
+          sql: "SELECT po_id, vendor, vendor_po_id FROM marketplace_pos WHERE bill_no = ? AND po_id != ? AND status <> 'Deleted'",
           args: [nextBillNo, poId],
         });
         if (dup.length) {
@@ -532,7 +537,7 @@ async function bulkUpdate(req, res, next) {
 
     const placeholders = po_ids.map(() => '?').join(',');
     const { rows: existing } = await db.execute({
-      sql: `SELECT po_id, office_poc, warehouse_poc FROM marketplace_pos WHERE po_id IN (${placeholders})`,
+      sql: `SELECT po_id, office_poc, warehouse_poc FROM marketplace_pos WHERE po_id IN (${placeholders}) AND status <> 'Deleted'`,
       args: po_ids,
     });
     const prevById = new Map(existing.map(r => [r.po_id, r]));
@@ -614,6 +619,7 @@ async function countsByVendor(req, res, next) {
     if (dispatch_date_from) { conditions.push('p.dispatch_date >= ?'); args.push(dispatch_date_from); }
     if (dispatch_date_to)   { conditions.push('p.dispatch_date <= ?'); args.push(dispatch_date_to); }
     if (status && VALID_STATUSES.includes(status)) { conditions.push('p.status = ?'); args.push(status); }
+    conditions.push("p.status <> 'Deleted'"); // soft-deleted POs never appear in Order Summary
     if (office_poc === 'unassigned') {
       conditions.push('p.office_poc IS NULL');
     } else if (office_poc) {
@@ -732,6 +738,7 @@ async function grnAppointments(req, res, next) {
                    COALESCE(SUM(CASE WHEN ${COMPUTED_GRN_STATUS_SQL} = 'Delivered - GRN Received' THEN 1 ELSE 0 END), 0) AS fulfilled
             FROM marketplace_pos p
             WHERE appointment_date = ?
+              AND status <> 'Deleted'
               AND vendor IN (SELECT name FROM vendors WHERE is_active = 1)
             GROUP BY vendor
             ORDER BY vendor`,
@@ -751,7 +758,7 @@ async function grnAppointmentCounts(req, res, next) {
     if (!from || !to || !DATE.test(from) || !DATE.test(to)) {
       return res.status(400).json({ message: 'from and to are required (YYYY-MM-DD)' });
     }
-    const conditions = ['p.appointment_date >= ?', 'p.appointment_date <= ?'];
+    const conditions = ['p.appointment_date >= ?', 'p.appointment_date <= ?', "p.status <> 'Deleted'"];
     const args = [from, to];
     if (vendor) { conditions.push('p.vendor = ?'); args.push(vendor); }
     else { conditions.push('p.vendor IN (SELECT name FROM vendors WHERE is_active = 1)'); }

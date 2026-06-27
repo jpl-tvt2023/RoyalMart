@@ -32,3 +32,8 @@ export async function deletePO(poId) {
   const { data } = await api.delete(`/marketplace-pos/${poId}`);
   return data;
 }
+
+export async function restorePO(poId) {
+  const { data } = await api.post(`/marketplace-pos/${poId}/restore`);
+  return data;
+}
