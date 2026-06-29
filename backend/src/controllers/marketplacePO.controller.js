@@ -330,6 +330,19 @@ async function update(req, res, next) {
     const err = validatePayload(body);
     if (err) return res.status(400).json({ message: err });
 
+    // vendor_po_id is now editable; guard the UNIQUE(vendor, vendor_po_id)
+    // constraint with a friendly message instead of a raw 500.
+    const cleanVendorPoId = String(body.vendor_po_id).trim();
+    if (cleanVendorPoId !== existing[0].vendor_po_id) {
+      const { rows: dup } = await db.execute({
+        sql: 'SELECT po_id FROM marketplace_pos WHERE vendor = ? AND vendor_po_id = ? AND po_id != ?',
+        args: [existing[0].vendor, cleanVendorPoId, poId],
+      });
+      if (dup.length) {
+        return res.status(409).json({ message: `Vendor PO No. "${cleanVendorPoId}" is already used on PO ${dup[0].po_id}` });
+      }
+    }
+
     let newOnboardedBy = null;
     const canReassign = (req.user.roles || []).some(r => ['Admin', 'Owner'].includes(r));
     if (canReassign && req.body.onboarded_by != null) {
