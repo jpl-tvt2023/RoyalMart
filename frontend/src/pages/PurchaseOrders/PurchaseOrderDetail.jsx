@@ -54,11 +54,13 @@ export default function PurchaseOrderDetail() {
   const removeLine = (idx) => set({ lines: lines.filter((_, i) => i !== idx) });
 
   const handleSave = async () => {
+    if (!form.vendor_po_id?.trim()) return toast.error('PO Number is required');
     if (!form.city) return toast.error('City is required');
     if (!form.lines?.length) return toast.error('At least one line item is required');
     setSaving(true);
     try {
       await updatePO(poId, {
+        vendor_po_id: form.vendor_po_id,
         po_date: form.po_date,
         po_expiry_date: form.po_expiry_date,
         city: form.city,
@@ -128,7 +130,7 @@ export default function PurchaseOrderDetail() {
                 <input disabled value={poId} className={`${inputCls} bg-gray-50 text-gray-600 font-mono`} />
               </Field>
               <Field label="PO Number">
-                <input disabled value={form.vendor_po_id || ''} className={`${inputCls} bg-gray-50 text-gray-600 font-mono`} />
+                <input value={form.vendor_po_id || ''} onChange={e => set({ vendor_po_id: e.target.value })} className={`${inputCls} font-mono`} />
               </Field>
               <Field label="City">
                 <select value={form.city || ''} onChange={e => set({ city: e.target.value })} className={inputCls}>
