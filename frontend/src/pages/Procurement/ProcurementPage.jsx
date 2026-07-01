@@ -11,6 +11,7 @@ import Legend from '../../components/ui/Legend';
 import { useRBAC } from '../../hooks/useRBAC';
 import { formatDateTime } from '../../utils/formatters';
 import { getDefaults, getRequirements, markOrdered, listBatches, undoBatch } from '../../api/procurement.api';
+import { listVendors } from '../../api/vendors.api';
 
 const isoLocal = (d) => {
   const y = d.getFullYear();
@@ -30,6 +31,12 @@ export default function ProcurementPage() {
   const [data, setData] = useState(EMPTY);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({ po_date_from: '', po_date_to: '' });
+
+  // Master ("All") tab plus one tab per active vendor. The active tab narrows the
+  // whole matrix (and the mark-ordered action) to that vendor; "All" shows every vendor.
+  const ALL_TAB = { key: 'All', label: 'All' };
+  const [vendorTabs, setVendorTabs] = useState([ALL_TAB]);
+  const [vendorTab, setVendorTab] = useState('All');
   const [confirmMark, setConfirmMark] = useState(false);
   const [marking, setMarking] = useState(false);
 
@@ -38,16 +45,24 @@ export default function ProcurementPage() {
   const [batchesLoading, setBatchesLoading] = useState(false);
   const [undoingId, setUndoingId] = useState(null);
 
-  const load = useCallback((f) => {
+  const load = useCallback((f, vendor) => {
     setLoading(true);
     const params = {};
     if (f.po_date_from) params.po_date_from = f.po_date_from;
     if (f.po_date_to) params.po_date_to = f.po_date_to;
+    if (vendor && vendor !== 'All') params.vendor = vendor;
     return getRequirements(params)
       .then(setData)
       .catch(() => toast.error('Failed to load procurement requirements'))
       .finally(() => setLoading(false));
   }, []);
+
+  // Vendor tabs: "All" master plus one per active vendor.
+  useEffect(() => {
+    listVendors()
+      .then(rows => setVendorTabs([ALL_TAB, ...rows.filter(v => v.is_active).map(v => ({ key: v.name, label: v.name }))]))
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // On mount: seed From from the server default (day after last ordered, else earliest), To = today.
   useEffect(() => {
@@ -55,13 +70,14 @@ export default function ProcurementPage() {
       .then(d => {
         const f = { po_date_from: d.po_date_from || '', po_date_to: todayISO() };
         setFilters(f);
-        return load(f);
+        return load(f, 'All');
       })
-      .catch(() => { const f = { po_date_from: '', po_date_to: todayISO() }; setFilters(f); load(f); });
+      .catch(() => { const f = { po_date_from: '', po_date_to: todayISO() }; setFilters(f); load(f, 'All'); });
   }, [load]);
 
-  const applyFilters = () => load(filters);
-  const clearFilters = () => { const f = { po_date_from: '', po_date_to: '' }; setFilters(f); load(f); };
+  const applyFilters = () => load(filters, vendorTab);
+  const clearFilters = () => { const f = { po_date_from: '', po_date_to: '' }; setFilters(f); load(f, vendorTab); };
+  const switchTab = (key) => { setVendorTab(key); load(filters, key); };
 
   const loadBatches = () => {
     setBatchesLoading(true);
@@ -78,10 +94,11 @@ export default function ProcurementPage() {
       const r = await markOrdered({
         po_date_from: filters.po_date_from || undefined,
         po_date_to: filters.po_date_to || undefined,
+        vendor: vendorTab !== 'All' ? vendorTab : undefined,
       });
       toast.success(`Marked ${r.po_count} PO${r.po_count !== 1 ? 's' : ''} as ordered`);
       setConfirmMark(false);
-      load(filters);
+      load(filters, vendorTab);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to mark as ordered');
     } finally { setMarking(false); }
@@ -93,7 +110,7 @@ export default function ProcurementPage() {
       const r = await undoBatch(batch.id);
       toast.success(`Returned ${r.po_count} PO${r.po_count !== 1 ? 's' : ''} to pending`);
       loadBatches();
-      load(filters);
+      load(filters, vendorTab);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Undo failed');
     } finally { setUndoingId(null); }
@@ -113,7 +130,8 @@ export default function ProcurementPage() {
     XLSX.utils.book_append_sheet(wb, ws, 'Procurement');
     const from = filters.po_date_from || 'all';
     const to = filters.po_date_to || 'all';
-    XLSX.writeFile(wb, `procurement-${from}_${to}.xlsx`);
+    const scope = vendorTab === 'All' ? 'all-vendors' : vendorTab.toLowerCase();
+    XLSX.writeFile(wb, `procurement-${scope}-${from}_${to}.xlsx`);
   };
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
@@ -122,10 +140,13 @@ export default function ProcurementPage() {
   // Sticky column classes: Raw Product frozen at left:0, Total at left:14rem.
   // Freeze only from md+ — on phones the two frozen columns (14rem + 9rem)
   // would be wider than the viewport, so let them scroll normally instead.
-  const stickyName = 'md:sticky md:left-0 z-10 bg-white';
-  const stickyTotal = 'md:sticky md:left-56 z-10 bg-white';
-  const stickyNameHead = 'md:sticky md:left-0 z-20 bg-gray-50';
-  const stickyTotalHead = 'md:sticky md:left-56 z-20 bg-gray-50';
+  // The min-widths MUST match the offsets (14rem name + 9rem total) so the
+  // frozen columns fully cover their slot — otherwise the Raw Product column
+  // shrinks below 14rem and the scrolled PO columns peek through the gap.
+  const stickyName = 'md:sticky md:left-0 z-10 bg-white w-56 min-w-[14rem] max-w-[14rem]';
+  const stickyTotal = 'md:sticky md:left-56 z-10 bg-white w-36 min-w-[9rem] max-w-[9rem]';
+  const stickyNameHead = 'md:sticky md:left-0 z-20 bg-gray-50 w-56 min-w-[14rem] max-w-[14rem]';
+  const stickyTotalHead = 'md:sticky md:left-56 z-20 bg-gray-50 w-36 min-w-[9rem] max-w-[9rem]';
 
   return (
     <AppShell>
@@ -138,6 +159,24 @@ export default function ProcurementPage() {
           <Button variant="outline" onClick={exportXLSX} disabled={loading || raw_products.length === 0}><Download size={16} />Export</Button>
           <Button variant="outline" onClick={openHistory}><History size={16} />Ordered history</Button>
         </div>
+      </div>
+
+      {/* Vendor tabs: All (master) + one per vendor */}
+      <div className="flex gap-1 mb-4 border-b border-gray-200 overflow-x-auto">
+        {vendorTabs.map(t => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => switchTab(t.key)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
+              vendorTab === t.key
+                ? 'border-[#c1121f] text-[#c1121f]'
+                : 'border-transparent text-gray-500 hover:text-[#003049]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
       {/* Filters */}

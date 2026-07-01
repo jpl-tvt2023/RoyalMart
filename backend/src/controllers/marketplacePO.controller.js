@@ -239,6 +239,16 @@ async function create(req, res, next) {
     const { vendor, vendor_po_id, po_date, po_expiry_date, city, lines, party_name } = req.body;
     const cleanPartyName = party_name == null ? null : (String(party_name).trim() || null);
 
+    // Appointment date is set at onboarding for Minutes POs (which never reach the
+    // dispatched state where it's otherwise editable). Optional and nullable.
+    let appointment_date = null;
+    if (req.body.appointment_date != null && String(req.body.appointment_date).trim() !== '') {
+      appointment_date = String(req.body.appointment_date).trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(appointment_date)) {
+        return res.status(400).json({ message: 'Invalid appointment_date format (expected YYYY-MM-DD)' });
+      }
+    }
+
     const v = await lookupActiveVendor(vendor);
     if (!v || !v.is_active) {
       return res.status(400).json({ message: 'Unknown vendor. Add it under Configurations first.' });
@@ -260,10 +270,11 @@ async function create(req, res, next) {
         await tx.execute({
           sql: `UPDATE marketplace_pos
                 SET po_date = ?, po_expiry_date = ?, city = ?, party_name = ?,
+                    appointment_date = COALESCE(?, appointment_date),
                     status = CASE WHEN status = 'Deleted' THEN 'Open' ELSE status END,
                     updated_by = ?, updated_at = datetime('now')
                 WHERE po_id = ?`,
-          args: [po_date || null, po_expiry_date || null, city || null, cleanPartyName, req.user.id, poId],
+          args: [po_date || null, po_expiry_date || null, city || null, cleanPartyName, appointment_date, req.user.id, poId],
         });
       } else {
         isNew = true;
@@ -276,9 +287,9 @@ async function create(req, res, next) {
         poId = `${vendorPrefix(vendor)}${pad3(nextSeq)}`;
         await tx.execute({
           sql: `INSERT INTO marketplace_pos
-                (po_id, vendor, vendor_po_id, po_date, po_expiry_date, city, party_name, status, created_by, onboarded_by, updated_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`,
-          args: [poId, vendor, cleanVendorPoId, po_date || null, po_expiry_date || null, city || null, cleanPartyName, req.user.id, req.user.id, req.user.id],
+                (po_id, vendor, vendor_po_id, po_date, po_expiry_date, city, party_name, appointment_date, status, created_by, onboarded_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`,
+          args: [poId, vendor, cleanVendorPoId, po_date || null, po_expiry_date || null, city || null, cleanPartyName, appointment_date, req.user.id, req.user.id, req.user.id],
         });
       }
 

@@ -5,21 +5,25 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Build the shared "in scope" WHERE for not-yet-ordered POs, optionally bounded
 // by po_date. Returns { where, args } with `po` as the marketplace_pos alias.
-function scopeWhere({ po_date_from, po_date_to }) {
+function scopeWhere({ po_date_from, po_date_to, vendor }) {
   const conditions = ['po.procurement_batch_id IS NULL', "po.status <> 'Deleted'"];
   const args = [];
   if (po_date_from && DATE_RE.test(po_date_from)) { conditions.push('po.po_date >= ?'); args.push(po_date_from); }
   if (po_date_to && DATE_RE.test(po_date_to))     { conditions.push('po.po_date <= ?'); args.push(po_date_to); }
+  if (vendor) { conditions.push('po.vendor = ?'); args.push(vendor); }
   return { where: conditions.join(' AND '), args };
 }
 
 // Date-range WHERE over po_date only (no ordered filter) — the matrix shows
-// every PO in range, ordered or not. Returns { where, args }.
-function rangeWhere({ po_date_from, po_date_to }) {
+// every PO in range, ordered or not. An optional `vendor` narrows the matrix to
+// a single vendor's POs (the per-vendor tabs); omit it for the "All" master view.
+// Returns { where, args }.
+function rangeWhere({ po_date_from, po_date_to, vendor }) {
   const conditions = ["po.status <> 'Deleted'"];
   const args = [];
   if (po_date_from && DATE_RE.test(po_date_from)) { conditions.push('po.po_date >= ?'); args.push(po_date_from); }
   if (po_date_to && DATE_RE.test(po_date_to))     { conditions.push('po.po_date <= ?'); args.push(po_date_to); }
+  if (vendor) { conditions.push('po.vendor = ?'); args.push(vendor); }
   conditions.push('po.po_date IS NOT NULL');
   return { where: conditions.join(' AND '), args };
 }
@@ -126,11 +130,11 @@ async function getRequirements(req, res, next) {
 
 async function markOrdered(req, res, next) {
   try {
-    const { po_date_from, po_date_to, note } = req.body || {};
+    const { po_date_from, po_date_to, note, vendor } = req.body || {};
     if (po_date_from && !DATE_RE.test(po_date_from)) return res.status(400).json({ message: 'Invalid po_date_from (YYYY-MM-DD)' });
     if (po_date_to && !DATE_RE.test(po_date_to))     return res.status(400).json({ message: 'Invalid po_date_to (YYYY-MM-DD)' });
 
-    const { where, args } = scopeWhere({ po_date_from, po_date_to });
+    const { where, args } = scopeWhere({ po_date_from, po_date_to, vendor });
     const { rows: targets } = await db.execute({
       sql: `SELECT po.po_id FROM marketplace_pos po WHERE ${where}`,
       args,

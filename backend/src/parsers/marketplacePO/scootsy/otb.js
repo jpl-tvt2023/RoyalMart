@@ -94,21 +94,43 @@ async function parseScootsyOtb(buffer) {
     const item_code = head[1];
 
     // Description: any inline remainder from the head line, plus following text
-    // lines, until the 8-digit HSN that starts the numeric block.
+    // lines, until the numeric tail begins. The tail starts with an 8-digit HSN
+    // immediately followed by the qty and first amount (e.g. "62132000"+"20"+
+    // "299.00"...). pdf-parse sometimes glues this run onto the END of a
+    // description line (e.g. "Socks(16115999020199.00…"), so we detect the
+    // pattern ANYWHERE in the line, not just at its start — otherwise the desc
+    // loop overruns past the following rows' heads (which aren't 8 digits) and
+    // silently drops them.
+    const TAIL_START = /\d{8}\d+\.\d{2}/;
     const descParts = [];
     if (head[2] && head[2].trim()) descParts.push(head[2].trim());
     let j = i + 1;
-    while (j < bodyEnd && !/^\d{8}/.test(flatLines[j].replace(/\s/g, ''))) {
+    while (j < bodyEnd && !TAIL_START.test(flatLines[j].replace(/\s/g, ''))) {
       const t = flatLines[j].trim();
       if (t && !/^\d+$/.test(t)) descParts.push(t);
       j++;
     }
 
-    // Accumulate numeric-tail lines and try to parse after each append.
+    // Accumulate the numeric blob and try to parse after each append. The first
+    // tail line may carry a text prefix (glued), so start from the HSN run; later
+    // lines (multi-line tails) are appended whole while they stay numeric. A stray
+    // leading digit in the glued HSN is harmless — qty is validated via
+    // qty*unitBase≈taxable, and the item code comes from the head, not the HSN.
     let blob = '';
     let row = null;
-    while (j < bodyEnd && numericish(flatLines[j])) {
-      blob += flatLines[j].replace(/\s/g, '');
+    let firstTail = true;
+    while (j < bodyEnd) {
+      const stripped = flatLines[j].replace(/\s/g, '');
+      if (firstTail) {
+        const idx = stripped.search(TAIL_START);
+        if (idx === -1) break;
+        blob += stripped.slice(idx);
+        firstTail = false;
+      } else if (numericish(flatLines[j])) {
+        blob += stripped;
+      } else {
+        break;
+      }
       j++;
       row = parseRowFromBlob(blob);
       if (row) break;

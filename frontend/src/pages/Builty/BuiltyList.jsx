@@ -52,6 +52,7 @@ const COLUMNS = [
   { key: 'courier_name',   label: 'Courier' },
   { key: 'tracking_id',    label: 'Tracking ID' },
   { key: 'bill_no',        label: 'Bill no' },
+  { key: 'bill_date',      label: 'Bill Date' },
   { key: 'updated_at',     label: 'Last Updated' },
 ];
 
@@ -172,11 +173,18 @@ export default function BuiltyList() {
 
   const saveRow = async (po) => {
     const e = edits[po.po_id];
-    if (!e || !('bill_no' in e)) return;
+    if (!e || (!('bill_no' in e) && !('bill_date' in e))) return;
+    const billNo = (('bill_no' in e ? e.bill_no : po.bill_no) ?? '').trim();
+    const billDate = ('bill_date' in e ? e.bill_date : po.bill_date) ?? '';
+    if (billNo !== '' && !billDate) {
+      return toast.error('Bill date is required when setting a bill no');
+    }
     setSavingId(po.po_id);
     try {
-      const value = (e.bill_no ?? '').trim();
-      await updateOrderSummary(po.po_id, { bill_no: value === '' ? null : value });
+      await updateOrderSummary(po.po_id, {
+        bill_no: billNo === '' ? null : billNo,
+        bill_date: billNo === '' ? null : billDate,
+      });
       toast.success(`Saved ${po.po_id}`);
       cancelEdit(po.po_id);
       setConflict(null);
@@ -184,7 +192,7 @@ export default function BuiltyList() {
     } catch (err) {
       const data = err.response?.data;
       if (err.response?.status === 409 && data?.error === 'bill_no_duplicate') {
-        setConflict({ po, billNo: (e.bill_no ?? '').trim(), rows: data.conflicts || [] });
+        setConflict({ po, billNo, rows: data.conflicts || [] });
       } else if (err.response?.status === 400) {
         toast.error(data?.message || 'Invalid bill no');
       } else {
@@ -313,6 +321,7 @@ export default function BuiltyList() {
               ) : items.map(po => {
                 const dirty = isDirty(po);
                 const editBillNo = valueOf(po, 'bill_no') ?? '';
+                const editBillDate = valueOf(po, 'bill_date') ?? '';
                 const onKey = onCellKeyDown(po.po_id);
                 return (
                   <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? DIRTY_ROW : 'hover:bg-gray-50'}`}>
@@ -351,6 +360,22 @@ export default function BuiltyList() {
                                 />
                               ) : (
                                 <span className="text-gray-700 font-mono">{po.bill_no || '—'}</span>
+                              )}
+                            </td>
+                          );
+                        case 'bill_date':
+                          return (
+                            <td key={col.key} className="px-3 py-2">
+                              {canEdit ? (
+                                <input
+                                  type="date"
+                                  value={editBillDate}
+                                  onChange={e => setEdit(po.po_id, { bill_date: e.target.value })}
+                                  onKeyDown={onKey}
+                                  className={cellCls}
+                                />
+                              ) : (
+                                <span className="text-gray-700">{po.bill_date || '—'}</span>
                               )}
                             </td>
                           );

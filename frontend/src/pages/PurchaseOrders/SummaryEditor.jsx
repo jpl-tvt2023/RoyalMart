@@ -55,6 +55,11 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
         <Field label="Status">
           <input disabled value={value.status || 'Open'} className={`${inputCls} bg-gray-50 text-gray-600`} />
         </Field>
+        {value.vendor === 'Minutes' && (
+          <Field label="Appointment Date">
+            <input type="date" value={value.appointment_date || ''} onChange={e => set({ appointment_date: e.target.value })} className={inputCls} />
+          </Field>
+        )}
         {onboarderSlot}
       </div>
 
