@@ -42,6 +42,7 @@ export default function PurchaseOrderImport() {
         city: data.city || '',
         status: 'Open',
         party_name: data.party_name || '',
+        appointment_date: data.appointment_date || '',
         lines: data.lines || [],
       });
       setMode('pdf');
@@ -66,6 +67,7 @@ export default function PurchaseOrderImport() {
       city: '',
       status: 'Open',
       party_name: '',
+      appointment_date: '',
       lines: [{ line_no: 1, item_code: '', qty: 1 }],
     });
     setMode('manual');

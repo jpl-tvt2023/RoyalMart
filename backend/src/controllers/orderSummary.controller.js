@@ -4,7 +4,7 @@ const { userHasRole } = require('../services/userRoles.service');
 
 const ORDER_SUMMARY_FIELDS = [
   'office_poc', 'warehouse_poc', 'status', 'dispatch_date', 'courier_id', 'tracking_id',
-  'bill_no', 'appointment_date', 'asn', 'grn_status', 'grn_date', 'grn_qty', 'grn_number',
+  'bill_no', 'bill_date', 'appointment_date', 'asn', 'grn_status', 'grn_date', 'grn_qty', 'grn_number',
   'discrepancy_qty', 'discrepancy_number', 'note',
 ];
 const { buildPagination, buildOrderBy } = require('./marketplacePO.controller');
@@ -124,7 +124,7 @@ async function list(req, res, next) {
              p.city, p.status, p.dispatch_date,
              p.office_poc, p.warehouse_poc,
              p.courier_id, p.tracking_id,
-             p.party_name, p.bill_no,
+             p.party_name, p.bill_no, p.bill_date,
              p.appointment_date, p.asn, p.grn_status, p.grn_date,
              p.grn_qty, p.grn_number, p.discrepancy_qty, p.discrepancy_number,
              p.note,
@@ -343,6 +343,7 @@ async function updateOne(req, res, next) {
       }
     }
 
+    let nextBillDate           = current.bill_date;
     let nextAppointmentDate    = current.appointment_date;
     let nextAsn                = current.asn;
     let nextGrnStatus          = current.grn_status;
@@ -385,6 +386,7 @@ async function updateOne(req, res, next) {
     };
 
     try {
+      if (has('bill_date')) nextBillDate = parseDateField(req.body.bill_date, 'bill_date');
       if (has('appointment_date')) nextAppointmentDate = parseDateField(req.body.appointment_date, 'appointment_date');
       if (has('asn')) {
         const a = req.body.asn;
@@ -415,6 +417,13 @@ async function updateOne(req, res, next) {
       if (e.statusCode === 400) return res.status(400).json({ message: e.message });
       throw e;
     }
+
+    // Bill date is mandatory whenever a bill no is set (new or existing value).
+    if (nextBillNo && !nextBillDate) {
+      return res.status(400).json({ message: 'Bill date is required when setting a bill no' });
+    }
+    // Clearing the bill no clears its date too.
+    if (!nextBillNo) nextBillDate = null;
 
     if (nextGrnStatus === 'Delivered - GRN Received') {
       const { rows: qtyRows } = await db.execute({
@@ -462,14 +471,14 @@ async function updateOne(req, res, next) {
       await tx.execute({
         sql: `UPDATE marketplace_pos
               SET office_poc = ?, warehouse_poc = ?, status = ?, dispatch_date = ?,
-                  courier_id = ?, tracking_id = ?, bill_no = ?,
+                  courier_id = ?, tracking_id = ?, bill_no = ?, bill_date = ?,
                   appointment_date = ?, asn = ?, grn_status = ?, grn_date = ?,
                   grn_qty = ?, grn_number = ?, discrepancy_qty = ?, discrepancy_number = ?,
                   note = ?,
                   updated_by = ?, updated_at = datetime('now')
               WHERE po_id = ?`,
         args: [
-          officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, nextBillNo,
+          officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, nextBillNo, nextBillDate,
           nextAppointmentDate, nextAsn, nextGrnStatus, nextGrnDate,
           nextGrnQty, nextGrnNumber, nextDiscrepancyQty, nextDiscrepancyNumber,
           nextNote,
@@ -479,7 +488,7 @@ async function updateOne(req, res, next) {
       const changes = diffFields(current, {
         office_poc: officePoc, warehouse_poc: warehousePoc, status: nextStatus,
         dispatch_date: nextDispatchDate, courier_id: nextCourierId, tracking_id: nextTrackingId,
-        bill_no: nextBillNo, appointment_date: nextAppointmentDate, asn: nextAsn,
+        bill_no: nextBillNo, bill_date: nextBillDate, appointment_date: nextAppointmentDate, asn: nextAsn,
         grn_status: nextGrnStatus, grn_date: nextGrnDate, grn_qty: nextGrnQty,
         grn_number: nextGrnNumber, discrepancy_qty: nextDiscrepancyQty,
         discrepancy_number: nextDiscrepancyNumber, note: nextNote,
@@ -488,7 +497,7 @@ async function updateOne(req, res, next) {
         client: tx,
         userId: req.user.id,
         actionType: 'ORDER_SUMMARY_UPDATE',
-        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}, note=${nextNote ? '"' + nextNote.slice(0, 60) + (nextNote.length > 60 ? '…' : '') + '"' : '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
+        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}, bill_date=${nextBillDate || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}, note=${nextNote ? '"' + nextNote.slice(0, 60) + (nextNote.length > 60 ? '…' : '') + '"' : '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
         entityType: 'marketplace_po',
         entityRef: poId,
         changes,

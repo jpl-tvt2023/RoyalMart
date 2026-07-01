@@ -97,7 +97,7 @@ const seededVendorTabFromURL = (params) => {
 };
 
 const buildColumns = (vendorTab) => [
-  { key: 'po_date',             label: 'Builty Date' },
+  { key: 'dispatch_date',       label: 'Builty Date' },
   { key: 'tracking_id',         label: 'Tracking' },
   { key: 'appointment_date',    label: 'Appointment Date' },
   ...(vendorTab === 'Zepto' ? [{ key: 'asn', label: 'ASN' }] : []),
@@ -646,7 +646,7 @@ export default function GRNList() {
                   <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? DIRTY_ROW : 'hover:bg-gray-50'}`}>
                     {COLUMNS.map(col => {
                       switch (col.key) {
-                        case 'po_date':
+                        case 'dispatch_date':
                         case 'po_expiry_date':
                           return <td key={col.key} className="px-3 py-2 text-gray-700 whitespace-nowrap">{po[col.key] || '—'}</td>;
                         case 'tracking_id':
@@ -654,7 +654,7 @@ export default function GRNList() {
                         case 'appointment_date':
                           return (
                             <td key={col.key} className="px-3 py-2">
-                              {canEdit && dispatched ? (
+                              {canEdit && (dispatched || po.vendor === 'Minutes') ? (
                                 <input
                                   type="date"
                                   value={editAppt || ''}
