@@ -8,6 +8,7 @@ const canWrite = allowRoles(...ALL_ROLES);
 
 router.get('/defaults',       auth, canView,  c.getDefaults);
 router.get('/requirements',   auth, canView,  c.getRequirements);
+router.get('/vendor-counts',  auth, canView,  c.getVendorCounts);
 router.post('/mark-ordered',  auth, canWrite, c.markOrdered);
 router.get('/batches',        auth, canView,  c.listBatches);
 router.delete('/batches/:id', auth, canWrite, c.undoBatch);

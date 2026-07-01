@@ -10,7 +10,7 @@ import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Legend from '../../components/ui/Legend';
 import { useRBAC } from '../../hooks/useRBAC';
 import { formatDateTime } from '../../utils/formatters';
-import { getDefaults, getRequirements, markOrdered, listBatches, undoBatch } from '../../api/procurement.api';
+import { getDefaults, getRequirements, getVendorCounts, markOrdered, listBatches, undoBatch } from '../../api/procurement.api';
 import { listVendors } from '../../api/vendors.api';
 
 const isoLocal = (d) => {
@@ -37,6 +37,7 @@ export default function ProcurementPage() {
   const ALL_TAB = { key: 'All', label: 'All' };
   const [vendorTabs, setVendorTabs] = useState([ALL_TAB]);
   const [vendorTab, setVendorTab] = useState('All');
+  const [vendorCounts, setVendorCounts] = useState({}); // not-ordered PO count per vendor tab
   const [confirmMark, setConfirmMark] = useState(false);
   const [marking, setMarking] = useState(false);
 
@@ -64,19 +65,30 @@ export default function ProcurementPage() {
       .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Per-vendor tab badges: not-yet-ordered PO counts for the current date range.
+  const loadCounts = useCallback((f) => {
+    const params = {};
+    if (f.po_date_from) params.po_date_from = f.po_date_from;
+    if (f.po_date_to) params.po_date_to = f.po_date_to;
+    return getVendorCounts(params)
+      .then(res => setVendorCounts(res.counts || {}))
+      .catch(() => {});
+  }, []);
+
   // On mount: seed From from the server default (day after last ordered, else earliest), To = today.
   useEffect(() => {
     getDefaults()
       .then(d => {
         const f = { po_date_from: d.po_date_from || '', po_date_to: todayISO() };
         setFilters(f);
+        loadCounts(f);
         return load(f, 'All');
       })
-      .catch(() => { const f = { po_date_from: '', po_date_to: todayISO() }; setFilters(f); load(f, 'All'); });
-  }, [load]);
+      .catch(() => { const f = { po_date_from: '', po_date_to: todayISO() }; setFilters(f); loadCounts(f); load(f, 'All'); });
+  }, [load, loadCounts]);
 
-  const applyFilters = () => load(filters, vendorTab);
-  const clearFilters = () => { const f = { po_date_from: '', po_date_to: '' }; setFilters(f); load(f, vendorTab); };
+  const applyFilters = () => { load(filters, vendorTab); loadCounts(filters); };
+  const clearFilters = () => { const f = { po_date_from: '', po_date_to: '' }; setFilters(f); load(f, vendorTab); loadCounts(f); };
   const switchTab = (key) => { setVendorTab(key); load(filters, key); };
 
   const loadBatches = () => {
@@ -99,6 +111,7 @@ export default function ProcurementPage() {
       toast.success(`Marked ${r.po_count} PO${r.po_count !== 1 ? 's' : ''} as ordered`);
       setConfirmMark(false);
       load(filters, vendorTab);
+      loadCounts(filters);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to mark as ordered');
     } finally { setMarking(false); }
@@ -111,6 +124,7 @@ export default function ProcurementPage() {
       toast.success(`Returned ${r.po_count} PO${r.po_count !== 1 ? 's' : ''} to pending`);
       loadBatches();
       load(filters, vendorTab);
+      loadCounts(filters);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Undo failed');
     } finally { setUndoingId(null); }
@@ -174,7 +188,7 @@ export default function ProcurementPage() {
                 : 'border-transparent text-gray-500 hover:text-[#003049]'
             }`}
           >
-            {t.label}
+            {t.label} <span className="ml-1 text-gray-400">({vendorCounts[t.key] ?? 0})</span>
           </button>
         ))}
       </div>

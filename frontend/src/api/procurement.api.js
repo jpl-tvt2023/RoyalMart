@@ -10,6 +10,11 @@ export async function getRequirements(params = {}) {
   return data;
 }
 
+export async function getVendorCounts(params = {}) {
+  const { data } = await api.get('/procurement/vendor-counts', { params });
+  return data;
+}
+
 export async function markOrdered(payload) {
   const { data } = await api.post('/procurement/mark-ordered', payload);
   return data;
