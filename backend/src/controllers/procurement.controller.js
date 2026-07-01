@@ -128,6 +128,34 @@ async function getRequirements(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// Per-vendor count of not-yet-ordered POs in the date range (drives the vendor
+// tab badges). Vendor-agnostic scope so every tab shows its own count at once;
+// the "All" key is the grand total.
+async function getVendorCounts(req, res, next) {
+  try {
+    const { where, args } = scopeWhere({
+      po_date_from: req.query.po_date_from,
+      po_date_to: req.query.po_date_to,
+    });
+    const { rows } = await db.execute({
+      sql: `SELECT po.vendor AS vendor, COUNT(*) AS n
+            FROM marketplace_pos po
+            WHERE ${where} AND po.po_date IS NOT NULL
+            GROUP BY po.vendor`,
+      args,
+    });
+    const counts = {};
+    let all = 0;
+    for (const r of rows) {
+      const n = Number(r.n) || 0;
+      counts[r.vendor] = n;
+      all += n;
+    }
+    counts.All = all;
+    res.json({ counts });
+  } catch (err) { next(err); }
+}
+
 async function markOrdered(req, res, next) {
   try {
     const { po_date_from, po_date_to, note, vendor } = req.body || {};
@@ -218,4 +246,4 @@ async function undoBatch(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { getDefaults, getRequirements, markOrdered, listBatches, undoBatch };
+module.exports = { getDefaults, getRequirements, getVendorCounts, markOrdered, listBatches, undoBatch };
