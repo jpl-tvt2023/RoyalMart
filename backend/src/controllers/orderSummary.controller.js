@@ -168,7 +168,7 @@ async function updateOne(req, res, next) {
     const { poId } = req.params;
     const { rows: existing } = await db.execute({
       sql: `SELECT po_id, vendor, city, status, dispatch_date, office_poc, warehouse_poc,
-                   courier_id, tracking_id, bill_no,
+                   courier_id, tracking_id, bill_no, bill_date,
                    appointment_date, asn, grn_status, grn_date, grn_qty, grn_number,
                    discrepancy_qty, discrepancy_number, note
             FROM marketplace_pos WHERE po_id = ?`,
@@ -418,12 +418,17 @@ async function updateOne(req, res, next) {
       throw e;
     }
 
-    // Bill date is mandatory whenever a bill no is set (new or existing value).
-    if (nextBillNo && !nextBillDate) {
-      return res.status(400).json({ message: 'Bill date is required when setting a bill no' });
+    // Only enforce the bill rule when the request actually edits bill fields, so
+    // saves from other pages (e.g. Order Summary) that never touch bill_no/bill_date
+    // aren't rejected because of an existing bill_no in the DB.
+    if (has('bill_no') || has('bill_date')) {
+      // Bill date is mandatory whenever a bill no is set (new or existing value).
+      if (nextBillNo && !nextBillDate) {
+        return res.status(400).json({ message: 'Bill date is required when setting a bill no' });
+      }
+      // Clearing the bill no clears its date too.
+      if (!nextBillNo) nextBillDate = null;
     }
-    // Clearing the bill no clears its date too.
-    if (!nextBillNo) nextBillDate = null;
 
     if (nextGrnStatus === 'Delivered - GRN Received') {
       const { rows: qtyRows } = await db.execute({
