@@ -354,6 +354,15 @@ export default function Dashboard() {
 
           {canSeeGRN && (
             <section className="mt-6">
+              <h2 className="text-sm font-semibold text-[#003049] mb-2">Purchase Orders by Vendor</h2>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <PoStatusByVendorTable data={state.poStatusByVendor} vendors={grnVendors} navigate={navigate} />
+              </div>
+            </section>
+          )}
+
+          {canSeeGRN && (
+            <section className="mt-6">
               <h2 className="text-sm font-semibold text-[#003049] mb-2">GRN Appointment Summary</h2>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                 <GrnAppointmentTable title="Today" date={todayStr} rows={state.grnToday ?? []} navigate={navigate} vendors={grnVendors} />
@@ -368,15 +377,6 @@ export default function Dashboard() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                 <PocSummaryTable title="Office POC" rows={state.pocCounts?.office} pocParam="office_poc" navigate={navigate} />
                 <PocSummaryTable title="Warehouse POC" rows={state.pocCounts?.warehouse} pocParam="warehouse_poc" navigate={navigate} />
-              </div>
-            </section>
-          )}
-
-          {canSeeGRN && (
-            <section className="mt-6">
-              <h2 className="text-sm font-semibold text-[#003049] mb-2">Purchase Orders by Vendor</h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                <PoStatusByVendorTable data={state.poStatusByVendor} vendors={grnVendors} navigate={navigate} />
               </div>
             </section>
           )}
