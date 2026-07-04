@@ -8,6 +8,7 @@ import Button from '../../components/ui/Button';
 import { getPO, updatePO } from '../../api/marketplacePO.api';
 import { listCities } from '../../api/cities.api';
 import { sortByText } from '../../utils/sort';
+import { usesPickupDate } from '../../utils/pickupDate';
 
 export default function PurchaseOrderDetail() {
   const { poId } = useParams();
@@ -24,6 +25,7 @@ export default function PurchaseOrderDetail() {
         vendor_po_id: po.vendor_po_id || '',
         po_date: po.po_date || '',
         po_expiry_date: po.po_expiry_date || '',
+        pickup_date: po.pickup_date || '',
         appointment_date: po.appointment_date || '',
         city: po.city || '',
         lines: (po.lines || []).map(l => ({ ...l })),
@@ -53,9 +55,12 @@ export default function PurchaseOrderDetail() {
   };
   const removeLine = (idx) => set({ lines: lines.filter((_, i) => i !== idx) });
 
+  const isPickupVendor = usesPickupDate(form?.vendor);
+
   const handleSave = async () => {
     if (!form.vendor_po_id?.trim()) return toast.error('PO Number is required');
     if (!form.city) return toast.error('City is required');
+    if (isPickupVendor && !form.pickup_date) return toast.error(`Pickup date is required for ${form.vendor} POs`);
     if (!form.lines?.length) return toast.error('At least one line item is required');
     setSaving(true);
     try {
@@ -63,6 +68,7 @@ export default function PurchaseOrderDetail() {
         vendor_po_id: form.vendor_po_id,
         po_date: form.po_date,
         po_expiry_date: form.po_expiry_date,
+        pickup_date: form.pickup_date,
         city: form.city,
         lines: form.lines,
       });
@@ -74,8 +80,10 @@ export default function PurchaseOrderDetail() {
   };
 
   const downloadXLSX = () => {
-    const headerRow = ['POID', 'PO Number', 'City', 'PO Date', 'Exp Date'];
-    const valueRow = [poId, form.vendor_po_id || '', form.city || '', form.po_date || '', form.po_expiry_date || ''];
+    const dateLabel = isPickupVendor ? 'Pickup Date' : 'Exp Date';
+    const dateValue = (isPickupVendor ? form.pickup_date : form.po_expiry_date) || '';
+    const headerRow = ['POID', 'PO Number', 'City', 'PO Date', dateLabel];
+    const valueRow = [poId, form.vendor_po_id || '', form.city || '', form.po_date || '', dateValue];
     const countsHeader = ['Line Count', 'Total Quantity'];
     const countsValues = [lines.length, totalQty];
     const lineHeader = ['Line', 'Item Code', 'Internal Product ID', 'Qty'];
@@ -141,9 +149,15 @@ export default function PurchaseOrderDetail() {
               <Field label="PO Date">
                 <input type="date" value={form.po_date || ''} onChange={e => set({ po_date: e.target.value })} className={inputCls} />
               </Field>
-              <Field label="Exp Date">
-                <input type="date" value={form.po_expiry_date || ''} onChange={e => set({ po_expiry_date: e.target.value })} className={inputCls} />
-              </Field>
+              {isPickupVendor ? (
+                <Field label="Pickup Date">
+                  <input type="date" value={form.pickup_date || ''} onChange={e => set({ pickup_date: e.target.value })} className={inputCls} />
+                </Field>
+              ) : (
+                <Field label="Exp Date">
+                  <input type="date" value={form.po_expiry_date || ''} onChange={e => set({ po_expiry_date: e.target.value })} className={inputCls} />
+                </Field>
+              )}
               <Field label="Appointment Date">
                 <input disabled value={form.appointment_date || ''} className={`${inputCls} bg-gray-50 text-gray-600`} placeholder="Set on GRN screen" />
               </Field>

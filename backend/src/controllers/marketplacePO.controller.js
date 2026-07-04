@@ -4,6 +4,13 @@ const { parse, hasParser } = require('../parsers/marketplacePO');
 
 const VALID_STATUSES = ['Open', 'Closed'];
 
+// Vendors whose POs carry a pre-agreed pickup date instead of an expiry date.
+// For these the pickup date is mandatory at onboarding; every other vendor uses
+// po_expiry_date. Since the two are mutually exclusive per vendor,
+// COALESCE(pickup_date, po_expiry_date) yields the effective date for any PO.
+const PICKUP_DATE_VENDORS = ['Amazon', 'Flipkart'];
+const EFFECTIVE_EXPIRY_SQL = 'COALESCE(p.pickup_date, p.po_expiry_date)';
+
 function pad3(n) { return String(n).padStart(3, '0'); }
 function vendorPrefix(name) { return String(name || '').charAt(0).toUpperCase(); }
 
@@ -92,6 +99,8 @@ const PO_SORT_COLUMNS = {
   status:            'p.status',
   po_date:           'p.po_date',
   po_expiry_date:    'p.po_expiry_date',
+  pickup_date:       'p.pickup_date',
+  expiry_or_pickup:  EFFECTIVE_EXPIRY_SQL,
   updated_at:        'p.updated_at',
   onboarded_by_name: 'ob.name',
   updated_by_name:   'ub.name',
@@ -135,8 +144,10 @@ async function list(req, res, next) {
     if (city) { conditions.push('p.city = ?'); args.push(city); }
     if (po_date_from) { conditions.push('p.po_date >= ?'); args.push(po_date_from); }
     if (po_date_to)   { conditions.push('p.po_date <= ?'); args.push(po_date_to); }
-    if (po_expiry_date_from) { conditions.push('p.po_expiry_date >= ?'); args.push(po_expiry_date_from); }
-    if (po_expiry_date_to)   { conditions.push('p.po_expiry_date <= ?'); args.push(po_expiry_date_to); }
+    // Expiry filters run against the effective date so Amazon/Flipkart pickup
+    // dates are caught by the same "expiring/expired" queries as expiry dates.
+    if (po_expiry_date_from) { conditions.push(`${EFFECTIVE_EXPIRY_SQL} >= ?`); args.push(po_expiry_date_from); }
+    if (po_expiry_date_to)   { conditions.push(`${EFFECTIVE_EXPIRY_SQL} <= ?`); args.push(po_expiry_date_to); }
     if (status === 'Deleted') { conditions.push("p.status = 'Deleted'"); }
     else if (status && VALID_STATUSES.includes(status)) { conditions.push('p.status = ?'); args.push(status); }
     else { conditions.push("p.status <> 'Deleted'"); }
@@ -156,7 +167,8 @@ async function list(req, res, next) {
 
     const baseSelect = `
       SELECT p.po_id, p.vendor, p.vendor_po_id, p.po_date, p.expected_delivery_date,
-             p.po_expiry_date, p.city, p.status, p.onboarded_by, p.updated_by, p.created_at, p.updated_at,
+             p.po_expiry_date, p.pickup_date, ${EFFECTIVE_EXPIRY_SQL} AS expiry_or_pickup,
+             p.city, p.status, p.onboarded_by, p.updated_by, p.created_at, p.updated_at,
              u.name  AS created_by_name,
              ob.name AS onboarded_by_name,
              ub.name AS updated_by_name,
@@ -218,7 +230,7 @@ async function getOne(req, res, next) {
 }
 
 function validatePayload(body) {
-  const { vendor, vendor_po_id, po_date, po_expiry_date, lines } = body;
+  const { vendor, vendor_po_id, po_date, po_expiry_date, pickup_date, lines } = body;
   if (!vendor || !String(vendor).trim()) return 'Invalid vendor';
   if (!vendor_po_id || !String(vendor_po_id).trim()) return 'vendor_po_id is required';
   if (!Array.isArray(lines) || lines.length === 0) return 'At least one line item is required';
@@ -226,7 +238,7 @@ function validatePayload(body) {
     if (!ln.item_code || !String(ln.item_code).trim()) return 'Each line needs item_code';
     if (!Number.isFinite(Number(ln.qty)) || Number(ln.qty) <= 0) return 'Each line needs a positive qty';
   }
-  for (const d of [po_date, po_expiry_date]) {
+  for (const d of [po_date, po_expiry_date, pickup_date]) {
     if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return `Invalid date format: ${d}`;
   }
   return null;
@@ -238,6 +250,13 @@ async function create(req, res, next) {
     if (err) return res.status(400).json({ message: err });
     const { vendor, vendor_po_id, po_date, po_expiry_date, city, lines, party_name } = req.body;
     const cleanPartyName = party_name == null ? null : (String(party_name).trim() || null);
+
+    // Amazon/Flipkart carry a pickup date instead of an expiry date, and it is
+    // mandatory at onboarding. Other vendors keep pickup_date null.
+    const pickup_date = req.body.pickup_date ? String(req.body.pickup_date).trim() : null;
+    if (PICKUP_DATE_VENDORS.includes(vendor) && !pickup_date) {
+      return res.status(400).json({ message: `Pickup date is required for ${vendor} POs` });
+    }
 
     // Appointment date is set at onboarding for Minutes POs (which never reach the
     // dispatched state where it's otherwise editable). Optional and nullable.
@@ -269,12 +288,12 @@ async function create(req, res, next) {
         poId = existing[0].po_id;
         await tx.execute({
           sql: `UPDATE marketplace_pos
-                SET po_date = ?, po_expiry_date = ?, city = ?, party_name = ?,
+                SET po_date = ?, po_expiry_date = ?, pickup_date = ?, city = ?, party_name = ?,
                     appointment_date = COALESCE(?, appointment_date),
                     status = CASE WHEN status = 'Deleted' THEN 'Open' ELSE status END,
                     updated_by = ?, updated_at = datetime('now')
                 WHERE po_id = ?`,
-          args: [po_date || null, po_expiry_date || null, city || null, cleanPartyName, appointment_date, req.user.id, poId],
+          args: [po_date || null, po_expiry_date || null, pickup_date, city || null, cleanPartyName, appointment_date, req.user.id, poId],
         });
       } else {
         isNew = true;
@@ -287,9 +306,9 @@ async function create(req, res, next) {
         poId = `${vendorPrefix(vendor)}${pad3(nextSeq)}`;
         await tx.execute({
           sql: `INSERT INTO marketplace_pos
-                (po_id, vendor, vendor_po_id, po_date, po_expiry_date, city, party_name, appointment_date, status, created_by, onboarded_by, updated_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`,
-          args: [poId, vendor, cleanVendorPoId, po_date || null, po_expiry_date || null, city || null, cleanPartyName, appointment_date, req.user.id, req.user.id, req.user.id],
+                (po_id, vendor, vendor_po_id, po_date, po_expiry_date, pickup_date, city, party_name, appointment_date, status, created_by, onboarded_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`,
+          args: [poId, vendor, cleanVendorPoId, po_date || null, po_expiry_date || null, pickup_date, city || null, cleanPartyName, appointment_date, req.user.id, req.user.id, req.user.id],
         });
       }
 
@@ -325,21 +344,32 @@ async function update(req, res, next) {
   try {
     const { poId } = req.params;
     const { rows: existing } = await db.execute({
-      sql: 'SELECT vendor, vendor_po_id, po_date, po_expiry_date, city FROM marketplace_pos WHERE po_id = ?',
+      sql: 'SELECT vendor, vendor_po_id, po_date, po_expiry_date, pickup_date, city FROM marketplace_pos WHERE po_id = ?',
       args: [poId],
     });
     if (!existing.length) return res.status(404).json({ message: 'PO not found' });
+
+    // pickup_date is only editable for pickup-date vendors; for others it stays
+    // null. When the field is present in the request use it (allowing null-out
+    // for the wrong vendor); otherwise preserve the existing value.
+    const nextPickupDate = 'pickup_date' in req.body
+      ? (req.body.pickup_date ? String(req.body.pickup_date).trim() : null)
+      : existing[0].pickup_date;
 
     const body = {
       vendor: existing[0].vendor,
       vendor_po_id: req.body.vendor_po_id || existing[0].vendor_po_id,
       po_date: req.body.po_date,
       po_expiry_date: req.body.po_expiry_date,
+      pickup_date: nextPickupDate,
       city: req.body.city,
       lines: req.body.lines,
     };
     const err = validatePayload(body);
     if (err) return res.status(400).json({ message: err });
+    if (PICKUP_DATE_VENDORS.includes(existing[0].vendor) && !nextPickupDate) {
+      return res.status(400).json({ message: `Pickup date is required for ${existing[0].vendor} POs` });
+    }
 
     // vendor_po_id is now editable; guard the UNIQUE(vendor, vendor_po_id)
     // constraint with a friendly message instead of a raw 500.
@@ -371,13 +401,14 @@ async function update(req, res, next) {
     try {
       await tx.execute({
         sql: `UPDATE marketplace_pos
-              SET vendor_po_id = ?, po_date = ?, po_expiry_date = ?, city = ?,
+              SET vendor_po_id = ?, po_date = ?, po_expiry_date = ?, pickup_date = ?, city = ?,
                   updated_by = ?, updated_at = datetime('now')
               WHERE po_id = ?`,
         args: [
           String(body.vendor_po_id).trim(),
           body.po_date || null,
           body.po_expiry_date || null,
+          body.pickup_date || null,
           body.city || null,
           req.user.id,
           poId,
@@ -398,7 +429,7 @@ async function update(req, res, next) {
           args: [poId, Number(ln.line_no) || idx + 1, String(ln.item_code).trim(), ln.item_desc || null, Math.trunc(Number(ln.qty))],
         });
       }
-      const changes = diffFields(existing[0], body, ['vendor_po_id', 'po_date', 'po_expiry_date', 'city']);
+      const changes = diffFields(existing[0], body, ['vendor_po_id', 'po_date', 'po_expiry_date', 'pickup_date', 'city']);
       await logAction({
         client: tx,
         userId: req.user.id,
@@ -459,4 +490,30 @@ async function restore(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { parsePreview, list, getOne, create, update, remove, restore, buildPagination, buildOrderBy };
+// Per-vendor PO counts split by status (Open / Closed / Deleted) for the
+// Dashboard matrix. Unlike the Order Summary counts this includes Deleted, so it
+// lives here rather than in orderSummary.controller.
+async function statusCountsByVendor(req, res, next) {
+  try {
+    const { rows } = await db.execute(
+      `SELECT vendor, status, COUNT(*) AS n
+       FROM marketplace_pos
+       GROUP BY vendor, status`
+    );
+    const byVendor = new Map();
+    const totals = { open: 0, closed: 0, deleted: 0 };
+    const bucket = (status) =>
+      status === 'Open' ? 'open' : status === 'Closed' ? 'closed' : status === 'Deleted' ? 'deleted' : null;
+    for (const r of rows) {
+      const key = bucket(r.status);
+      if (!key) continue;
+      if (!byVendor.has(r.vendor)) byVendor.set(r.vendor, { vendor: r.vendor, open: 0, closed: 0, deleted: 0 });
+      const n = Number(r.n) || 0;
+      byVendor.get(r.vendor)[key] += n;
+      totals[key] += n;
+    }
+    res.json({ rows: Array.from(byVendor.values()), totals });
+  } catch (err) { next(err); }
+}
+
+module.exports = { parsePreview, list, getOne, create, update, remove, restore, statusCountsByVendor, buildPagination, buildOrderBy };

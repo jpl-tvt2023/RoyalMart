@@ -13,6 +13,7 @@ import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { formatDateTime } from '../../utils/formatters';
 import { sortByText } from '../../utils/sort';
+import { effectiveExpiry } from '../../utils/pickupDate';
 
 const STATUS_COLORS = { Open: 'blue', Closed: 'green', Deleted: 'gray' };
 
@@ -40,17 +41,20 @@ const COLUMNS = [
   { key: 'status', label: 'Status' },
   { key: 'onboarded_by_name', label: 'Onboarded By' },
   { key: 'po_date', label: 'PO Date' },
-  { key: 'po_expiry_date', label: 'Expiry' },
+  { key: 'expiry_or_pickup', label: 'Expiry/Pickup Date' },
   { key: 'line_count', label: 'Line Item' },
   { key: 'total_qty', label: 'Total Qty' },
   { key: 'updated_at', label: 'Last Updated' },
 ];
 
 function expiryTone(po) {
-  if (!po.po_expiry_date) return null;
+  // Amazon/Flipkart carry a pickup date instead of an expiry; both feed the same
+  // "expired/soon" highlighting via the effective date.
+  const eff = effectiveExpiry(po);
+  if (!eff) return null;
   if (po.status === 'Closed') return null;
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const exp = new Date(po.po_expiry_date); exp.setHours(0, 0, 0, 0);
+  const exp = new Date(eff); exp.setHours(0, 0, 0, 0);
   const days = Math.round((exp - today) / 86400000);
   if (days < 0) return 'expired';
   if (days <= 2) return 'soon';
@@ -64,8 +68,8 @@ const TONE_ROW = {
 
 // Derived from TONE_ROW (base colour only) so the legend never drifts from the rows.
 const EXPIRY_LEGEND = [
-  { swatch: TONE_ROW.expired.split(' ')[0], label: 'PO expired' },
-  { swatch: TONE_ROW.soon.split(' ')[0], label: 'Expiring soon (≤2 days)' },
+  { swatch: TONE_ROW.expired.split(' ')[0], label: 'Expiry/pickup passed' },
+  { swatch: TONE_ROW.soon.split(' ')[0], label: 'Expiry/pickup soon (≤2 days)' },
 ];
 
 export default function PurchaseOrdersList() {
@@ -234,11 +238,11 @@ export default function PurchaseOrdersList() {
             <input type="date" value={filters.po_date_to} onChange={e => setFilter('po_date_to', e.target.value)} className={inputCls} />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">PO Expiry From</label>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Expiry/Pickup From</label>
             <input type="date" value={filters.po_expiry_date_from} onChange={e => setFilter('po_expiry_date_from', e.target.value)} className={inputCls} />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">PO Expiry To</label>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Expiry/Pickup To</label>
             <input type="date" value={filters.po_expiry_date_to} onChange={e => setFilter('po_expiry_date_to', e.target.value)} className={inputCls} />
           </div>
         </div>
@@ -286,7 +290,7 @@ export default function PurchaseOrdersList() {
                   <td className="px-4 py-3"><Badge color={STATUS_COLORS[po.status] || 'gray'}>{po.status || 'Open'}</Badge></td>
                   <td className="px-4 py-3 text-gray-600">{po.onboarded_by_name || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{po.po_date || '—'}</td>
-                  <td className="px-4 py-3 text-gray-600">{po.po_expiry_date || '—'}</td>
+                  <td className="px-4 py-3 text-gray-600">{effectiveExpiry(po) || '—'}</td>
                   <td className="px-4 py-3 font-semibold text-gray-800">{po.line_count}</td>
                   <td className="px-4 py-3 font-semibold text-gray-800">{po.total_qty ?? 0}</td>
                   <td className="px-4 py-3 whitespace-nowrap">

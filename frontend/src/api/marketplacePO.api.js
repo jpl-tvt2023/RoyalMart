@@ -37,3 +37,8 @@ export async function restorePO(poId) {
   const { data } = await api.post(`/marketplace-pos/${poId}/restore`);
   return data;
 }
+
+export async function getPoStatusCountsByVendor() {
+  const { data } = await api.get('/marketplace-pos/status-counts-by-vendor');
+  return data;
+}

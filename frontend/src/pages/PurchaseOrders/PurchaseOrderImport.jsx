@@ -9,6 +9,7 @@ import SummaryEditor from './SummaryEditor';
 import { parsePreview, commitPO } from '../../api/marketplacePO.api';
 import { listVendors } from '../../api/vendors.api';
 import { sortByText } from '../../utils/sort';
+import { usesPickupDate } from '../../utils/pickupDate';
 
 export default function PurchaseOrderImport() {
   const navigate = useNavigate();
@@ -39,6 +40,7 @@ export default function PurchaseOrderImport() {
         vendor_po_id: data.vendor_po_id || '',
         po_date: data.po_date || '',
         po_expiry_date: data.po_expiry_date || '',
+        pickup_date: data.pickup_date || '',
         city: data.city || '',
         status: 'Open',
         party_name: data.party_name || '',
@@ -64,6 +66,7 @@ export default function PurchaseOrderImport() {
       vendor_po_id: '',
       po_date: '',
       po_expiry_date: '',
+      pickup_date: '',
       city: '',
       status: 'Open',
       party_name: '',
@@ -76,6 +79,7 @@ export default function PurchaseOrderImport() {
   const handleApprove = async () => {
     if (!summary.vendor_po_id) return toast.error('Vendor PO No. is required');
     if (!summary.city) return toast.error('City is required');
+    if (usesPickupDate(summary.vendor) && !summary.pickup_date) return toast.error(`Pickup date is required for ${summary.vendor} POs`);
     if (!summary.lines?.length) return toast.error('At least one line item is required');
     setCommitting(true);
     try {

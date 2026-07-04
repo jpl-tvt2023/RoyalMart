@@ -31,6 +31,8 @@ const SORT_COLUMNS = {
   status:              'p.status',
   po_date:             'p.po_date',
   po_expiry_date:      'p.po_expiry_date',
+  pickup_date:         'p.pickup_date',
+  expiry_or_pickup:    'COALESCE(p.pickup_date, p.po_expiry_date)',
   dispatch_date:       'p.dispatch_date',
   tracking_id:         'p.tracking_id',
   bill_no:             'p.bill_no',
@@ -121,6 +123,7 @@ async function list(req, res, next) {
 
     const baseSelect = `
       SELECT p.po_id, p.vendor, p.vendor_po_id, p.po_date, p.po_expiry_date,
+             p.pickup_date, COALESCE(p.pickup_date, p.po_expiry_date) AS expiry_or_pickup,
              p.city, p.status, p.dispatch_date,
              p.office_poc, p.warehouse_poc,
              p.courier_id, p.tracking_id,

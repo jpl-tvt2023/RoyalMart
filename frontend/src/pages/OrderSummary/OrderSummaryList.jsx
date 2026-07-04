@@ -325,7 +325,9 @@ export default function OrderSummaryList() {
         const v = r[c.key];
         return v == null ? '' : v;
       }));
-      const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
+      // Lead with the headline total quantity, then a spacer, then the table.
+      const totalQty = rows.reduce((s, r) => s + (Number(r.total_qty) || 0), 0);
+      const ws = XLSX.utils.aoa_to_sheet([['Total Quantity', totalQty], [], headers, ...data]);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Order Summary');
       const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);

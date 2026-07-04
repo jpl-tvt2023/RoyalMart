@@ -13,6 +13,7 @@ import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { sortByText } from '../../utils/sort';
+import { usesPickupDate } from '../../utils/pickupDate';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 
 // Row highlight for rows with edits not yet saved (single source for row + legend).
@@ -107,7 +108,7 @@ const buildColumns = (vendorTab) => [
   { key: 'vendor_po_id',        label: 'PO Number' },
   { key: 'total_qty',           label: 'PO Qty' },
   { key: 'city',                label: 'City' },
-  { key: 'po_expiry_date',      label: 'Expiry Date' },
+  { key: 'expiry_or_pickup',    label: usesPickupDate(vendorTab) ? 'Pickup Date' : 'Expiry Date' },
   { key: 'grn_date',            label: 'GRN Date' },
   { key: 'grn_qty',             label: 'GRN Qty' },
   { key: 'grn_number',          label: 'GRN Number' },
@@ -647,7 +648,7 @@ export default function GRNList() {
                     {COLUMNS.map(col => {
                       switch (col.key) {
                         case 'dispatch_date':
-                        case 'po_expiry_date':
+                        case 'expiry_or_pickup':
                           return <td key={col.key} className="px-3 py-2 text-gray-700 whitespace-nowrap">{po[col.key] || '—'}</td>;
                         case 'tracking_id':
                           return <td key={col.key} className="px-3 py-2 text-gray-700 font-mono whitespace-nowrap">{po.tracking_id || '—'}</td>;

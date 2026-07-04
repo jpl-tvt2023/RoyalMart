@@ -3,6 +3,7 @@ import { Trash2, Plus } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import { listCities } from '../../api/cities.api';
 import { sortByText } from '../../utils/sort';
+import { usesPickupDate } from '../../utils/pickupDate';
 
 export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true, onboarderSlot = null }) {
   const [cities, setCities] = useState([]);
@@ -43,9 +44,15 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
         <Field label="PO Date">
           <input type="date" value={value.po_date || ''} onChange={e => set({ po_date: e.target.value })} className={inputCls} />
         </Field>
-        <Field label="PO Expiry Date">
-          <input type="date" value={value.po_expiry_date || ''} onChange={e => set({ po_expiry_date: e.target.value })} className={inputCls} />
-        </Field>
+        {usesPickupDate(value.vendor) ? (
+          <Field label="Pickup Date">
+            <input type="date" value={value.pickup_date || ''} onChange={e => set({ pickup_date: e.target.value })} className={inputCls} />
+          </Field>
+        ) : (
+          <Field label="PO Expiry Date">
+            <input type="date" value={value.po_expiry_date || ''} onChange={e => set({ po_expiry_date: e.target.value })} className={inputCls} />
+          </Field>
+        )}
         <Field label="City">
           <select value={value.city || ''} onChange={e => set({ city: e.target.value })} className={inputCls}>
             <option value="">Select city...</option>

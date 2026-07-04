@@ -26,11 +26,13 @@ async function parseFlipkart(buffer) {
   const { text } = await pdf(buffer);
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-  // Two document variants ship under the same layout: a Stock Transfer Invoice
-  // ("Invoice Id"/"Invoice Date") and a Stock Transfer Note ("DC No"/"DC Date").
-  // Both header values are unique document keys.
-  const vendor_po_id = labelValue(lines, 'Invoice Id') || labelValue(lines, 'DC No');
-  if (!vendor_po_id) throw new Error('Could not find Invoice Id or DC No in Flipkart Stock Transfer PDF');
+  // Flipkart POs are keyed on the Consignment Note No — the identifier both
+  // parties agree on for the shipment. The label sits glued to its value like the
+  // others (e.g. "Consignment Note No:204536267").
+  const vendor_po_id = labelValue(lines, 'Consignment Note No')
+                    || labelValue(lines, 'Consignment Note Number')
+                    || labelValue(lines, 'Consignment No');
+  if (!vendor_po_id) throw new Error('Could not find Consignment Note No in Flipkart Stock Transfer PDF');
 
   const po_date = parseIndianDate(labelValue(lines, 'Invoice Date') || labelValue(lines, 'DC Date'));
 

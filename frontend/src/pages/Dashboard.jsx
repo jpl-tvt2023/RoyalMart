@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import AppShell from '../components/layout/AppShell';
 import Legend from '../components/ui/Legend';
-import { listPOs } from '../api/marketplacePO.api';
+import { listPOs, getPoStatusCountsByVendor } from '../api/marketplacePO.api';
 import { listOrderSummary, getGrnAppointmentsByDate, getOrderSummaryCountsByPoc } from '../api/orderSummary.api';
 import { listVendors } from '../api/vendors.api';
 import { ClipboardList, Truck, CalendarClock } from 'lucide-react';
@@ -188,6 +188,67 @@ function PocSummaryTable({ title, rows, pocParam, navigate }) {
   );
 }
 
+function PoStatusByVendorTable({ data, vendors, navigate }) {
+  const byVendor = Object.fromEntries((data?.rows || []).map(r => [r.vendor, r]));
+  const fullRows = (vendors || []).map(v => byVendor[v] || { vendor: v, open: 0, closed: 0, deleted: 0 });
+  const totals = fullRows.reduce(
+    (acc, r) => ({
+      open:    acc.open + Number(r.open || 0),
+      closed:  acc.closed + Number(r.closed || 0),
+      deleted: acc.deleted + Number(r.deleted || 0),
+    }),
+    { open: 0, closed: 0, deleted: 0 }
+  );
+  const goTo = (vendor, status) => {
+    navigate(`/purchase-orders?${new URLSearchParams({ vendor, status }).toString()}`);
+  };
+  const Cell = ({ vendor, status, value, className }) => (
+    <td
+      onClick={() => goTo(vendor, status)}
+      className={`px-2 py-1.5 font-semibold cursor-pointer hover:underline ${className}`}
+    >
+      {value}
+    </td>
+  );
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-3 py-2 border-b border-gray-100 text-xs font-medium text-[#003049]">
+        PO Status by Vendor
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-600">Vendor</th>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-600">Open</th>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-600">Closed</th>
+              <th className="px-2 py-1.5 text-left font-semibold text-gray-600">Deleted</th>
+            </tr>
+          </thead>
+          <tbody>
+            {fullRows.map(r => (
+              <tr key={r.vendor} className="border-t border-gray-100 hover:bg-gray-50">
+                <td className="px-2 py-1.5">{r.vendor}</td>
+                <Cell vendor={r.vendor} status="Open"    value={Number(r.open || 0)}    className="text-[#003049]" />
+                <Cell vendor={r.vendor} status="Closed"  value={Number(r.closed || 0)}  className="text-green-700" />
+                <Cell vendor={r.vendor} status="Deleted" value={Number(r.deleted || 0)} className="text-gray-500" />
+              </tr>
+            ))}
+          </tbody>
+          <tfoot className="bg-gray-50">
+            <tr className="border-t border-gray-200">
+              <td className="px-2 py-1.5 font-semibold text-[#003049]">Total</td>
+              <td className="px-2 py-1.5 font-bold text-[#003049]">{totals.open}</td>
+              <td className="px-2 py-1.5 font-bold text-green-700">{totals.closed}</td>
+              <td className="px-2 py-1.5 font-bold text-gray-500">{totals.deleted}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -220,6 +281,7 @@ export default function Dashboard() {
       calls.push(getGrnAppointmentsByDate(todayStr).then(r => ['grnToday', r.rows || []]).catch(() => ['grnToday', []]));
       calls.push(getGrnAppointmentsByDate(yestStr).then(r => ['grnYesterday', r.rows || []]).catch(() => ['grnYesterday', []]));
       calls.push(getOrderSummaryCountsByPoc().then(r => ['pocCounts', r]).catch(() => ['pocCounts', { office: [], warehouse: [] }]));
+      calls.push(getPoStatusCountsByVendor().then(r => ['poStatusByVendor', r]).catch(() => ['poStatusByVendor', { rows: [], totals: { open: 0, closed: 0, deleted: 0 } }]));
     }
     if (canSeeExpiry) {
       calls.push(listPOs({ status: 'Open', po_expiry_date_to: expiredToStr, page: 1, page_size: 1 }).then(r => ['expired', r.total ?? 0]).catch(() => ['expired', 0]));
@@ -306,6 +368,15 @@ export default function Dashboard() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                 <PocSummaryTable title="Office POC" rows={state.pocCounts?.office} pocParam="office_poc" navigate={navigate} />
                 <PocSummaryTable title="Warehouse POC" rows={state.pocCounts?.warehouse} pocParam="warehouse_poc" navigate={navigate} />
+              </div>
+            </section>
+          )}
+
+          {canSeeGRN && (
+            <section className="mt-6">
+              <h2 className="text-sm font-semibold text-[#003049] mb-2">Purchase Orders by Vendor</h2>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <PoStatusByVendorTable data={state.poStatusByVendor} vendors={grnVendors} navigate={navigate} />
               </div>
             </section>
           )}
