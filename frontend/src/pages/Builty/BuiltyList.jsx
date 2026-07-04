@@ -13,6 +13,7 @@ import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { formatDateTime } from '../../utils/formatters';
 import { sortByText } from '../../utils/sort';
+import { usesPickupDate } from '../../utils/pickupDate';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { useRBAC } from '../../hooks/useRBAC';
 
@@ -40,20 +41,23 @@ const defaultFilters = () => ({
   courier_id:   '',
 });
 
-const COLUMNS = [
-  { key: 'po_id',          label: 'PO ID' },
-  { key: 'po_date',        label: 'Order Date' },
-  { key: 'vendor',         label: 'Vendor' },
-  { key: 'party_name',     label: 'Party Name' },
-  { key: 'vendor_po_id',   label: 'PO No.' },
-  { key: 'total_qty',      label: 'Quantity' },
-  { key: 'city',           label: 'City' },
-  { key: 'dispatch_date',  label: 'Dispatch Date' },
-  { key: 'courier_name',   label: 'Courier' },
-  { key: 'tracking_id',    label: 'Tracking ID' },
-  { key: 'bill_no',        label: 'Bill no' },
-  { key: 'bill_date',      label: 'Bill Date' },
-  { key: 'updated_at',     label: 'Last Updated' },
+// Builty is always scoped to a single vendor tab, so the effective-date column
+// takes that vendor's term (Pickup for Amazon/Flipkart, Expiry otherwise).
+const buildColumns = (vendorTab) => [
+  { key: 'po_id',            label: 'PO ID' },
+  { key: 'po_date',          label: 'Order Date' },
+  { key: 'vendor',           label: 'Vendor' },
+  { key: 'party_name',       label: 'Party Name' },
+  { key: 'vendor_po_id',     label: 'PO No.' },
+  { key: 'total_qty',        label: 'Quantity' },
+  { key: 'city',             label: 'City' },
+  { key: 'expiry_or_pickup', label: usesPickupDate(vendorTab) ? 'Pickup Date' : 'Expiry Date' },
+  { key: 'dispatch_date',    label: 'Dispatch Date' },
+  { key: 'courier_name',     label: 'Courier' },
+  { key: 'tracking_id',      label: 'Tracking ID' },
+  { key: 'bill_no',          label: 'Bill no' },
+  { key: 'bill_date',        label: 'Bill Date' },
+  { key: 'updated_at',       label: 'Last Updated' },
 ];
 
 export default function BuiltyList() {
@@ -78,6 +82,8 @@ export default function BuiltyList() {
   const [savingId, setSavingId] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [conflict, setConflict] = useState(null);
+
+  const COLUMNS = buildColumns(vendorTab);
 
   const buildParams = useCallback((overrides = {}) => {
     const f = overrides.filters ?? filters;
@@ -332,6 +338,7 @@ export default function BuiltyList() {
                           return <td key={col.key} className="px-3 py-2 font-mono text-gray-700 whitespace-nowrap">{po[col.key] || '—'}</td>;
                         case 'po_date':
                         case 'dispatch_date':
+                        case 'expiry_or_pickup':
                           return <td key={col.key} className="px-3 py-2 text-gray-700 whitespace-nowrap">{po[col.key] || '—'}</td>;
                         case 'vendor':
                           return <td key={col.key} className="px-3 py-2 whitespace-nowrap">{po.vendor}</td>;

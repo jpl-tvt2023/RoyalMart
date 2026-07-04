@@ -15,6 +15,7 @@ import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { sortByText } from '../../utils/sort';
 import { formatDateTime } from '../../utils/formatters';
+import { usesPickupDate } from '../../utils/pickupDate';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { useRBAC } from '../../hooks/useRBAC';
 
@@ -43,23 +44,31 @@ const seededFiltersFromURL = (params) => {
   return base;
 };
 
-const COLUMNS_MASTER = [
-  { key: 'po_date',            label: 'Order Date' },
-  { key: 'po_id',              label: 'PO ID' },
-  { key: 'vendor',             label: 'Vendor' },
-  { key: 'vendor_po_id',       label: 'PO No.' },
-  { key: 'total_qty',          label: 'Quantity' },
-  { key: 'line_count',         label: 'SKU' },
-  { key: 'city',               label: 'City' },
-  { key: 'office_poc_name',    label: 'Office POC' },
-  { key: 'warehouse_poc_name', label: 'Warehouse POC' },
-  { key: 'status',             label: 'Status' },
-  { key: 'dispatch_date',      label: 'Dispatch Date' },
-  { key: 'courier_name',       label: 'Courier' },
-  { key: 'tracking_id',        label: 'Tracking ID' },
-  { key: 'updated_at',         label: 'Last Updated' },
-];
-const COLUMNS_VENDOR = COLUMNS_MASTER.filter(c => c.key !== 'vendor');
+// The effective-date column is labelled per tab: a vendor tab shows the vendor's
+// own date term, the Master tab shows the combined label.
+const expiryPickupLabel = (vendorTab) =>
+  vendorTab ? (usesPickupDate(vendorTab) ? 'Pickup Date' : 'Expiry Date') : 'Expiry/Pickup Date';
+
+const buildColumns = (vendorTab) => {
+  const cols = [
+    { key: 'po_date',            label: 'Order Date' },
+    { key: 'po_id',              label: 'PO ID' },
+    { key: 'vendor',             label: 'Vendor' },
+    { key: 'vendor_po_id',       label: 'PO No.' },
+    { key: 'total_qty',          label: 'Quantity' },
+    { key: 'line_count',         label: 'SKU' },
+    { key: 'city',               label: 'City' },
+    { key: 'expiry_or_pickup',   label: expiryPickupLabel(vendorTab) },
+    { key: 'office_poc_name',    label: 'Office POC' },
+    { key: 'warehouse_poc_name', label: 'Warehouse POC' },
+    { key: 'status',             label: 'Status' },
+    { key: 'dispatch_date',      label: 'Dispatch Date' },
+    { key: 'courier_name',       label: 'Courier' },
+    { key: 'tracking_id',        label: 'Tracking ID' },
+    { key: 'updated_at',         label: 'Last Updated' },
+  ];
+  return vendorTab ? cols.filter(c => c.key !== 'vendor') : cols;
+};
 
 export default function OrderSummaryList() {
   const { canEdit } = useRBAC();
@@ -94,7 +103,7 @@ export default function OrderSummaryList() {
   const [exporting, setExporting] = useState(false);
   const [conflict, setConflict] = useState(null);
 
-  const COLUMNS = vendorTab ? COLUMNS_VENDOR : COLUMNS_MASTER;
+  const COLUMNS = buildColumns(vendorTab);
 
   const buildParams = useCallback((overrides = {}) => {
     const f = overrides.filters ?? filters;
@@ -311,6 +320,7 @@ export default function OrderSummaryList() {
         { key: 'total_qty',          label: 'Quantity' },
         { key: 'line_count',         label: 'SKU' },
         { key: 'city',               label: 'City' },
+        { key: 'expiry_or_pickup',   label: 'Expiry/Pickup Date' },
         { key: 'office_poc_name',    label: 'Office POC' },
         { key: 'warehouse_poc_name', label: 'Warehouse POC' },
         { key: 'status',             label: 'Status' },
@@ -591,6 +601,8 @@ export default function OrderSummaryList() {
                           return <td key={col.key} className="px-3 py-2 font-semibold text-gray-800">{po[col.key] ?? 0}</td>;
                         case 'city':
                           return <td key={col.key} className="px-3 py-2 text-gray-600 whitespace-nowrap">{po.city || '—'}</td>;
+                        case 'expiry_or_pickup':
+                          return <td key={col.key} className="px-3 py-2 text-gray-600 whitespace-nowrap">{po.expiry_or_pickup || '—'}</td>;
 
                         case 'office_poc_name':
                           return (
