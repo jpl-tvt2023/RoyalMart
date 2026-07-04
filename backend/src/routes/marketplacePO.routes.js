@@ -26,6 +26,8 @@ const guards = [auth, allowRoles(...ALL_ROLES)];
 
 router.post('/parse', ...guards, upload.single('file'), c.parsePreview);
 router.get('/',       ...guards, c.list);
+// Static path must precede the /:poId param route so it isn't captured as a PO id.
+router.get('/status-counts-by-vendor', ...guards, c.statusCountsByVendor);
 router.get('/:poId',  ...guards, c.getOne);
 router.post('/',      ...guards, c.create);
 router.patch('/:poId',...guards, c.update);
