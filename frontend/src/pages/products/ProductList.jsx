@@ -104,7 +104,7 @@ export default function ProductList() {
   return (
     <AppShell>
       <div className="mb-4">
-        <h1 className="text-2xl font-bold text-[#003049]">Products</h1>
+        <h1 className="text-2xl font-bold text-[#003049]">SKU Products</h1>
         <p className="text-gray-500 text-sm">Internal SKUs, their per-vendor product codes, and raw products</p>
       </div>
 

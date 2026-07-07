@@ -40,6 +40,7 @@ export default function ProcurementPage() {
   const [vendorCounts, setVendorCounts] = useState({}); // not-ordered PO count per vendor tab
   const [confirmMark, setConfirmMark] = useState(false);
   const [marking, setMarking] = useState(false);
+  const [selected, setSelected] = useState(new Set()); // po_ids checked for marking
 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [batches, setBatches] = useState([]);
@@ -53,7 +54,11 @@ export default function ProcurementPage() {
     if (f.po_date_to) params.po_date_to = f.po_date_to;
     if (vendor && vendor !== 'All') params.vendor = vendor;
     return getRequirements(params)
-      .then(setData)
+      .then((d) => {
+        setData(d);
+        // Fresh POs/scope — drop any prior selection so we never mark stale ids.
+        setSelected(new Set());
+      })
       .catch(() => toast.error('Failed to load procurement requirements'))
       .finally(() => setLoading(false));
   }, []);
@@ -87,6 +92,13 @@ export default function ProcurementPage() {
       .catch(() => { const f = { po_date_from: '', po_date_to: todayISO() }; setFilters(f); loadCounts(f); load(f, 'All'); });
   }, [load, loadCounts]);
 
+  const notOrderedPos = data.pos.filter(p => !p.ordered);
+  const allSelected = notOrderedPos.length > 0 && notOrderedPos.every(p => selected.has(p.po_id));
+  const toggleSelectAll = () =>
+    setSelected(allSelected ? new Set() : new Set(notOrderedPos.map(p => p.po_id)));
+  const toggleSelect = (poId) =>
+    setSelected(prev => { const n = new Set(prev); n.has(poId) ? n.delete(poId) : n.add(poId); return n; });
+
   const applyFilters = () => { load(filters, vendorTab); loadCounts(filters); };
   const clearFilters = () => { const f = { po_date_from: '', po_date_to: '' }; setFilters(f); load(f, vendorTab); loadCounts(f); };
   const switchTab = (key) => { setVendorTab(key); load(filters, key); };
@@ -104,6 +116,7 @@ export default function ProcurementPage() {
     setMarking(true);
     try {
       const r = await markOrdered({
+        po_ids: [...selected],
         po_date_from: filters.po_date_from || undefined,
         po_date_to: filters.po_date_to || undefined,
         vendor: vendorTab !== 'All' ? vendorTab : undefined,
@@ -166,7 +179,7 @@ export default function ProcurementPage() {
     <AppShell>
       <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[#003049]">Procurement</h1>
+          <h1 className="text-2xl font-bold text-[#003049]">Procurement Status</h1>
           <p className="text-gray-500 text-sm">Raw materials required per PO. Total counts only POs you haven&apos;t ordered for yet.</p>
         </div>
         <div className="flex gap-2">
@@ -208,7 +221,7 @@ export default function ProcurementPage() {
           <Button variant="ghost" onClick={clearFilters}>Clear</Button>
           <div className="ml-auto flex items-end">
             {canEdit && (
-              <Button onClick={() => setConfirmMark(true)} disabled={loading || data.po_count === 0}>
+              <Button onClick={() => setConfirmMark(true)} disabled={loading || selected.size === 0}>
                 <CheckCircle2 size={16} />Mark as ordered
               </Button>
             )}
@@ -218,8 +231,55 @@ export default function ProcurementPage() {
           <span className="font-semibold text-[#003049]">{pos.length}</span> PO{pos.length !== 1 ? 's' : ''} in range
           <span className="text-gray-400"> · </span>
           <span className="font-semibold text-[#003049]">{data.po_count}</span> still to order
+          <span className="text-gray-400"> · </span>
+          <span className="font-semibold text-[#003049]">{selected.size}</span> selected
         </div>
       </div>
+
+      {/* PO selection checklist — Mark as ordered acts only on checked POs */}
+      {canEdit && pos.length > 0 && (
+        <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-[#003049]">Select POs to mark as ordered</h2>
+            {notOrderedPos.length > 0 && (
+              <button type="button" onClick={toggleSelectAll} className="text-sm text-[#c1121f] hover:underline">
+                {allSelected ? 'Clear all' : 'Select all'}
+              </button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {pos.map(p => (
+              p.ordered ? (
+                <span
+                  key={p.po_id}
+                  className="inline-flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-sm text-green-800"
+                  title="Already marked as ordered"
+                >
+                  <span className="font-mono">{p.po_id}</span>
+                  <span className="text-[11px] opacity-70">{p.po_date || '—'} · {p.vendor}</span>
+                  <span className="text-[11px] font-medium">ordered</span>
+                </span>
+              ) : (
+                <label
+                  key={p.po_id}
+                  className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm cursor-pointer transition-colors ${
+                    selected.has(p.po_id) ? 'border-[#c1121f] bg-[#c1121f]/5 text-[#003049]' : 'border-gray-200 text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.has(p.po_id)}
+                    onChange={() => toggleSelect(p.po_id)}
+                    className="accent-[#c1121f]"
+                  />
+                  <span className="font-mono">{p.po_id}</span>
+                  <span className="text-[11px] text-gray-400">{p.po_date || '—'} · {p.vendor}</span>
+                </label>
+              )
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Unmapped warning */}
       {data.unmapped_line_count > 0 && (
@@ -306,7 +366,7 @@ export default function ProcurementPage() {
             </tbody>
           </table>
           {!loading && raw_products.length === 0 && (
-            <p className="text-center text-gray-400 py-8">No raw products yet — add them on the Products → Raw Products tab.</p>
+            <p className="text-center text-gray-400 py-8">No raw products yet — add them on the SKU Products → Raw Products tab.</p>
           )}
           {!loading && raw_products.length > 0 && pos.length === 0 && (
             <p className="text-center text-gray-400 py-8">No POs in the selected date range.</p>
@@ -319,7 +379,7 @@ export default function ProcurementPage() {
         onClose={() => setConfirmMark(false)}
         onConfirm={doMark}
         title="Mark POs as ordered"
-        message={`Mark ${data.po_count} not-yet-ordered PO${data.po_count !== 1 ? 's' : ''} in ${filters.po_date_from || '…'} – ${filters.po_date_to || '…'} as raw-ordered? They'll drop out of the Total (and the default view next time). You can undo this from Ordered history.`}
+        message={`Mark ${selected.size} selected PO${selected.size !== 1 ? 's' : ''} as raw-ordered? They'll drop out of the Total (and the default view next time). You can undo this from Ordered history.`}
         confirmLabel="Mark as ordered"
         loading={marking}
       />

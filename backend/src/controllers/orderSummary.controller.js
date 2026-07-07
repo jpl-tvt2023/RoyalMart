@@ -4,9 +4,15 @@ const { userHasRole } = require('../services/userRoles.service');
 
 const ORDER_SUMMARY_FIELDS = [
   'office_poc', 'warehouse_poc', 'status', 'dispatch_date', 'courier_id', 'tracking_id',
-  'bill_no', 'bill_date', 'appointment_date', 'asn', 'grn_status', 'grn_date', 'grn_qty', 'grn_number',
+  'bill_no', 'bill_date', 'appointment_date', 'asn', 'appointment_id', 'grn_status', 'grn_date', 'grn_qty', 'grn_number',
   'discrepancy_qty', 'discrepancy_number', 'note',
 ];
+
+// Vendors whose appointment carries an extra reference alongside the appointment
+// date: Zepto uses an ASN, Now/Blinkit use an Appointment ID. Whichever applies
+// becomes mandatory once an appointment date is set.
+const ASN_VENDORS = ['Zepto'];
+const APPOINTMENT_ID_VENDORS = ['Now', 'Blinkit'];
 const { buildPagination, buildOrderBy } = require('./marketplacePO.controller');
 
 const VALID_STATUSES = ['Open', 'Closed'];
@@ -128,7 +134,7 @@ async function list(req, res, next) {
              p.office_poc, p.warehouse_poc,
              p.courier_id, p.tracking_id,
              p.party_name, p.bill_no, p.bill_date,
-             p.appointment_date, p.asn, p.grn_status, p.grn_date,
+             p.appointment_date, p.asn, p.appointment_id, p.grn_status, p.grn_date,
              p.grn_qty, p.grn_number, p.discrepancy_qty, p.discrepancy_number,
              p.note,
              ${COMPUTED_GRN_STATUS_SQL} AS computed_grn_status,
@@ -172,7 +178,7 @@ async function updateOne(req, res, next) {
     const { rows: existing } = await db.execute({
       sql: `SELECT po_id, vendor, city, status, dispatch_date, office_poc, warehouse_poc,
                    courier_id, tracking_id, bill_no, bill_date,
-                   appointment_date, asn, grn_status, grn_date, grn_qty, grn_number,
+                   appointment_date, asn, appointment_id, grn_status, grn_date, grn_qty, grn_number,
                    discrepancy_qty, discrepancy_number, note
             FROM marketplace_pos WHERE po_id = ?`,
       args: [poId],
@@ -349,6 +355,7 @@ async function updateOne(req, res, next) {
     let nextBillDate           = current.bill_date;
     let nextAppointmentDate    = current.appointment_date;
     let nextAsn                = current.asn;
+    let nextAppointmentId      = current.appointment_id;
     let nextGrnStatus          = current.grn_status;
     let nextGrnDate            = current.grn_date;
     let nextGrnQty             = current.grn_qty;
@@ -395,6 +402,7 @@ async function updateOne(req, res, next) {
         const a = req.body.asn;
         nextAsn = (a == null || String(a).trim() === '') ? null : String(a).trim();
       }
+      if (has('appointment_id')) nextAppointmentId = parseAlphanumeric(req.body.appointment_id, 'appointment_id');
       if (has('grn_status')) {
         const g = req.body.grn_status;
         if (g == null || g === '') {
@@ -419,6 +427,21 @@ async function updateOne(req, res, next) {
     } catch (e) {
       if (e.statusCode === 400) return res.status(400).json({ message: e.message });
       throw e;
+    }
+
+    // Once an appointment date is set, the vendor's companion reference is
+    // mandatory: ASN for Zepto, Appointment ID for Now/Blinkit. Only enforce when
+    // this request actually touches an appointment field, so unrelated saves
+    // (other GRN fields, or Order Summary edits on the same endpoint) and legacy
+    // rows aren't rejected — mirrors the bill_no/bill_date rule below.
+    const touchesAppt = has('appointment_date') || has('asn') || has('appointment_id');
+    if (touchesAppt && nextAppointmentDate) {
+      if (ASN_VENDORS.includes(current.vendor) && !nextAsn) {
+        return res.status(400).json({ message: 'ASN is required once an appointment date is set' });
+      }
+      if (APPOINTMENT_ID_VENDORS.includes(current.vendor) && !nextAppointmentId) {
+        return res.status(400).json({ message: 'Appointment ID is required once an appointment date is set' });
+      }
     }
 
     // Only enforce the bill rule when the request actually edits bill fields, so
@@ -480,14 +503,14 @@ async function updateOne(req, res, next) {
         sql: `UPDATE marketplace_pos
               SET office_poc = ?, warehouse_poc = ?, status = ?, dispatch_date = ?,
                   courier_id = ?, tracking_id = ?, bill_no = ?, bill_date = ?,
-                  appointment_date = ?, asn = ?, grn_status = ?, grn_date = ?,
+                  appointment_date = ?, asn = ?, appointment_id = ?, grn_status = ?, grn_date = ?,
                   grn_qty = ?, grn_number = ?, discrepancy_qty = ?, discrepancy_number = ?,
                   note = ?,
                   updated_by = ?, updated_at = datetime('now')
               WHERE po_id = ?`,
         args: [
           officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, nextBillNo, nextBillDate,
-          nextAppointmentDate, nextAsn, nextGrnStatus, nextGrnDate,
+          nextAppointmentDate, nextAsn, nextAppointmentId, nextGrnStatus, nextGrnDate,
           nextGrnQty, nextGrnNumber, nextDiscrepancyQty, nextDiscrepancyNumber,
           nextNote,
           req.user.id, poId,
@@ -497,6 +520,7 @@ async function updateOne(req, res, next) {
         office_poc: officePoc, warehouse_poc: warehousePoc, status: nextStatus,
         dispatch_date: nextDispatchDate, courier_id: nextCourierId, tracking_id: nextTrackingId,
         bill_no: nextBillNo, bill_date: nextBillDate, appointment_date: nextAppointmentDate, asn: nextAsn,
+        appointment_id: nextAppointmentId,
         grn_status: nextGrnStatus, grn_date: nextGrnDate, grn_qty: nextGrnQty,
         grn_number: nextGrnNumber, discrepancy_qty: nextDiscrepancyQty,
         discrepancy_number: nextDiscrepancyNumber, note: nextNote,
@@ -505,7 +529,7 @@ async function updateOne(req, res, next) {
         client: tx,
         userId: req.user.id,
         actionType: 'ORDER_SUMMARY_UPDATE',
-        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}, bill_date=${nextBillDate || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}, note=${nextNote ? '"' + nextNote.slice(0, 60) + (nextNote.length > 60 ? '…' : '') + '"' : '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
+        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}, bill_date=${nextBillDate || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, appointment_id=${nextAppointmentId || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}, note=${nextNote ? '"' + nextNote.slice(0, 60) + (nextNote.length > 60 ? '…' : '') + '"' : '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
         entityType: 'marketplace_po',
         entityRef: poId,
         changes,

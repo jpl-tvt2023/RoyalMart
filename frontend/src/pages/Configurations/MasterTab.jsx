@@ -20,8 +20,10 @@ export default function MasterTab({
   listFn, createFn, updateFn, deleteFn,
   extraColumn,
 }) {
-  const { canAccess } = useRBAC();
-  const canAdmin = canAccess('Admin', 'Owner');
+  const { canEdit } = useRBAC();
+  // Master data is open to every logged-in user (add/edit/deactivate); all
+  // changes are audited and viewable via the per-row history.
+  const canAdmin = canEdit;
   // # + Name + Last Updated + Status, plus optional Parser and Actions columns.
   const colCount = 4 + (extraColumn ? 1 : 0) + (canAdmin ? 1 : 0);
 

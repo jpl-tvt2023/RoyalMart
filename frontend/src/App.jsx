@@ -17,6 +17,7 @@ import GRNList from './pages/GRN/GRNList';
 import ConfigurationsPage from './pages/Configurations/ConfigurationsPage';
 import ProductList from './pages/products/ProductList';
 import ProcurementPage from './pages/Procurement/ProcurementPage';
+import ComingSoon from './pages/ComingSoon';
 import { ALL_ROLES, ADMIN_ONLY } from './utils/roles';
 
 export default function App() {
@@ -80,7 +81,18 @@ export default function App() {
           } />
 
           <Route path="/configurations" element={
-            <ProtectedRoute roles={ADMIN_ONLY}><ConfigurationsPage /></ProtectedRoute>
+            <ProtectedRoute roles={ALL_ROLES}><ConfigurationsPage /></ProtectedRoute>
+          } />
+
+          {/* Scaffolded as placeholders, built next */}
+          <Route path="/packaging-items" element={
+            <ProtectedRoute roles={ALL_ROLES}><ComingSoon title="Packaging Items" /></ProtectedRoute>
+          } />
+          <Route path="/outbound/purchase-orders" element={
+            <ProtectedRoute roles={ALL_ROLES}><ComingSoon title="Outbound Purchase Orders" /></ProtectedRoute>
+          } />
+          <Route path="/outbound/vendors" element={
+            <ProtectedRoute roles={ALL_ROLES}><ComingSoon title="Outbound Vendors" /></ProtectedRoute>
           } />
 
           {/* Legacy routes redirect to current ones */}

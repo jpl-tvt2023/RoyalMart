@@ -1,17 +1,42 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Trash2, Plus } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import { listCities } from '../../api/cities.api';
+import { getVendorCodes } from '../../api/productVendorCodes.api';
 import { sortByText } from '../../utils/sort';
 import { usesPickupDate } from '../../utils/pickupDate';
 
-export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true, onboarderSlot = null }) {
+export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true, codePicker = false, onboarderSlot = null }) {
   const [cities, setCities] = useState([]);
   useEffect(() => {
     listCities()
       .then(rows => setCities(sortByText(rows.filter(c => c.is_active).map(c => c.name))))
       .catch(() => {});
   }, []);
+
+  // Manual onboarding: load this vendor's mapped codes so the Item Code cell can
+  // offer a type-ahead (`vendor_item_code - {sku_code}`) that resolves the SKU.
+  const vendor = value.vendor;
+  const [codeOptions, setCodeOptions] = useState([]);
+  const [codesLoaded, setCodesLoaded] = useState(false);
+  useEffect(() => {
+    if (!codePicker || !vendor) { setCodeOptions([]); setCodesLoaded(false); return; }
+    let alive = true;
+    setCodesLoaded(false);
+    getVendorCodes(vendor)
+      .then(res => {
+        if (!alive) return;
+        setCodeOptions((res.data || []).map(r => ({
+          vendor_item_code: String(r.vendor_item_code),
+          sku_code: r.sku_code,
+          product_id: r.product_id,
+        })));
+        setCodesLoaded(true);
+      })
+      .catch(() => { if (alive) { setCodeOptions([]); setCodesLoaded(true); } });
+    return () => { alive = false; };
+  }, [codePicker, vendor]);
+  const useCombobox = codePicker && codeOptions.length > 0;
   const set = (patch) => onChange({ ...value, ...patch });
   const lines = value.lines || [];
 
@@ -78,7 +103,7 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
           </h3>
           <Button type="button" variant="ghost" onClick={addLine}><Plus size={14} />Add Line</Button>
         </div>
-        <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
+        <div className={`${useCombobox ? 'overflow-visible' : 'overflow-x-auto'} bg-white border border-gray-200 rounded-lg`}>
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
@@ -94,7 +119,19 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
                 <tr key={idx} className="border-b border-gray-100">
                   <td className="px-3 py-2 text-gray-700">{idx + 1}</td>
                   <td className="px-3 py-2">
-                    <input value={ln.item_code || ''} onChange={e => updateLine(idx, { item_code: e.target.value })} className={cellCls} />
+                    {useCombobox ? (
+                      <ItemCodeCombobox
+                        value={ln.item_code || ''}
+                        options={codeOptions}
+                        onSelect={(o) => updateLine(idx, {
+                          item_code: o.vendor_item_code,
+                          internal_sku_code: o.sku_code,
+                          internal_product_id: o.product_id,
+                        })}
+                      />
+                    ) : (
+                      <input value={ln.item_code || ''} onChange={e => updateLine(idx, { item_code: e.target.value })} className={cellCls} />
+                    )}
                   </td>
                   <td className="px-3 py-2 text-gray-700 font-mono text-xs">
                     {ln.internal_sku_code || '—'}
@@ -113,7 +150,68 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
             </tbody>
           </table>
         </div>
+        {codePicker && codesLoaded && codeOptions.length === 0 && (
+          <p className="mt-2 text-xs text-amber-600">
+            No vendor mappings found for {vendor || 'this vendor'} — type the item code manually, or add mappings under Products → Vendor Mappings to enable code suggestions.
+          </p>
+        )}
       </div>
+    </div>
+  );
+}
+
+// Type-ahead for a manual PO line's Item Code, scoped to the vendor's mapped
+// codes. Typing filters by vendor code or SKU; picking a suggestion sets the
+// item code and (via onSelect) auto-fills the read-only Internal SKU cell.
+function ItemCodeCombobox({ value, options, onSelect }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
+
+  const q = (open ? query : value).trim().toLowerCase();
+  const matches = options.filter(o =>
+    !q ||
+    o.vendor_item_code.toLowerCase().includes(q) ||
+    (o.sku_code || '').toLowerCase().includes(q)
+  ).slice(0, 50);
+
+  const pick = (o) => { onSelect(o); setQuery(o.vendor_item_code); setOpen(false); };
+
+  return (
+    <div className="relative" ref={ref}>
+      <input
+        value={open ? query : (value || '')}
+        onFocus={() => { setQuery(value || ''); setOpen(true); }}
+        onChange={e => { setQuery(e.target.value); setOpen(true); }}
+        placeholder="Type to search codes…"
+        className={cellCls}
+      />
+      {open && (
+        <ul className="absolute z-30 left-0 right-0 mt-1 max-h-56 overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg text-sm">
+          {matches.length === 0 ? (
+            <li className="px-3 py-2 text-gray-400">No matching codes</li>
+          ) : matches.map(o => (
+            <li key={o.vendor_item_code}>
+              <button
+                type="button"
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => pick(o)}
+                className="w-full text-left px-3 py-1.5 hover:bg-gray-50"
+              >
+                <span className="font-mono">{o.vendor_item_code}</span>
+                <span className="text-gray-400"> - </span>
+                <span className="font-mono text-xs text-gray-600">{o.sku_code || '—'}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

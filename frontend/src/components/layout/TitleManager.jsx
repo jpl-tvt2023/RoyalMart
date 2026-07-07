@@ -11,8 +11,8 @@ const TITLES = [
   ['/force-reset', 'Reset Password'],
   ['/dashboard', null],
   ['/admin/users', 'User Management'],
-  ['/products', 'Products'],
-  ['/procurement', 'Procurement'],
+  ['/products', 'SKU Products'],
+  ['/procurement', 'Procurement Status'],
   ['/purchase-orders/new', 'Import PO'],
   ['/purchase-orders/:poId', (m) => `PO ${m.params.poId}`],
   ['/purchase-orders', 'Purchase Orders'],
@@ -20,6 +20,9 @@ const TITLES = [
   ['/builty', 'Builty'],
   ['/grn', 'GRN'],
   ['/configurations', 'Configurations'],
+  ['/packaging-items', 'Packaging Items'],
+  ['/outbound/purchase-orders', 'Outbound Purchase Orders'],
+  ['/outbound/vendors', 'Outbound Vendors'],
 ];
 
 function resolveTitle(pathname) {
