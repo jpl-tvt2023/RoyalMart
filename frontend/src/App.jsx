@@ -84,7 +84,10 @@ export default function App() {
             <ProtectedRoute roles={ALL_ROLES}><ConfigurationsPage /></ProtectedRoute>
           } />
 
-          {/* Outbound — scaffolded as placeholders, built next */}
+          {/* Scaffolded as placeholders, built next */}
+          <Route path="/packaging-items" element={
+            <ProtectedRoute roles={ALL_ROLES}><ComingSoon title="Packaging Items" /></ProtectedRoute>
+          } />
           <Route path="/outbound/purchase-orders" element={
             <ProtectedRoute roles={ALL_ROLES}><ComingSoon title="Outbound Purchase Orders" /></ProtectedRoute>
           } />

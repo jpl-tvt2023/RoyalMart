@@ -146,7 +146,7 @@ export default function ProcurementPage() {
   const exportXLSX = () => {
     const { pos, raw_products } = data;
     if (!raw_products.length) { toast('Nothing to export'); return; }
-    const header = ['Packaging Item', 'Total Required', ...pos.map(p => `${p.po_id}${p.ordered ? ' (ordered)' : ''}`)];
+    const header = ['Raw Product', 'Total Required', ...pos.map(p => `${p.po_id}${p.ordered ? ' (ordered)' : ''}`)];
     const body = raw_products.map(r => [
       r.name,
       r.total_required_qty,
@@ -180,7 +180,7 @@ export default function ProcurementPage() {
       <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[#003049]">Procurement Status</h1>
-          <p className="text-gray-500 text-sm">Packaging items required per PO. Total counts only POs you haven&apos;t ordered for yet.</p>
+          <p className="text-gray-500 text-sm">Raw materials required per PO. Total counts only POs you haven&apos;t ordered for yet.</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={exportXLSX} disabled={loading || raw_products.length === 0}><Download size={16} />Export</Button>
@@ -331,7 +331,7 @@ export default function ProcurementPage() {
           <table className="text-sm border-separate border-spacing-0">
             <thead>
               <tr className="bg-gray-50">
-                <th className={`${stickyNameHead} px-4 py-3 text-left font-semibold text-gray-600 border-b border-r border-gray-200 w-56`}>Packaging Item</th>
+                <th className={`${stickyNameHead} px-4 py-3 text-left font-semibold text-gray-600 border-b border-r border-gray-200 w-56`}>Raw Product</th>
                 <th className={`${stickyTotalHead} px-4 py-3 text-left font-semibold text-gray-600 border-b border-r border-gray-200 w-36`}>Total Required</th>
                 {pos.map(p => (
                   <th
@@ -366,7 +366,7 @@ export default function ProcurementPage() {
             </tbody>
           </table>
           {!loading && raw_products.length === 0 && (
-            <p className="text-center text-gray-400 py-8">No packaging items yet — add them on the SKU Products → Packaging Items tab.</p>
+            <p className="text-center text-gray-400 py-8">No raw products yet — add them on the SKU Products → Raw Products tab.</p>
           )}
           {!loading && raw_products.length > 0 && pos.length === 0 && (
             <p className="text-center text-gray-400 py-8">No POs in the selected date range.</p>

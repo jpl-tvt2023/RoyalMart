@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, ClipboardList, Package, Truck, ClipboardCheck,
   Tag, Settings, Users, SlidersHorizontal,
-  ShoppingCart, PackageSearch, PackageOpen, Send, Store,
+  ShoppingCart, PackageSearch, PackageOpen, Send, Store, Boxes,
 } from 'lucide-react';
 
 export const ROLES = {
@@ -98,7 +98,14 @@ export const NAV = [
         label: 'SKU Products',
         path: '/products',
         icon: Tag,
-        description: 'SKUs, packaging items & vendor mappings',
+        description: 'SKUs, raw products & vendor mappings',
+        roles: ALL_ROLES,
+      },
+      {
+        label: 'Packaging Items',
+        path: '/packaging-items',
+        icon: Boxes,
+        description: 'Packaging master (coming soon)',
         roles: ALL_ROLES,
       },
       {

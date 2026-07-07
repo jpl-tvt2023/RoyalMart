@@ -20,6 +20,7 @@ const TITLES = [
   ['/builty', 'Builty'],
   ['/grn', 'GRN'],
   ['/configurations', 'Configurations'],
+  ['/packaging-items', 'Packaging Items'],
   ['/outbound/purchase-orders', 'Outbound Purchase Orders'],
   ['/outbound/vendors', 'Outbound Vendors'],
 ];
