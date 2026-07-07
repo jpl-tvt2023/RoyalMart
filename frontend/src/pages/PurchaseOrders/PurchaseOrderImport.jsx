@@ -133,7 +133,7 @@ export default function PurchaseOrderImport() {
               ? 'Enter the PO details below, then approve to save.'
               : 'Review the parsed data below. Edit any field inline before approving. Rejecting discards this upload.'}
           </div>
-          <SummaryEditor value={summary} onChange={setSummary} showVendor readOnlyVendor={mode !== 'manual'} />
+          <SummaryEditor value={summary} onChange={setSummary} showVendor readOnlyVendor={mode !== 'manual'} codePicker={mode === 'manual'} />
           <div className="flex gap-3 justify-end">
             <Button variant="ghost" onClick={handleReject}><X size={16} />{mode === 'manual' ? 'Cancel' : 'Reject'}</Button>
             <Button onClick={handleApprove} loading={committing}><Check size={16} />{mode === 'manual' ? 'Save PO' : 'Approve & Save'}</Button>

@@ -97,11 +97,18 @@ const seededVendorTabFromURL = (params) => {
   return v ? v : 'Blinkit';
 };
 
+// Vendors whose appointment carries an extra reference next to the appointment
+// date: Zepto uses an ASN, Now/Blinkit use an Appointment ID. Whichever applies
+// is mandatory once an appointment date is set (enforced on save + in the API).
+const ASN_VENDORS = ['Zepto'];
+const APPOINTMENT_ID_VENDORS = ['Now', 'Blinkit'];
+
 const buildColumns = (vendorTab) => [
   { key: 'dispatch_date',       label: 'Builty Date' },
   { key: 'tracking_id',         label: 'Tracking' },
   { key: 'appointment_date',    label: 'Appointment Date' },
-  ...(vendorTab === 'Zepto' ? [{ key: 'asn', label: 'ASN' }] : []),
+  ...(ASN_VENDORS.includes(vendorTab) ? [{ key: 'asn', label: 'ASN' }] : []),
+  ...(APPOINTMENT_ID_VENDORS.includes(vendorTab) ? [{ key: 'appointment_id', label: 'Appointment ID' }] : []),
   { key: 'computed_grn_status', label: 'Status' },
   { key: 'courier_name',        label: 'Courier' },
   { key: 'po_id',               label: 'PO ID' },
@@ -437,6 +444,22 @@ export default function GRNList() {
     const nextDiscQty   = 'discrepancy_qty' in e ? e.discrepancy_qty : po.discrepancy_qty;
     const nextGrnNo     = 'grn_number' in e ? e.grn_number : po.grn_number;
     const nextDiscNo    = 'discrepancy_number' in e ? e.discrepancy_number : po.discrepancy_number;
+    const nextAppt      = 'appointment_date' in e ? e.appointment_date : po.appointment_date;
+    const nextAsn       = 'asn' in e ? e.asn : po.asn;
+    const nextApptId    = 'appointment_id' in e ? e.appointment_id : po.appointment_id;
+
+    // Once an appointment date is set, the vendor's companion reference is required —
+    // but only enforce when this save actually touches an appointment field, so
+    // unrelated edits on legacy rows (appointment date but no companion) still save.
+    const touchesAppt = 'appointment_date' in e || 'asn' in e || 'appointment_id' in e;
+    if (touchesAppt && String(nextAppt || '').trim()) {
+      if (ASN_VENDORS.includes(po.vendor) && !String(nextAsn || '').trim()) {
+        return toast.error('ASN is required once an appointment date is set');
+      }
+      if (APPOINTMENT_ID_VENDORS.includes(po.vendor) && !String(nextApptId || '').trim()) {
+        return toast.error('Appointment ID is required once an appointment date is set');
+      }
+    }
 
     if (nextGrnStatus === 'Delivered - GRN Received') {
       const poQty = Number(po.total_qty || 0);
@@ -466,6 +489,7 @@ export default function GRNList() {
       const cleanStr = (v) => v == null || String(v).trim() === '' ? null : String(v).trim();
       if ('appointment_date'   in e) payload.appointment_date   = cleanStr(e.appointment_date);
       if ('asn'                in e) payload.asn                = cleanStr(e.asn);
+      if ('appointment_id'     in e) payload.appointment_id     = cleanStr(e.appointment_id);
       if ('grn_status'         in e) payload.grn_status         = cleanStr(e.grn_status);
       if ('grn_date'           in e) payload.grn_date           = cleanStr(e.grn_date);
       if ('grn_qty'            in e) payload.grn_qty            = cleanInt(e.grn_qty);
@@ -632,6 +656,7 @@ export default function GRNList() {
                 const dispatched = isDispatched(po);
                 const editAppt    = valueOf(po, 'appointment_date') ?? '';
                 const editAsn     = valueOf(po, 'asn') ?? '';
+                const editApptId  = valueOf(po, 'appointment_id') ?? '';
                 const editStatus  = valueOf(po, 'grn_status') ?? '';
                 const editGrnDate = valueOf(po, 'grn_date') ?? '';
                 const editGrnQty  = valueOf(po, 'grn_qty');
@@ -682,6 +707,24 @@ export default function GRNList() {
                                 />
                               ) : (
                                 <span className="text-gray-700 font-mono">{po.asn || '—'}</span>
+                              )}
+                            </td>
+                          );
+                        case 'appointment_id':
+                          return (
+                            <td key={col.key} className="px-3 py-2">
+                              {canEdit ? (
+                                <input
+                                  type="text"
+                                  value={editApptId}
+                                  onChange={e => setEdit(po.po_id, { appointment_id: e.target.value })}
+                                  onKeyDown={onKey}
+                                  placeholder="—"
+                                  pattern="[A-Za-z0-9-]*"
+                                  className={`${cellCls} font-mono`}
+                                />
+                              ) : (
+                                <span className="text-gray-700 font-mono">{po.appointment_id || '—'}</span>
                               )}
                             </td>
                           );

@@ -17,9 +17,9 @@ import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import BulkUploadModal from './BulkUploadModal';
 
 const TABS = [
-  { key: 'mappings', label: 'Vendor Mappings' },
   { key: 'skus',     label: 'SKUs' },
-  { key: 'raw',      label: 'Raw Products' },
+  { key: 'raw',      label: 'Packaging Items' },
+  { key: 'mappings', label: 'Vendor Mappings' },
 ];
 
 // ───────────────────────────── shared helpers ─────────────────────────────
@@ -84,28 +84,28 @@ const skuUploadConfig = {
   headers: ['sku_code', 'description', 'hsn_code', 'category', 'requirements'],
   sampleRow: ['TSHIRT-RED-M', 'Red Tee M', '6109', 'Apparel', 'Cotton Fabric Roll:2; Thread Spool:1'],
   requiredKeys: ['sku_code', 'requirements'],
-  instructions: 'sku_code and requirements are required. The requirements column lists one or more "Raw Product Name:qty" entries separated by semicolons (e.g. "Cotton Fabric Roll:2; Thread Spool:1") — the raw products must already exist (Raw Products tab). Rows whose SKU Code matches an existing SKU update it (and replace its requirements); new SKU codes are added.',
+  instructions: 'sku_code and requirements are required. The requirements column lists one or more "Packaging Item Name:qty" entries separated by semicolons (e.g. "Cotton Fabric Roll:2; Thread Spool:1") — the packaging items must already exist (Packaging Items tab). Rows whose SKU Code matches an existing SKU update it (and replace its requirements); new SKU codes are added.',
   submit: (rows) => bulkUpsertProducts(rows),
 };
 
 const rawUploadConfig = {
-  title: 'Bulk Upload Raw Products',
+  title: 'Bulk Upload Packaging Items',
   templateFileName: 'raw-products-template.xlsx',
   headers: ['name', 'qty'],
   sampleRow: ['Cotton Fabric Roll', 100],
   requiredKeys: ['name'],
-  instructions: 'Rows whose Name matches an existing raw product update its quantity; new names are added. name is required and qty must be a non-negative whole number.',
+  instructions: 'Rows whose Name matches an existing packaging item update its quantity; new names are added. name is required and qty must be a non-negative whole number.',
   submit: (rows) => bulkUpsertRawProducts(rows),
 };
 
 export default function ProductList() {
-  const [tab, setTab] = useState('mappings');
+  const [tab, setTab] = useState('skus');
 
   return (
     <AppShell>
       <div className="mb-4">
-        <h1 className="text-2xl font-bold text-[#003049]">Products</h1>
-        <p className="text-gray-500 text-sm">Internal SKUs, their per-vendor product codes, and raw products</p>
+        <h1 className="text-2xl font-bold text-[#003049]">SKU Products</h1>
+        <p className="text-gray-500 text-sm">Internal SKUs, their per-vendor product codes, and packaging items</p>
       </div>
 
       <div className="flex gap-1 mb-4 border-b border-gray-200">
@@ -500,7 +500,7 @@ function SKUsTab() {
       .filter(r => r.raw_product_id !== '' && String(r.qty).trim() !== '')
       .map(r => ({ raw_product_id: Number(r.raw_product_id), qty: parseInt(r.qty) }));
     if (cleaned.length === 0) {
-      toast.error('Add at least one requirement (raw product + qty)');
+      toast.error('Add at least one requirement (packaging item + qty)');
       return;
     }
     if (cleaned.some(r => !Number.isInteger(r.qty) || r.qty <= 0)) {
@@ -509,7 +509,7 @@ function SKUsTab() {
     }
     const ids = cleaned.map(r => r.raw_product_id);
     if (new Set(ids).size !== ids.length) {
-      toast.error('A raw product is listed more than once in requirements');
+      toast.error('A packaging item is listed more than once in requirements');
       return;
     }
     setSaving(true);
@@ -674,9 +674,9 @@ function SKUsTab() {
               <label className="block text-sm font-medium text-gray-700">Requirements <span className="text-red-500">*</span></label>
               <button type="button" onClick={addReq} className="inline-flex items-center gap-1 text-sm text-[#c1121f] hover:underline"><Plus size={14} />Add requirement</button>
             </div>
-            <p className="text-xs text-gray-500 mb-2">The raw products and quantities consumed to make one unit of this SKU.</p>
+            <p className="text-xs text-gray-500 mb-2">The packaging items and quantities consumed to make one unit of this SKU.</p>
             {rawProducts.length === 0 && (
-              <p className="text-xs text-amber-600 mb-2">No raw products exist yet — add them on the Raw Products tab first.</p>
+              <p className="text-xs text-amber-600 mb-2">No packaging items exist yet — add them on the Packaging Items tab first.</p>
             )}
             <div className="space-y-2">
               {form.requirements.map((r, idx) => (
@@ -686,7 +686,7 @@ function SKUsTab() {
                     onChange={e => setReq(idx, { raw_product_id: e.target.value })}
                     className={`${fieldBase} flex-1 min-w-0`}
                   >
-                    <option value="">— Select raw product —</option>
+                    <option value="">— Select packaging item —</option>
                     {rawProducts.map(rp => <option key={rp.id} value={rp.id}>{rp.name}</option>)}
                   </select>
                   <input
@@ -748,7 +748,7 @@ function SKUsTab() {
   );
 }
 
-// ─────────────────────────────── Raw Products tab ───────────────────────────────
+// ─────────────────────────────── Packaging Items tab ───────────────────────────────
 
 const EMPTY_RAW = { name: '', qty: 0 };
 
@@ -771,7 +771,7 @@ function RawProductsTab() {
     setLoading(true);
     getRawProducts()
       .then(r => setRows(r.data))
-      .catch(() => toast.error('Failed to load raw products'))
+      .catch(() => toast.error('Failed to load packaging items'))
       .finally(() => setLoading(false));
   };
   useEffect(load, []);
@@ -792,10 +792,10 @@ function RawProductsTab() {
       const payload = { name: form.name.trim(), qty: parseInt(form.qty) || 0 };
       if (modal === 'add') {
         await createRawProduct(payload);
-        toast.success('Raw product created');
+        toast.success('Packaging item created');
       } else {
         await updateRawProduct(modal.id, payload);
-        toast.success('Raw product updated');
+        toast.success('Packaging item updated');
       }
       setModal(null);
       load();
@@ -808,7 +808,7 @@ function RawProductsTab() {
     setSaving(true);
     try {
       await deleteRawProduct(confirmDelete.id);
-      toast.success('Raw product deleted');
+      toast.success('Packaging item deleted');
       setConfirmDelete(null);
       load();
     } catch (err) {
@@ -820,7 +820,7 @@ function RawProductsTab() {
     setSaving(true);
     try {
       const r = await bulkDeleteRawProducts(Array.from(sel.selected));
-      toast.success(`Deleted ${r.data.deleted} raw product${r.data.deleted !== 1 ? 's' : ''}`);
+      toast.success(`Deleted ${r.data.deleted} packaging item${r.data.deleted !== 1 ? 's' : ''}`);
       setConfirmBulk(false);
       sel.clear();
       load();
@@ -839,15 +839,15 @@ function RawProductsTab() {
   return (
     <>
       <div className="mb-4 flex items-start justify-between flex-wrap gap-3">
-        <p className="text-gray-500 text-sm">{filtered.length} of {rows.length} raw product{rows.length !== 1 ? 's' : ''}</p>
+        <p className="text-gray-500 text-sm">{filtered.length} of {rows.length} packaging item{rows.length !== 1 ? 's' : ''}</p>
         <div className="flex gap-3 items-center flex-wrap">
           <div className="relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search raw products…" className="pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f] w-full sm:w-52" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search packaging items…" className="pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f] w-full sm:w-52" />
           </div>
           <Button variant="ghost" onClick={downloadXlsx} disabled={!rows.length}><Download size={16} />Download XLSX</Button>
           {canWrite && <Button variant="ghost" onClick={() => setBulkOpen(true)}><Upload size={16} />Bulk Upload</Button>}
-          {canWrite && <Button onClick={openAdd}><Plus size={16} />Add Raw Product</Button>}
+          {canWrite && <Button onClick={openAdd}><Plus size={16} />Add Packaging Item</Button>}
         </div>
       </div>
 
@@ -896,12 +896,12 @@ function RawProductsTab() {
             </tbody>
           </table>
           {!loading && filtered.length === 0 && (
-            <p className="text-center text-gray-400 py-8">{search ? 'No raw products match your search' : 'No raw products added yet'}</p>
+            <p className="text-center text-gray-400 py-8">{search ? 'No packaging items match your search' : 'No packaging items added yet'}</p>
           )}
         </div>
       </div>
 
-      <Modal isOpen={!!modal} onClose={() => setModal(null)} title={modal === 'add' ? 'Add Raw Product' : 'Edit Raw Product'} size="md">
+      <Modal isOpen={!!modal} onClose={() => setModal(null)} title={modal === 'add' ? 'Add Packaging Item' : 'Edit Packaging Item'} size="md">
         <form onSubmit={handleSave} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Name <span className="text-red-500">*</span></label>
@@ -941,7 +941,7 @@ function RawProductsTab() {
         isOpen={!!confirmDelete}
         onClose={() => setConfirmDelete(null)}
         onConfirm={handleDelete}
-        title="Delete Raw Product"
+        title="Delete Packaging Item"
         message={`Delete "${confirmDelete?.name}"?`}
         confirmLabel="Delete"
         loading={saving}
@@ -951,8 +951,8 @@ function RawProductsTab() {
         isOpen={confirmBulk}
         onClose={() => setConfirmBulk(false)}
         onConfirm={handleBulkDelete}
-        title="Delete Raw Products"
-        message={`Delete ${sel.selected.size} selected raw product${sel.selected.size !== 1 ? 's' : ''}? This cannot be undone.`}
+        title="Delete Packaging Items"
+        message={`Delete ${sel.selected.size} selected packaging item${sel.selected.size !== 1 ? 's' : ''}? This cannot be undone.`}
         confirmLabel="Delete"
         loading={saving}
       />

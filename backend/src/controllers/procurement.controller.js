@@ -5,12 +5,18 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Build the shared "in scope" WHERE for not-yet-ordered POs, optionally bounded
 // by po_date. Returns { where, args } with `po` as the marketplace_pos alias.
-function scopeWhere({ po_date_from, po_date_to, vendor }) {
+function scopeWhere({ po_date_from, po_date_to, vendor, po_ids }) {
   const conditions = ['po.procurement_batch_id IS NULL', "po.status <> 'Deleted'"];
   const args = [];
   if (po_date_from && DATE_RE.test(po_date_from)) { conditions.push('po.po_date >= ?'); args.push(po_date_from); }
   if (po_date_to && DATE_RE.test(po_date_to))     { conditions.push('po.po_date <= ?'); args.push(po_date_to); }
   if (vendor) { conditions.push('po.vendor = ?'); args.push(vendor); }
+  // Explicit selection: restrict to these PO ids. The not-yet-ordered / not-deleted
+  // guards above still apply, so already-ordered or deleted ids are silently skipped.
+  if (Array.isArray(po_ids) && po_ids.length) {
+    conditions.push(`po.po_id IN (${po_ids.map(() => '?').join(',')})`);
+    args.push(...po_ids);
+  }
   return { where: conditions.join(' AND '), args };
 }
 
@@ -158,16 +164,19 @@ async function getVendorCounts(req, res, next) {
 
 async function markOrdered(req, res, next) {
   try {
-    const { po_date_from, po_date_to, note, vendor } = req.body || {};
+    const { po_date_from, po_date_to, note, vendor, po_ids } = req.body || {};
     if (po_date_from && !DATE_RE.test(po_date_from)) return res.status(400).json({ message: 'Invalid po_date_from (YYYY-MM-DD)' });
     if (po_date_to && !DATE_RE.test(po_date_to))     return res.status(400).json({ message: 'Invalid po_date_to (YYYY-MM-DD)' });
+    if (!Array.isArray(po_ids) || po_ids.length === 0) {
+      return res.status(400).json({ message: 'Select at least one PO to mark as ordered' });
+    }
 
-    const { where, args } = scopeWhere({ po_date_from, po_date_to, vendor });
+    const { where, args } = scopeWhere({ po_date_from, po_date_to, vendor, po_ids });
     const { rows: targets } = await db.execute({
       sql: `SELECT po.po_id FROM marketplace_pos po WHERE ${where}`,
       args,
     });
-    if (!targets.length) return res.status(400).json({ message: 'No pending POs in that range' });
+    if (!targets.length) return res.status(400).json({ message: 'None of the selected POs are pending' });
     const poIds = targets.map(t => t.po_id);
 
     const tx = await db.transaction('write');

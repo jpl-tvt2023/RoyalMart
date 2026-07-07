@@ -5,7 +5,14 @@ const PVC_FIELDS = ['product_id', 'vendor', 'vendor_item_code', 'product_descrip
 
 async function list(req, res, next) {
   try {
-    const { rows } = await db.execute(`
+    // Optional ?vendor= filter — lets the manual PO onboarding type-ahead pull
+    // just one vendor's mapped codes instead of the whole table.
+    const vendor = req.query.vendor ? String(req.query.vendor).trim() : null;
+    const args = [];
+    let vendorClause = '';
+    if (vendor) { vendorClause = 'WHERE pvc.vendor = ?'; args.push(vendor); }
+    const { rows } = await db.execute({
+      sql: `
       SELECT pvc.id, pvc.product_id, pvc.vendor, pvc.vendor_item_code,
              pvc.product_description, pvc.created_at, pvc.updated_at,
              p.sku_code, p.description AS product_name,
@@ -13,8 +20,11 @@ async function list(req, res, next) {
       FROM product_vendor_codes pvc
       JOIN products p ON p.id = pvc.product_id
       LEFT JOIN users u ON u.id = pvc.updated_by
+      ${vendorClause}
       ORDER BY p.sku_code, pvc.vendor
-    `);
+    `,
+      args,
+    });
     res.json(rows);
   } catch (err) { next(err); }
 }

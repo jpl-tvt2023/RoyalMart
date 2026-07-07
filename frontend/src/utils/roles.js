@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, ClipboardList, Package, Truck, ClipboardCheck,
   Tag, Settings, Users, SlidersHorizontal,
-  ShoppingCart, PackageSearch,
+  ShoppingCart, PackageSearch, PackageOpen, Send, Store,
 } from 'lucide-react';
 
 export const ROLES = {
@@ -37,7 +37,7 @@ export const NAV = [
     roles: ALL_ROLES,
   },
   {
-    label: 'Orders',
+    label: 'Inbound',
     icon: ClipboardList,
     children: [
       {
@@ -71,20 +71,48 @@ export const NAV = [
     ],
   },
   {
-    label: 'Products',
-    path: '/products',
-    icon: Tag,
-    roles: ALL_ROLES,
-  },
-  {
-    label: 'Purchase',
-    icon: ShoppingCart,
+    label: 'Outbound',
+    icon: Send,
     children: [
       {
-        label: 'Procurement',
+        label: 'Procurement Status',
         path: '/procurement',
         icon: PackageSearch,
-        description: 'Raw materials needed for pending POs',
+        description: 'Materials to order for pending POs',
+        roles: ALL_ROLES,
+      },
+      {
+        label: 'Purchase Orders',
+        path: '/outbound/purchase-orders',
+        icon: ShoppingCart,
+        description: 'Supplier purchase orders (coming soon)',
+        roles: ALL_ROLES,
+      },
+    ],
+  },
+  {
+    label: 'Configurations',
+    icon: SlidersHorizontal,
+    children: [
+      {
+        label: 'SKU Products',
+        path: '/products',
+        icon: Tag,
+        description: 'SKUs, packaging items & vendor mappings',
+        roles: ALL_ROLES,
+      },
+      {
+        label: 'Inbound Cities, Vendors & Masters',
+        path: '/configurations',
+        icon: Store,
+        description: 'Cities, vendors, couriers & categories',
+        roles: ALL_ROLES,
+      },
+      {
+        label: 'Outbound Vendors',
+        path: '/outbound/vendors',
+        icon: PackageOpen,
+        description: 'Supplier master (coming soon)',
         roles: ALL_ROLES,
       },
     ],
@@ -98,13 +126,6 @@ export const NAV = [
         path: '/admin/users',
         icon: Users,
         description: 'Accounts, roles & access',
-        roles: ADMIN_ONLY,
-      },
-      {
-        label: 'Configurations',
-        path: '/configurations',
-        icon: SlidersHorizontal,
-        description: 'Cities, vendors & masters',
         roles: ADMIN_ONLY,
       },
     ],
