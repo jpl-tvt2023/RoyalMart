@@ -10,6 +10,16 @@ import { listCities } from '../../api/cities.api';
 import { sortByText } from '../../utils/sort';
 import { usesPickupDate } from '../../utils/pickupDate';
 
+// Line-item columns shared by the on-screen table header and the XLSX export so
+// their labels/order can't drift apart. `width` styles the <th>; `xlsx` derives
+// the exported cell value. (Body cells render editable inputs separately.)
+const LINE_COLUMNS = [
+  { label: 'Line',              width: 'w-16', xlsx: (l, idx) => Number(l.line_no) || idx + 1 },
+  { label: 'Item Code/EAN',     width: 'w-40', xlsx: (l) => l.item_code || '' },
+  { label: 'Internal SKU Code', width: '',     xlsx: (l) => l.internal_sku_code || '' },
+  { label: 'Qty',               width: 'w-24', xlsx: (l) => Number(l.qty) || 0 },
+];
+
 export default function PurchaseOrderDetail() {
   const { poId } = useParams();
   const navigate = useNavigate();
@@ -82,17 +92,12 @@ export default function PurchaseOrderDetail() {
   const downloadXLSX = () => {
     const dateLabel = isPickupVendor ? 'Pickup Date' : 'Exp Date';
     const dateValue = (isPickupVendor ? form.pickup_date : form.po_expiry_date) || '';
-    const headerRow = ['POID', 'PO Number', 'City', 'PO Date', dateLabel];
-    const valueRow = [poId, form.vendor_po_id || '', form.city || '', form.po_date || '', dateValue];
+    const headerRow = ['POID', 'Vendor', 'PO Number', 'City', 'PO Date', dateLabel, 'Appointment Date'];
+    const valueRow = [poId, form.vendor || '', form.vendor_po_id || '', form.city || '', form.po_date || '', dateValue, form.appointment_date || ''];
     const countsHeader = ['Line Count', 'Total Quantity'];
     const countsValues = [lines.length, totalQty];
-    const lineHeader = ['Line', 'Item Code', 'Internal Product ID', 'Qty'];
-    const lineRows = lines.map(l => [
-      Number(l.line_no) || '',
-      l.item_code || '',
-      l.internal_sku_code || '',
-      Number(l.qty) || 0,
-    ]);
+    const lineHeader = LINE_COLUMNS.map(c => c.label);
+    const lineRows = lines.map((l, idx) => LINE_COLUMNS.map(c => c.xlsx(l, idx)));
 
     const aoa = [
       headerRow,
@@ -176,10 +181,9 @@ export default function PurchaseOrderDetail() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-16">Line</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-40">Item Code/EAN</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600">Internal SKU Code</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Qty</th>
+                    {LINE_COLUMNS.map(c => (
+                      <th key={c.label} className={`px-3 py-2 text-left font-semibold text-gray-600 ${c.width}`}>{c.label}</th>
+                    ))}
                     <th className="px-3 py-2 w-12" />
                   </tr>
                 </thead>

@@ -146,7 +146,7 @@ export default function ProcurementPage() {
   const exportXLSX = () => {
     const { pos, raw_products } = data;
     if (!raw_products.length) { toast('Nothing to export'); return; }
-    const header = ['Raw Product', 'Total Required', ...pos.map(p => `${p.po_id}${p.ordered ? ' (ordered)' : ''}`)];
+    const header = ['Raw Product', 'Total Required', ...pos.map(p => `${p.po_id} · ${p.po_date || '—'} · ${p.vendor}${p.ordered ? ' (ordered)' : ''}`)];
     const body = raw_products.map(r => [
       r.name,
       r.total_required_qty,
@@ -236,51 +236,6 @@ export default function ProcurementPage() {
         </div>
       </div>
 
-      {/* PO selection checklist — Mark as ordered acts only on checked POs */}
-      {canEdit && pos.length > 0 && (
-        <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-[#003049]">Select POs to mark as ordered</h2>
-            {notOrderedPos.length > 0 && (
-              <button type="button" onClick={toggleSelectAll} className="text-sm text-[#c1121f] hover:underline">
-                {allSelected ? 'Clear all' : 'Select all'}
-              </button>
-            )}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {pos.map(p => (
-              p.ordered ? (
-                <span
-                  key={p.po_id}
-                  className="inline-flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-sm text-green-800"
-                  title="Already marked as ordered"
-                >
-                  <span className="font-mono">{p.po_id}</span>
-                  <span className="text-[11px] opacity-70">{p.po_date || '—'} · {p.vendor}</span>
-                  <span className="text-[11px] font-medium">ordered</span>
-                </span>
-              ) : (
-                <label
-                  key={p.po_id}
-                  className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm cursor-pointer transition-colors ${
-                    selected.has(p.po_id) ? 'border-[#c1121f] bg-[#c1121f]/5 text-[#003049]' : 'border-gray-200 text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={selected.has(p.po_id)}
-                    onChange={() => toggleSelect(p.po_id)}
-                    className="accent-[#c1121f]"
-                  />
-                  <span className="font-mono">{p.po_id}</span>
-                  <span className="text-[11px] text-gray-400">{p.po_date || '—'} · {p.vendor}</span>
-                </label>
-              )
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Unmapped warning */}
       {data.unmapped_line_count > 0 && (
         <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -330,6 +285,40 @@ export default function ProcurementPage() {
         <div className="overflow-auto max-h-[70vh]">
           <table className="text-sm border-separate border-spacing-0">
             <thead>
+              {/* Select-row: one checkbox aligned over each PO column; Mark as ordered acts on the checked POs. */}
+              {canEdit && (
+                <tr className="bg-gray-50">
+                  <th className={`${stickyNameHead} px-4 py-2 text-left font-medium text-gray-600 border-b border-r border-gray-200 w-56`}>
+                    <label className="inline-flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        onChange={toggleSelectAll}
+                        disabled={notOrderedPos.length === 0}
+                        className="accent-[#c1121f]"
+                      />
+                      <span className="text-xs">Select all</span>
+                    </label>
+                  </th>
+                  <th className={`${stickyTotalHead} px-4 py-2 border-b border-r border-gray-200 w-36`} />
+                  {pos.map(p => (
+                    <th
+                      key={p.po_id}
+                      className={`px-3 py-2 text-center border-b border-gray-200 ${p.ordered ? 'bg-green-100' : ''}`}
+                    >
+                      {!p.ordered && (
+                        <input
+                          type="checkbox"
+                          checked={selected.has(p.po_id)}
+                          onChange={() => toggleSelect(p.po_id)}
+                          title={`Select ${p.po_id}`}
+                          className="accent-[#c1121f]"
+                        />
+                      )}
+                    </th>
+                  ))}
+                </tr>
+              )}
               <tr className="bg-gray-50">
                 <th className={`${stickyNameHead} px-4 py-3 text-left font-semibold text-gray-600 border-b border-r border-gray-200 w-56`}>Raw Product</th>
                 <th className={`${stickyTotalHead} px-4 py-3 text-left font-semibold text-gray-600 border-b border-r border-gray-200 w-36`}>Total Required</th>
