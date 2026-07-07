@@ -312,22 +312,12 @@ export default function OrderSummaryList() {
         toast('No records to export');
         return;
       }
+      // Derive export columns from the same definition the table renders (master
+      // set, so Vendor + Last Updated are always included), then append the blank
+      // Material Dispatch filler. Keeps the file in lockstep with the on-screen columns.
       const exportCols = [
-        { key: 'po_date',            label: 'Order Date' },
-        { key: 'po_id',              label: 'PO ID' },
-        { key: 'vendor',             label: 'Vendor' },
-        { key: 'vendor_po_id',       label: 'PO No.' },
-        { key: 'total_qty',          label: 'Quantity' },
-        { key: 'line_count',         label: 'SKU' },
-        { key: 'city',               label: 'City' },
-        { key: 'expiry_or_pickup',   label: 'Expiry/Pickup Date' },
-        { key: 'office_poc_name',    label: 'Office POC' },
-        { key: 'warehouse_poc_name', label: 'Warehouse POC' },
-        { key: 'status',             label: 'Status' },
-        { key: 'dispatch_date',      label: 'Dispatch Date' },
-        { key: 'courier_name',       label: 'Courier' },
-        { key: 'tracking_id',        label: 'Tracking ID' },
-        { key: null,                 label: 'Material Dispatch' },
+        ...buildColumns(null),
+        { key: null, label: 'Material Dispatch' },
       ];
       const headers = exportCols.map(c => c.label);
       const data = rows.map(r => exportCols.map(c => {
