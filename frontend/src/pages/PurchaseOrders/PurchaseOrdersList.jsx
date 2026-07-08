@@ -8,6 +8,7 @@ import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Badge from '../../components/ui/Badge';
 import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
+import { useSessionState } from '../../hooks/useSessionState';
 import { listPOs, deletePO, restorePO } from '../../api/marketplacePO.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
@@ -31,6 +32,13 @@ const seededFiltersFromURL = (params) => {
     if (k in base && v) base[k] = v;
   }
   return base;
+};
+
+// True when the URL carries at least one known filter value (deep link). A bare
+// navigate-back has none, so the session-restored filters are kept instead.
+const urlHasFilters = (params) => {
+  if (!params) return false;
+  return Object.keys(defaultFilters()).some(k => params.get(k));
 };
 
 const COLUMNS = [
@@ -78,9 +86,9 @@ export default function PurchaseOrdersList() {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState(() => seededFiltersFromURL(searchParams));
-  const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
-  const [page, setPage] = useState(1);
+  const [filters, setFilters] = useSessionState('purchaseOrders.filters', defaultFilters);
+  const [sort, setSort] = useSessionState('purchaseOrders.sort', { key: 'updated_at', dir: 'desc' });
+  const [page, setPage] = useSessionState('purchaseOrders.page', 1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('purchaseOrders', 25));
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -121,11 +129,17 @@ export default function PurchaseOrdersList() {
 
   // Load on mount and whenever the URL (navigation) changes. Editing filter inputs
   // does NOT fetch — only an explicit action (Search/Clear/sort/pagination) does.
+  // A deep link with filter params wins; a bare navigate-back keeps the filters
+  // restored from sessionStorage instead of resetting to defaults.
   useEffect(() => {
-    const f = seededFiltersFromURL(searchParams);
-    setFilters(f);
-    setPage(1);
-    load({ filters: f, page: 1 });
+    if (urlHasFilters(searchParams)) {
+      const f = seededFiltersFromURL(searchParams);
+      setFilters(f);
+      setPage(1);
+      load({ filters: f, page: 1 });
+    } else {
+      load({ filters, page });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 

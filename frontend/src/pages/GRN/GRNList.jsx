@@ -8,6 +8,7 @@ import Button from '../../components/ui/Button';
 import Badge from '../../components/ui/Badge';
 import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
+import { useSessionState } from '../../hooks/useSessionState';
 import { listOrderSummary, updateOrderSummary, getGrnAppointmentCounts, getOrderSummaryCountsByVendor } from '../../api/orderSummary.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
@@ -95,6 +96,14 @@ const seededVendorTabFromURL = (params) => {
   // Accept any vendor passed in the URL; the active-vendor list loads async and
   // reconciles the tab afterwards. Default to Blinkit when none is given.
   return v ? v : 'Blinkit';
+};
+
+// True when the URL carries a filter or vendor value (deep link). A bare
+// navigate-back has none, so the session-restored state is kept instead.
+const urlHasFilters = (params) => {
+  if (!params) return false;
+  if (params.get('vendor')) return true;
+  return Object.keys(defaultFilters()).some(k => params.get(k));
 };
 
 // Vendors whose appointment carries an extra reference next to the appointment
@@ -269,10 +278,10 @@ export default function GRNList() {
 
   const [searchParams] = useSearchParams();
   const [vendorTabs, setVendorTabs] = useState([]);
-  const [vendorTab, setVendorTab] = useState(() => seededVendorTabFromURL(searchParams));
-  const [filters, setFilters] = useState(() => seededFiltersFromURL(searchParams));
-  const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
-  const [page, setPage] = useState(1);
+  const [vendorTab, setVendorTab] = useSessionState('grn.vendorTab', 'Blinkit');
+  const [filters, setFilters] = useSessionState('grn.filters', defaultFilters);
+  const [sort, setSort] = useSessionState('grn.sort', { key: 'updated_at', dir: 'desc' });
+  const [page, setPage] = useSessionState('grn.page', 1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('grn', 25));
 
   const [items, setItems] = useState([]);
@@ -336,14 +345,21 @@ export default function GRNList() {
   // does NOT fetch — only an explicit action (Search/Clear/tab/sort/pagination)
   // does. We pass the seeded values as overrides so the fetch doesn't race the
   // async setState.
+  // A deep link with filter/vendor params wins; a bare navigate-back keeps the
+  // state restored from sessionStorage instead of resetting to defaults.
   useEffect(() => {
-    const f = seededFiltersFromURL(searchParams);
-    const v = seededVendorTabFromURL(searchParams);
-    setFilters(f);
-    setVendorTab(v);
-    setPage(1);
-    load({ filters: f, vendor: v, page: 1 });
-    loadCounts(f);
+    if (urlHasFilters(searchParams)) {
+      const f = seededFiltersFromURL(searchParams);
+      const v = seededVendorTabFromURL(searchParams);
+      setFilters(f);
+      setVendorTab(v);
+      setPage(1);
+      load({ filters: f, vendor: v, page: 1 });
+      loadCounts(f);
+    } else {
+      load({ filters, vendor: vendorTab, page });
+      loadCounts(filters);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -363,6 +379,7 @@ export default function GRNList() {
     listCouriers()
       .then(rows => setCouriers(sortByText(rows, c => c.name)))
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { setEdits({}); }, [items]);

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
@@ -9,6 +9,7 @@ import Modal from '../../components/ui/Modal';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Legend from '../../components/ui/Legend';
 import { useRBAC } from '../../hooks/useRBAC';
+import { useSessionState, hasSessionState } from '../../hooks/useSessionState';
 import { formatDateTime } from '../../utils/formatters';
 import { getDefaults, getRequirements, getVendorCounts, markOrdered, listBatches, undoBatch } from '../../api/procurement.api';
 import { listVendors } from '../../api/vendors.api';
@@ -30,13 +31,16 @@ export default function ProcurementPage() {
 
   const [data, setData] = useState(EMPTY);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ po_date_from: '', po_date_to: '' });
+  const [filters, setFilters] = useSessionState('procurement.filters', { po_date_from: '', po_date_to: '' });
+  // Whether this tab already has a persisted range — gates the first-visit
+  // getDefaults() seeding so it doesn't clobber a restored date range.
+  const seeded = useRef(hasSessionState('procurement.filters'));
 
   // Master ("All") tab plus one tab per active vendor. The active tab narrows the
   // whole matrix (and the mark-ordered action) to that vendor; "All" shows every vendor.
   const ALL_TAB = { key: 'All', label: 'All' };
   const [vendorTabs, setVendorTabs] = useState([ALL_TAB]);
-  const [vendorTab, setVendorTab] = useState('All');
+  const [vendorTab, setVendorTab] = useSessionState('procurement.vendorTab', 'All');
   const [vendorCounts, setVendorCounts] = useState({}); // not-ordered PO count per vendor tab
   const [confirmMark, setConfirmMark] = useState(false);
   const [marking, setMarking] = useState(false);
@@ -80,8 +84,15 @@ export default function ProcurementPage() {
       .catch(() => {});
   }, []);
 
-  // On mount: seed From from the server default (day after last ordered, else earliest), To = today.
+  // On mount: reuse the session-restored range/tab if this tab already has one;
+  // otherwise seed From from the server default (day after last ordered, else
+  // earliest), To = today.
   useEffect(() => {
+    if (seeded.current) {
+      loadCounts(filters);
+      load(filters, vendorTab);
+      return;
+    }
     getDefaults()
       .then(d => {
         const f = { po_date_from: d.po_date_from || '', po_date_to: todayISO() };
@@ -90,6 +101,7 @@ export default function ProcurementPage() {
         return load(f, 'All');
       })
       .catch(() => { const f = { po_date_from: '', po_date_to: todayISO() }; setFilters(f); loadCounts(f); load(f, 'All'); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, loadCounts]);
 
   const notOrderedPos = data.pos.filter(p => !p.ordered);

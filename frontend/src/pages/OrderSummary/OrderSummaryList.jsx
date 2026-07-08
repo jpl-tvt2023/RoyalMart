@@ -9,6 +9,7 @@ import Badge from '../../components/ui/Badge';
 import Modal from '../../components/ui/Modal';
 import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
+import { useSessionState } from '../../hooks/useSessionState';
 import { listOrderSummary, updateOrderSummary, bulkUpdateOrderSummary, getPocUsers } from '../../api/orderSummary.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
@@ -44,6 +45,14 @@ const seededFiltersFromURL = (params) => {
   return base;
 };
 
+// True when the URL carries a filter or vendor value (deep link). A bare
+// navigate-back has none, so the session-restored state is kept instead.
+const urlHasFilters = (params) => {
+  if (!params) return false;
+  if (params.get('vendor')) return true;
+  return Object.keys(defaultFilters()).some(k => params.get(k));
+};
+
 // The effective-date column is labelled per tab: a vendor tab shows the vendor's
 // own date term, the Master tab shows the combined label.
 const expiryPickupLabel = (vendorTab) =>
@@ -75,11 +84,11 @@ export default function OrderSummaryList() {
 
   const [searchParams] = useSearchParams();
   const [vendorTabs, setVendorTabs] = useState([{ key: '', label: 'Master' }]);
-  const [vendorTab, setVendorTab] = useState(() => searchParams.get('vendor') || '');
-  const [filters, setFilters] = useState(() => seededFiltersFromURL(searchParams));
+  const [vendorTab, setVendorTab] = useSessionState('orderSummary.vendorTab', '');
+  const [filters, setFilters] = useSessionState('orderSummary.filters', defaultFilters);
   const [showMore, setShowMore] = useState(false);
-  const [sort, setSort] = useState({ key: 'updated_at', dir: 'desc' });
-  const [page, setPage] = useState(1);
+  const [sort, setSort] = useSessionState('orderSummary.sort', { key: 'updated_at', dir: 'desc' });
+  const [page, setPage] = useSessionState('orderSummary.page', 1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('orderSummary', 25));
 
   const [items, setItems] = useState([]);
@@ -131,16 +140,26 @@ export default function OrderSummaryList() {
   // Load on mount and whenever the URL (navigation) changes. Editing filter inputs
   // does NOT fetch — only an explicit action (Search/Clear/tab/sort/pagination).
   // Seeded values are passed as overrides so the fetch doesn't race setState.
+  // A deep link with filter/vendor params wins; a bare navigate-back keeps the
+  // state restored from sessionStorage instead of resetting to defaults.
   useEffect(() => {
-    const seeded = seededFiltersFromURL(searchParams);
-    const v = searchParams.get('vendor') || '';
-    setFilters(seeded);
-    setVendorTab(v);
-    setPage(1);
     const DEFAULTS = defaultFilters();
-    const hasNonStatusFilter = Object.entries(seeded).some(([k, val]) => k !== 'status' && val !== DEFAULTS[k]);
-    if (hasNonStatusFilter) setShowMore(true);
-    load({ filters: seeded, vendor: v, page: 1 });
+    const autoExpand = (f) => {
+      const hasNonStatusFilter = Object.entries(f).some(([k, val]) => k !== 'status' && val !== DEFAULTS[k]);
+      if (hasNonStatusFilter) setShowMore(true);
+    };
+    if (urlHasFilters(searchParams)) {
+      const seeded = seededFiltersFromURL(searchParams);
+      const v = searchParams.get('vendor') || '';
+      setFilters(seeded);
+      setVendorTab(v);
+      setPage(1);
+      autoExpand(seeded);
+      load({ filters: seeded, vendor: v, page: 1 });
+    } else {
+      autoExpand(filters);
+      load({ filters, vendor: vendorTab, page });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
