@@ -13,6 +13,7 @@ import { sortByText } from '../../utils/sort';
 import { Plus, Pencil, Trash2, Search, Upload, Download } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useRBAC } from '../../hooks/useRBAC';
+import { useSessionState } from '../../hooks/useSessionState';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import BulkUploadModal from './BulkUploadModal';
 
@@ -99,7 +100,7 @@ const rawUploadConfig = {
 };
 
 export default function ProductList() {
-  const [tab, setTab] = useState('mappings');
+  const [tab, setTab] = useSessionState('products.tab', 'mappings');
 
   return (
     <AppShell>
@@ -138,7 +139,7 @@ function VendorMappingsTab() {
   const [rows, setRows] = useState([]);
   const [skus, setSkus] = useState([]);
   const [vendors, setVendors] = useState([]);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useSessionState('products.mappings.search', '');
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState(EMPTY_MAPPING);
@@ -436,7 +437,7 @@ function SKUsTab() {
   const [skus, setSkus] = useState([]);
   const [categories, setCategories] = useState([]);
   const [rawProducts, setRawProducts] = useState([]);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useSessionState('products.skus.search', '');
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState(EMPTY_SKU);
@@ -756,7 +757,7 @@ function RawProductsTab() {
   const { canEdit: canWrite } = useRBAC();
 
   const [rows, setRows] = useState([]);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useSessionState('products.raw.search', '');
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState(EMPTY_RAW);

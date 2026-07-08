@@ -7,6 +7,7 @@ import Button from '../../components/ui/Button';
 import Modal from '../../components/ui/Modal';
 import Legend from '../../components/ui/Legend';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
+import { useSessionState } from '../../hooks/useSessionState';
 import { listOrderSummary, updateOrderSummary, getOrderSummaryCountsByVendor } from '../../api/orderSummary.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
@@ -64,10 +65,10 @@ export default function BuiltyList() {
   const { canEdit } = useRBAC();
 
   const [vendorTabs, setVendorTabs] = useState([]);
-  const [vendorTab, setVendorTab] = useState('Blinkit');
-  const [filters, setFilters] = useState(defaultFilters);
-  const [sort, setSort] = useState({ key: 'po_id', dir: 'desc' });
-  const [page, setPage] = useState(1);
+  const [vendorTab, setVendorTab] = useSessionState('builty.vendorTab', 'Blinkit');
+  const [filters, setFilters] = useSessionState('builty.filters', defaultFilters);
+  const [sort, setSort] = useSessionState('builty.sort', { key: 'po_id', dir: 'desc' });
+  const [page, setPage] = useSessionState('builty.page', 1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('builty', 25));
 
   const [items, setItems] = useState([]);
