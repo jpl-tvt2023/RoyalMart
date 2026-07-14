@@ -538,6 +538,20 @@ async function updateOne(req, res, next) {
       res.json({ po_id: poId });
     } catch (e) {
       await tx.rollback();
+      // Safety net for races: the pre-check above can miss a bill_no grabbed by a
+      // concurrent save, in which case the UNIQUE index rejects the UPDATE. Surface
+      // it as the same 409 the pre-check returns instead of a 500.
+      if (e.message && e.message.includes('UNIQUE constraint failed: marketplace_pos.bill_no')) {
+        const { rows: dup } = await db.execute({
+          sql: "SELECT po_id, vendor, vendor_po_id FROM marketplace_pos WHERE bill_no = ? AND po_id != ? AND status <> 'Deleted'",
+          args: [nextBillNo, poId],
+        });
+        return res.status(409).json({
+          error: 'bill_no_duplicate',
+          message: `Bill no "${nextBillNo}" is already used on PO ${dup[0]?.po_id || 'another PO'}`,
+          conflicts: dup,
+        });
+      }
       throw e;
     }
   } catch (err) { next(err); }
