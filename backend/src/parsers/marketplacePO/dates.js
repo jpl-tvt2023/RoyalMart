@@ -22,13 +22,15 @@ function parseIndianDate(raw) {
   let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
 
-  m = s.match(/^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})/);
+  // Optional "." after the month: Django-style dates abbreviate most months
+  // with a period ("Aug. 11, 2026") but spell out March–July ("July 12, 2026").
+  m = s.match(/^([A-Za-z]+)\.?\s+(\d{1,2}),\s*(\d{4})/);
   if (m) {
     const mm = MONTHS[m[1].toLowerCase()];
     if (mm) return `${m[3]}-${mm}-${pad2(m[2])}`;
   }
 
-  m = s.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
+  m = s.match(/^(\d{1,2})\s+([A-Za-z]+)\.?\s+(\d{4})/);
   if (m) {
     const mm = MONTHS[m[2].toLowerCase()];
     if (mm) return `${m[3]}-${mm}-${pad2(m[1])}`;

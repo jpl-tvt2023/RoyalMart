@@ -451,9 +451,19 @@ async function update(req, res, next) {
 async function remove(req, res, next) {
   try {
     const { poId } = req.params;
+    // A deleted PO must be "as good as freshly onboarded": clear every workflow
+    // field set after onboarding so it can't reserve unique values (e.g. bill_no)
+    // and comes back clean on restore/re-import. Onboarding fields (dates, city,
+    // party_name, appointment_date) and PO lines are kept.
     const { rowsAffected } = await db.execute({
       sql: `UPDATE marketplace_pos
-            SET status = 'Deleted', updated_by = ?, updated_at = datetime('now')
+            SET status = 'Deleted',
+                office_poc = NULL, warehouse_poc = NULL, dispatch_date = NULL,
+                courier_id = NULL, tracking_id = NULL, bill_no = NULL, bill_date = NULL,
+                asn = NULL, appointment_id = NULL, grn_status = NULL, grn_date = NULL,
+                grn_qty = NULL, grn_number = NULL, discrepancy_qty = NULL,
+                discrepancy_number = NULL, note = NULL,
+                updated_by = ?, updated_at = datetime('now')
             WHERE po_id = ? AND status <> 'Deleted'`,
       args: [req.user.id, poId],
     });
@@ -461,7 +471,7 @@ async function remove(req, res, next) {
     await logAction({
       userId: req.user.id,
       actionType: 'MARKETPLACE_PO_DELETE',
-      description: `Soft-deleted PO ${poId}`,
+      description: `Soft-deleted PO ${poId} (workflow fields reset: dispatch, bill, appointment, GRN, note)`,
       entityType: 'marketplace_po',
       entityRef: poId,
     });
