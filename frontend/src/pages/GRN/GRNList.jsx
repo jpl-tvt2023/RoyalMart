@@ -737,7 +737,7 @@ export default function GRNList() {
                                   onChange={e => setEdit(po.po_id, { appointment_id: e.target.value })}
                                   onKeyDown={onKey}
                                   placeholder="—"
-                                  pattern="[A-Za-z0-9-]*"
+                                  pattern="[A-Za-z0-9\-]*"
                                   className={`${cellCls} font-mono`}
                                 />
                               ) : (
@@ -827,7 +827,7 @@ export default function GRNList() {
                                   onChange={e => setEdit(po.po_id, { grn_number: e.target.value })}
                                   onKeyDown={onKey}
                                   placeholder="—"
-                                  pattern="[A-Za-z0-9-]*"
+                                  pattern="[A-Za-z0-9\-]*"
                                   className={`${cellCls} font-mono`}
                                 />
                               ) : (
@@ -869,7 +869,7 @@ export default function GRNList() {
                                   onChange={e => setEdit(po.po_id, { discrepancy_number: e.target.value })}
                                   onKeyDown={onKey}
                                   placeholder={discQtyNum > 0 ? '—' : 'n/a'}
-                                  pattern="[A-Za-z0-9-]*"
+                                  pattern="[A-Za-z0-9\-]*"
                                   className={`${cellCls} font-mono`}
                                 />
                               ) : (

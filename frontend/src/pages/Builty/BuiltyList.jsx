@@ -363,7 +363,7 @@ export default function BuiltyList() {
                                   onChange={e => setEdit(po.po_id, { bill_no: e.target.value })}
                                   onKeyDown={onKey}
                                   placeholder="—"
-                                  pattern="[A-Za-z0-9-]*"
+                                  pattern="[A-Za-z0-9\-]*"
                                   className={`${cellCls} font-mono`}
                                 />
                               ) : (
