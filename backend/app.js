@@ -42,6 +42,7 @@ app.use('/api/product-vendor-codes', require('./src/routes/productVendorCodes.ro
 app.use('/api/couriers',     require('./src/routes/couriers.routes'));
 app.use('/api/configurations', require('./src/routes/configurations.routes'));
 app.use('/api/outbound-vendors', require('./src/routes/outboundVendors.routes'));
+app.use('/api/outbound-pos', require('./src/routes/outboundPOs.routes'));
 app.use('/api/audit-logs',   require('./src/routes/audit.routes'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));

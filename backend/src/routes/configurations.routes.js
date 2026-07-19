@@ -4,6 +4,7 @@ const { allowRoles, ALL_ROLES } = require('../middleware/rbac');
 const cities  = require('../controllers/cities.controller');
 const vendors = require('../controllers/vendors.controller');
 const categories = require('../controllers/categories.controller');
+const companies = require('../controllers/companies.controller');
 
 const canView  = allowRoles(...ALL_ROLES);
 // Master data is editable by any logged-in user; every change is audited.
@@ -20,6 +21,12 @@ router.get('/categories',         auth, canView,  categories.list);
 router.post('/categories',        auth, canAdmin, categories.create);
 router.patch('/categories/:id',   auth, canAdmin, categories.update);
 router.delete('/categories/:id',  auth, canAdmin, categories.remove);
+
+// Companies master
+router.get('/companies',        auth, canView,  companies.list);
+router.post('/companies',       auth, canAdmin, companies.create);
+router.patch('/companies/:id',  auth, canAdmin, companies.update);
+router.delete('/companies/:id', auth, canAdmin, companies.remove);
 
 // Vendors master
 router.get('/vendors',        auth, canView,  vendors.list);
