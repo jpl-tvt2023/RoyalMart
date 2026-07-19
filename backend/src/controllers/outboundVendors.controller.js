@@ -193,4 +193,115 @@ async function remove(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, create, update, remove };
+const BULK_LIMIT = 2000;
+
+// Case-insensitive lookup of the canonical value from a fixed list, so
+// hand-edited spreadsheets ("packaging", "CAPS") still map to the official
+// casing stored in the DB.
+function canonical(list, value) {
+  const v = String(value || '').trim().toLowerCase();
+  return list.find(x => x.toLowerCase() === v) || null;
+}
+
+async function bulkUpsert(req, res, next) {
+  try {
+    const { rows: input } = req.body || {};
+    if (!Array.isArray(input) || input.length === 0) {
+      return res.status(400).json({ message: 'rows must be a non-empty array' });
+    }
+    if (input.length > BULK_LIMIT) {
+      return res.status(400).json({ message: `Too many rows; max ${BULK_LIMIT}` });
+    }
+
+    const { rows: vendors } = await db.execute('SELECT id, name FROM outbound_vendors');
+    const vendorIdByName = new Map(vendors.map(v => [String(v.name).trim().toLowerCase(), v.id]));
+
+    const { rows: articles } = await db.execute(
+      'SELECT vendor_id, category, item_name, variant FROM outbound_vendor_articles'
+    );
+    const articleKey = (vendorId, a) =>
+      `${vendorId}${a.category.toLowerCase()}${a.item_name.toLowerCase()}${(a.variant || '').toLowerCase()}`;
+    const existingKeys = new Set(articles.map(a => articleKey(a.vendor_id, a)));
+
+    const skipped = [];
+    let inserted = 0; // mappings added under newly created vendors
+    let updated = 0;  // mappings added to pre-existing vendors
+    const touchedVendorIds = new Set();
+
+    for (let i = 0; i < input.length; i++) {
+      const r = input[i] || {};
+      const vendorName = normName(r.vendor_name);
+      const category = canonical(CATEGORIES, r.category);
+      const variant = normName(r.variant) || null;
+
+      if (!vendorName) {
+        skipped.push({ row: i + 2, reason: 'vendor_name is required' });
+        continue;
+      }
+      if (!category) {
+        skipped.push({ row: i + 2, reason: `Invalid category "${normName(r.category)}" (use ${CATEGORIES.join(', ')})` });
+        continue;
+      }
+      const fixedList = ITEM_NAME_OPTIONS[category];
+      const itemName = fixedList ? canonical(fixedList, r.item_name) : normName(r.item_name);
+      if (!itemName) {
+        skipped.push({
+          row: i + 2,
+          reason: fixedList
+            ? `Invalid item_name "${normName(r.item_name)}" for ${category} (use ${fixedList.join(', ')})`
+            : 'item_name is required',
+        });
+        continue;
+      }
+
+      try {
+        let vendorId = vendorIdByName.get(vendorName.toLowerCase());
+        const isNewVendor = vendorId == null;
+        if (isNewVendor) {
+          const { rows: created } = await db.execute({
+            sql: 'INSERT INTO outbound_vendors (name, updated_by) VALUES (?, ?) RETURNING id',
+            args: [vendorName, req.user.id],
+          });
+          vendorId = created[0].id;
+          vendorIdByName.set(vendorName.toLowerCase(), vendorId);
+        }
+
+        const key = articleKey(vendorId, { category, item_name: itemName, variant });
+        if (existingKeys.has(key)) {
+          skipped.push({ row: i + 2, reason: `Mapping already exists for "${vendorName}"` });
+          continue;
+        }
+        await db.execute({
+          sql: `INSERT INTO outbound_vendor_articles (vendor_id, category, item_name, variant)
+                VALUES (?, ?, ?, ?)`,
+          args: [vendorId, category, itemName, variant],
+        });
+        existingKeys.add(key);
+        touchedVendorIds.add(vendorId);
+        if (isNewVendor) inserted++;
+        else updated++;
+      } catch (e) {
+        skipped.push({ row: i + 2, reason: e.message || 'DB error' });
+      }
+    }
+
+    for (const vendorId of touchedVendorIds) {
+      await db.execute({
+        sql: "UPDATE outbound_vendors SET updated_by = ?, updated_at = datetime('now') WHERE id = ?",
+        args: [req.user.id, vendorId],
+      });
+    }
+
+    await logAction({
+      userId: req.user.id,
+      actionType: 'OUTBOUND_VENDOR_BULK_UPSERT',
+      description: `Bulk: +${inserted} inserted, ~${updated} updated, !${skipped.length} skipped`,
+      entityType: 'outbound_vendor',
+      entityId: null,
+    });
+
+    res.json({ inserted, updated, skipped });
+  } catch (err) { next(err); }
+}
+
+module.exports = { list, create, update, remove, bulkUpsert };

@@ -19,3 +19,8 @@ export async function deleteOutboundVendor(id) {
   const { data } = await api.delete(`/outbound-vendors/${id}`);
   return data;
 }
+
+export async function bulkUpsertOutboundVendors(rows) {
+  const { data } = await api.post('/outbound-vendors/bulk', { rows });
+  return data;
+}

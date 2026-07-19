@@ -1,19 +1,45 @@
 import { useEffect, useState } from 'react';
-import { Plus, Pencil, Power, Trash2 } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { Plus, Pencil, Power, Trash2, Upload, Download } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
+import BulkUploadModal from '../products/BulkUploadModal';
 import { useRBAC } from '../../hooks/useRBAC';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { formatDateTime } from '../../utils/formatters';
 import { CATEGORIES, ITEM_NAME_OPTIONS } from '../../constants/outboundArticles';
 import {
   listOutboundVendors, createOutboundVendor, updateOutboundVendor, deleteOutboundVendor,
+  bulkUpsertOutboundVendors,
 } from '../../api/outboundVendors.api';
 
 const emptyRow = () => ({ category: 'Raw Material', item_name: '', variant: '' });
 const emptyForm = () => ({ name: '', is_active: true, articles: [emptyRow()] });
+
+// Export columns match the bulk-upload template so a downloaded file can be
+// edited and re-uploaded round-trip (same convention as ProductList).
+function downloadRows(filename, columns, rows) {
+  const header = columns.map(c => c.header);
+  const data = rows.map(r => columns.map(c => (r[c.key] == null ? '' : r[c.key])));
+  const ws = XLSX.utils.aoa_to_sheet([header, ...data]);
+  ws['!cols'] = header.map(() => ({ wch: 22 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Export');
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
+  XLSX.writeFile(wb, `${filename}-${stamp}.xlsx`);
+}
+
+const uploadConfig = {
+  title: 'Bulk Upload Outbound Vendors',
+  templateFileName: 'outbound-vendors-template.xlsx',
+  headers: ['vendor_name', 'category', 'item_name', 'variant'],
+  sampleRow: ['Om Sai Packaging', 'Packaging', 'Corrugated', '60'],
+  requiredKeys: ['vendor_name', 'category', 'item_name'],
+  instructions: `One row per article mapping. category must be one of ${CATEGORIES.join(' / ')}; item_name must match the fixed options for Raw Material (${ITEM_NAME_OPTIONS['Raw Material'].join(', ')}) or Packaging (${ITEM_NAME_OPTIONS['Packaging'].join(', ')}), and is free text for Others. New vendor names are created automatically; rows matching an existing mapping are skipped — nothing is ever deleted.`,
+  submit: (rows) => bulkUpsertOutboundVendors(rows),
+};
 
 export default function OutboundVendorsPage() {
   const { canEdit } = useRBAC();
@@ -30,6 +56,18 @@ export default function OutboundVendorsPage() {
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
   const [togglingId, setTogglingId] = useState(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+
+  // One export row per mapping, headers matching the upload template.
+  const downloadXlsx = () => downloadRows('outbound-vendors', [
+    { key: 'vendor_name', header: 'vendor_name' },
+    { key: 'category', header: 'category' },
+    { key: 'item_name', header: 'item_name' },
+    { key: 'variant', header: 'variant' },
+  ], rows.flatMap(v => v.articles.length
+    ? v.articles.map(a => ({ vendor_name: v.name, category: a.category, item_name: a.item_name, variant: a.variant }))
+    : [{ vendor_name: v.name, category: '', item_name: '', variant: '' }]
+  ));
 
   const load = () => {
     setLoading(true);
@@ -118,9 +156,13 @@ export default function OutboundVendorsPage() {
 
       <div className="mb-4 flex items-start justify-between flex-wrap gap-3">
         <p className="text-gray-500 text-sm">{rows.length} vendors</p>
-        {canAdmin && (
-          <Button onClick={openAdd}><Plus size={16} />Add Vendor</Button>
-        )}
+        <div className="flex gap-2 flex-wrap">
+          <Button variant="ghost" onClick={downloadXlsx} disabled={!rows.length}><Download size={16} />Download XLSX</Button>
+          {canAdmin && <Button variant="ghost" onClick={() => setBulkOpen(true)}><Upload size={16} />Bulk Upload</Button>}
+          {canAdmin && (
+            <Button onClick={openAdd}><Plus size={16} />Add Vendor</Button>
+          )}
+        </div>
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -309,6 +351,13 @@ export default function OutboundVendorsPage() {
           </div>
         </form>
       </Modal>
+
+      <BulkUploadModal
+        isOpen={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        onDone={load}
+        config={uploadConfig}
+      />
     </AppShell>
   );
 }

@@ -9,6 +9,7 @@ const canAdmin = allowRoles(...ALL_ROLES);
 
 router.get('/',        auth, canView,  outboundVendors.list);
 router.post('/',       auth, canAdmin, outboundVendors.create);
+router.post('/bulk',   auth, canAdmin, outboundVendors.bulkUpsert);
 router.patch('/:id',   auth, canAdmin, outboundVendors.update);
 router.delete('/:id',  auth, canAdmin, outboundVendors.remove);
 
