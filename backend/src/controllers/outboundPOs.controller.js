@@ -91,6 +91,15 @@ function normLine(l, idx) {
   };
 }
 
+// Validates an optional user-reference field (e.g. approved_by): '' / null
+// clears it, an id must resolve to a real user. Returns [value, errorMessage].
+async function resolveUserRef(id, label) {
+  if (id == null || id === '') return [null, null];
+  const { rows } = await db.execute({ sql: 'SELECT id FROM users WHERE id = ?', args: [id] });
+  if (!rows.length) return [null, `${label}: user not found`];
+  return [id, null];
+}
+
 async function vendorMappingSet(vendorId) {
   const { rows } = await db.execute({
     sql: 'SELECT category, item_name, variant FROM outbound_vendor_articles WHERE vendor_id = ?',
@@ -116,15 +125,17 @@ async function fetchLines(poIds) {
 }
 
 const BASE_SELECT = `
-  SELECT p.id, p.vendor_id, p.company_id, p.po_date, p.status,
+  SELECT p.id, p.vendor_id, p.company_id, p.po_date, p.status, p.approved_by,
          p.created_at, p.updated_at,
          v.name AS vendor_name,
          c.name AS company_name,
+         ab.name AS approved_by_name,
          cb.name AS created_by_name,
          COALESCE(ub.name, cb.name) AS updated_by_name
   FROM outbound_pos p
   JOIN outbound_vendors v ON v.id = p.vendor_id
   LEFT JOIN companies c ON c.id = p.company_id
+  LEFT JOIN users ab ON ab.id = p.approved_by
   LEFT JOIN users cb ON cb.id = p.created_by
   LEFT JOIN users ub ON ub.id = p.updated_by
 `;
@@ -189,7 +200,7 @@ async function getOne(req, res, next) {
 
 async function create(req, res, next) {
   try {
-    const { vendor_id, company_id, po_date, lines } = req.body || {};
+    const { vendor_id, company_id, po_date, approved_by, lines } = req.body || {};
 
     const { rows: vendor } = await db.execute({
       sql: 'SELECT id, name, is_active FROM outbound_vendors WHERE id = ?',
@@ -207,6 +218,9 @@ async function create(req, res, next) {
       if (!company[0].is_active) return res.status(400).json({ message: 'Company is inactive' });
     }
 
+    const [approvedById, approvedByErr] = await resolveUserRef(approved_by, 'Approved By');
+    if (approvedByErr) return res.status(400).json({ message: approvedByErr });
+
     const mappingSet = await vendorMappingSet(vendor_id);
     const linesError = validateLines(lines, mappingSet);
     if (linesError) return res.status(400).json({ message: linesError });
@@ -216,9 +230,9 @@ async function create(req, res, next) {
     const tx = await db.transaction('write');
     try {
       const { rows: created } = await tx.execute({
-        sql: `INSERT INTO outbound_pos (vendor_id, company_id, po_date, status, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
-        args: [vendor_id, company_id || null, po_date || null, status, req.user.id, req.user.id],
+        sql: `INSERT INTO outbound_pos (vendor_id, company_id, po_date, status, approved_by, created_by, updated_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        args: [vendor_id, company_id || null, po_date || null, status, approvedById, req.user.id, req.user.id],
       });
       const poId = created[0].id;
       for (const l of normLines) {
@@ -252,7 +266,7 @@ async function update(req, res, next) {
     const has = (k) => Object.prototype.hasOwnProperty.call(req.body || {}, k);
 
     const { rows: existing } = await db.execute({
-      sql: 'SELECT id, vendor_id, company_id, po_date, status FROM outbound_pos WHERE id = ?',
+      sql: 'SELECT id, vendor_id, company_id, po_date, status, approved_by FROM outbound_pos WHERE id = ?',
       args: [id],
     });
     if (!existing.length) return res.status(404).json({ message: 'PO not found' });
@@ -272,6 +286,18 @@ async function update(req, res, next) {
     }
     const nextPoDate = has('po_date') ? (req.body.po_date || null) : current.po_date;
 
+    let nextApprovedBy = current.approved_by;
+    if (has('approved_by')) {
+      const [approvedById, approvedByErr] = await resolveUserRef(req.body.approved_by, 'Approved By');
+      if (approvedByErr) return res.status(400).json({ message: approvedByErr });
+      nextApprovedBy = approvedById;
+    }
+    // Optional at creation, but every subsequent edit must carry an approver —
+    // covers a PO created without one and every edit after that.
+    if (nextApprovedBy == null) {
+      return res.status(400).json({ message: 'Approved By is required to save changes to this PO' });
+    }
+
     let nextLines = null;
     let nextStatus = current.status;
     if (has('lines')) {
@@ -289,17 +315,17 @@ async function update(req, res, next) {
 
     const changes = diffFields(
       current,
-      { company_id: nextCompanyId, po_date: nextPoDate, status: nextStatus },
-      ['company_id', 'po_date', 'status'],
+      { company_id: nextCompanyId, po_date: nextPoDate, status: nextStatus, approved_by: nextApprovedBy },
+      ['company_id', 'po_date', 'status', 'approved_by'],
     );
 
     const tx = await db.transaction('write');
     try {
       await tx.execute({
-        sql: `UPDATE outbound_pos SET company_id = ?, po_date = ?, status = ?,
+        sql: `UPDATE outbound_pos SET company_id = ?, po_date = ?, status = ?, approved_by = ?,
                 updated_by = ?, updated_at = datetime('now')
               WHERE id = ?`,
-        args: [nextCompanyId, nextPoDate, nextStatus, req.user.id, id],
+        args: [nextCompanyId, nextPoDate, nextStatus, nextApprovedBy, req.user.id, id],
       });
       if (nextLines) {
         await tx.execute({ sql: 'DELETE FROM outbound_po_lines WHERE po_id = ?', args: [id] });

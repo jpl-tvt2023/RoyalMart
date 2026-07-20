@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Plus, Pencil, Trash2, RotateCcw, FileText, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { Plus, Pencil, Trash2, RotateCcw, FileText, Download, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
@@ -11,6 +12,19 @@ import { useSessionState } from '../../hooks/useSessionState';
 import { listOutboundPOs, deleteOutboundPO, restoreOutboundPO } from '../../api/outboundPOs.api';
 import { listOutboundVendors } from '../../api/outboundVendors.api';
 import { formatDateTime } from '../../utils/formatters';
+
+// One row per PO line, matching the on-screen sub-rows. `columns` is
+// [{ key, header }]; values come straight off the flattened row.
+function downloadRows(filename, columns, rows) {
+  const header = columns.map(c => c.header);
+  const data = rows.map(r => columns.map(c => (r[c.key] == null ? '' : r[c.key])));
+  const ws = XLSX.utils.aoa_to_sheet([header, ...data]);
+  ws['!cols'] = header.map(() => ({ wch: 20 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Export');
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
+  XLSX.writeFile(wb, `${filename}-${stamp}.xlsx`);
+}
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
 
@@ -25,11 +39,30 @@ const COLUMNS = [
   { key: 'status', label: 'Status' },
   { key: null, label: 'Article' },
   { key: 'po_date', label: 'Order Date' },
+  { key: 'approved_by_name', label: 'Approved By' },
   { key: 'updated_at', label: 'Last Updated' },
 ];
 
+const EXPORT_COLUMNS = [
+  { key: 'order_no', header: 'order_no' },
+  { key: 'vendor_name', header: 'vendor' },
+  { key: 'company_name', header: 'company' },
+  { key: 'status', header: 'status' },
+  { key: 'approved_by_name', header: 'approved_by' },
+  { key: 'po_date', header: 'order_date' },
+  { key: 'category', header: 'category' },
+  { key: 'item_name', header: 'item_name' },
+  { key: 'variant', header: 'variant' },
+  { key: 'qty', header: 'qty' },
+  { key: 'rate', header: 'rate' },
+  { key: 'received', header: 'received' },
+  { key: 'pending', header: 'pending' },
+  { key: 'short', header: 'short' },
+  { key: 'updated_by_name', header: 'last_updated_by' },
+  { key: 'updated_at', header: 'last_updated_at' },
+];
+
 const pending = (l) => Math.max(0, l.qty - l.received - l.short);
-const lineTotal = (l) => l.qty * l.rate;
 const fmtMoney = (n) => Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
 export default function OutboundPOList() {
@@ -46,6 +79,31 @@ export default function OutboundPOList() {
   const [confirmRestore, setConfirmRestore] = useState(null);
   const [restoring, setRestoring] = useState(false);
   const [vendors, setVendors] = useState([]);
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      // Export everything matching the current filters, not just this page.
+      const res = await listOutboundPOs({ ...buildParams(), page: 1, page_size: 'all' });
+      const exportRows = (res.rows || []).flatMap(po => {
+        const base = {
+          order_no: po.order_no, vendor_name: po.vendor_name, company_name: po.company_name || '',
+          status: po.status, approved_by_name: po.approved_by_name || '', po_date: po.po_date || '',
+          updated_by_name: po.updated_by_name || '', updated_at: po.updated_at,
+        };
+        if (!po.lines.length) return [{ ...base, category: '', item_name: '', variant: '', qty: '', rate: '', received: '', pending: '', short: '' }];
+        return po.lines.map(l => ({
+          ...base,
+          category: l.category, item_name: l.item_name, variant: l.variant || '',
+          qty: l.qty, rate: l.rate, received: l.received, pending: pending(l), short: l.short,
+        }));
+      });
+      downloadRows('outbound-purchase-orders', EXPORT_COLUMNS, exportRows);
+    } catch {
+      toast.error('Failed to export');
+    } finally { setDownloading(false); }
+  };
 
   useEffect(() => {
     listOutboundVendors()
@@ -140,7 +198,10 @@ export default function OutboundPOList() {
           <h1 className="text-2xl font-bold text-[#003049]">Outbound Purchase Orders</h1>
           <p className="text-gray-500 text-sm">{total} outbound PO{total !== 1 ? 's' : ''}</p>
         </div>
-        <Button onClick={() => navigate('/outbound/purchase-orders/new')}><Plus size={16} />Add PO</Button>
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={handleDownload} loading={downloading}><Download size={16} />Download XLSX</Button>
+          <Button onClick={() => navigate('/outbound/purchase-orders/new')}><Plus size={16} />Add PO</Button>
+        </div>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
@@ -201,7 +262,7 @@ export default function OutboundPOList() {
             <tbody>
               {loading ? (
                 [...Array(4)].map((_, i) => (
-                  <tr key={i}><td colSpan={7} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
+                  <tr key={i}><td colSpan={8} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
               ) : items.map(po => (
                 <tr key={po.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors align-top">
@@ -225,7 +286,6 @@ export default function OutboundPOList() {
                             <span className="mx-1 text-gray-300">|</span>Received <b className="text-gray-800">{l.received}</b>
                             <span className="mx-1 text-gray-300">|</span>Pending <b className={pending(l) > 0 ? 'text-amber-700' : 'text-gray-800'}>{pending(l)}</b>
                             <span className="mx-1 text-gray-300">|</span>Short <b className={l.short > 0 ? 'text-red-600' : 'text-gray-800'}>{l.short}</b>
-                            <span className="mx-1 text-gray-300">|</span>Total <b className="text-gray-800">{fmtMoney(lineTotal(l))}</b>
                           </span>
                         </div>
                       ))}
@@ -233,6 +293,7 @@ export default function OutboundPOList() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{po.po_date || '—'}</td>
+                  <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{po.approved_by_name || '—'}</td>
                   <td className="px-4 py-3 whitespace-nowrap">
                     <div className="text-gray-700">{po.updated_by_name || '—'}</div>
                     <div className="text-xs text-gray-400">{formatDateTime(po.updated_at)}</div>

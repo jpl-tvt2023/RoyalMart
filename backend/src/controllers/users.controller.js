@@ -58,6 +58,16 @@ async function fetchRolesMap(userIds) {
   return map;
 }
 
+// Minimal, low-privilege listing (id + name only) for pickers like "Approved
+// By" that any logged-in user needs to populate, unlike the full `list()`
+// below which is Admin/Owner-only and exposes roles/login metadata.
+async function listLite(req, res, next) {
+  try {
+    const { rows } = await db.execute('SELECT id, name FROM users ORDER BY name ASC');
+    res.json(rows);
+  } catch (err) { next(err); }
+}
+
 async function list(req, res, next) {
   try {
     const { rows } = await db.execute(
@@ -214,4 +224,5 @@ async function adminResetPassword(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, create, update, remove, adminResetPassword };
+module.exports = {
+  listLite, list, create, update, remove, adminResetPassword };

@@ -8,6 +8,7 @@ import Badge from '../../components/ui/Badge';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { listOutboundVendors } from '../../api/outboundVendors.api';
 import { listCompanies } from '../../api/companies.api';
+import { listUsersLite } from '../../api/users.api';
 import { getOutboundPO, createOutboundPO, updateOutboundPO } from '../../api/outboundPOs.api';
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
@@ -36,18 +37,20 @@ export default function OutboundPODetail() {
 
   const [vendors, setVendors] = useState([]);
   const [companies, setCompanies] = useState([]);
+  const [approvers, setApprovers] = useState([]);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [notFound, setNotFound] = useState(false);
 
   const [po, setPo] = useState({
-    vendor_id: '', company_id: '', po_date: today(), status: 'Open', order_no: null,
+    vendor_id: '', company_id: '', po_date: today(), status: 'Open', order_no: null, approved_by: '',
   });
   const [lines, setLines] = useState([emptyLine()]);
 
   useEffect(() => {
     listOutboundVendors().then(setVendors).catch(() => toast.error('Failed to load vendors'));
     listCompanies().then(setCompanies).catch(() => {});
+    listUsersLite().then(setApprovers).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -57,7 +60,7 @@ export default function OutboundPODetail() {
       .then(data => {
         setPo({
           vendor_id: data.vendor_id, company_id: data.company_id || '', po_date: data.po_date || '',
-          status: data.status, order_no: data.order_no,
+          status: data.status, order_no: data.order_no, approved_by: data.approved_by || '',
         });
         setLines(data.lines.map(l => ({
           mapping: mapKey(l),
@@ -113,8 +116,6 @@ export default function OutboundPODetail() {
   };
 
   const pendingOf = (l) => Math.max(0, Number(l.qty) - Number(l.received) - Number(l.short));
-  const totalOf = (l) => Number(l.qty) * Number(l.rate);
-  const grandTotal = lines.reduce((s, l) => s + totalOf(l), 0);
   const liveStatus = isNew ? 'Open' : (po.status === 'Deleted' ? 'Deleted' : deriveStatus(lines));
   const readOnly = po.status === 'Deleted';
 
@@ -122,9 +123,12 @@ export default function OutboundPODetail() {
     e.preventDefault();
     if (!po.vendor_id) { toast.error('Select a vendor'); return; }
     if (lines.some(l => !l.category)) { toast.error('Every line needs an article'); return; }
+    // Optional when first onboarding a PO, but every edit after that must carry an approver.
+    if (!isNew && !po.approved_by) { toast.error('Approved By is required to save changes to this PO'); return; }
     const payload = {
       company_id: po.company_id || null,
       po_date: po.po_date || null,
+      approved_by: po.approved_by || null,
       lines: lines.map((l, i) => ({
         line_no: i + 1,
         category: l.category, item_name: l.item_name, variant: l.variant || null,
@@ -140,8 +144,8 @@ export default function OutboundPODetail() {
         navigate('/outbound/purchase-orders');
       } else {
         const res = await updateOutboundPO(id, payload);
-        setPo(p => ({ ...p, status: res.status }));
         toast.success(`PO ${res.order_no} saved`);
+        navigate('/outbound/purchase-orders');
       }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Save failed');
@@ -182,7 +186,7 @@ export default function OutboundPODetail() {
       ) : (
         <form onSubmit={handleSave} className="space-y-5">
           <div className="bg-white border border-gray-200 rounded-xl p-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
               <Field label="Vendor" required>
                 <select
                   value={po.vendor_id}
@@ -210,15 +214,18 @@ export default function OutboundPODetail() {
               <Field label="Status">
                 <input disabled value={liveStatus} className={`${inputCls} bg-gray-50 text-gray-600`} />
               </Field>
+              <Field label="Approved By" required={!isNew}>
+                <select value={po.approved_by || ''} onChange={e => setPo(p => ({ ...p, approved_by: e.target.value }))} disabled={readOnly} className={inputCls}>
+                  <option value="">{isNew ? 'Not yet approved' : 'Select approver...'}</option>
+                  {approvers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </Field>
             </div>
           </div>
 
           <div>
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-semibold text-[#003049]">
-                Line Items ({lines.length})
-                <span className="ml-2 text-gray-500 font-normal">· Total ₹{grandTotal.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</span>
-              </h3>
+              <h3 className="text-sm font-semibold text-[#003049]">Line Items ({lines.length})</h3>
               {!readOnly && <Button type="button" variant="ghost" onClick={addLine}><Plus size={14} />Add Line</Button>}
             </div>
             <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
@@ -236,7 +243,6 @@ export default function OutboundPODetail() {
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-20">Pending</th>
                       </>
                     )}
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Total</th>
                     {!readOnly && <th className="px-3 py-2 w-12" />}
                   </tr>
                 </thead>
@@ -272,7 +278,6 @@ export default function OutboundPODetail() {
                           <td className={`px-3 py-2 font-semibold ${pendingOf(l) > 0 ? 'text-amber-700' : 'text-gray-700'}`}>{pendingOf(l)}</td>
                         </>
                       )}
-                      <td className="px-3 py-2 text-gray-800 font-medium whitespace-nowrap">₹{totalOf(l).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</td>
                       {!readOnly && (
                         <td className="px-3 py-2">
                           <button
