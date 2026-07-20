@@ -63,12 +63,8 @@ export default function Topbar() {
     <header className="bg-[#003049] sticky top-0 z-20" ref={mobilePanelRef}>
       <div className="h-14 px-4 flex items-center gap-4">
         {/* Logo + brand */}
-        <div className="flex items-center gap-2.5 shrink-0">
-          <img src="/logo-icon.png" alt="Royal Mart" className="h-8 w-8 object-contain" />
-          <div className="hidden sm:block">
-            <p className="text-white font-bold text-sm leading-tight">Royal Mart</p>
-            <p className="text-white/50 text-xs">ROMS Portal</p>
-          </div>
+        <div className="flex items-center shrink-0">
+          <img src="/logo-wordmark.png" alt="Royal Mart" className="h-9 w-auto object-contain rounded" />
         </div>
 
         {/* Desktop nav */}
