@@ -9,11 +9,11 @@ import { formatDate } from '../../utils/formatters';
 import { UserPlus, Pencil, Trash2, KeyRound } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../context/AuthContext';
-import { ROLES, BASE_ROLES, POC_ROLES } from '../../utils/roles';
+import { ROLES, BASE_ROLES, TAG_ROLES } from '../../utils/roles';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import PasswordCriteria from '../../components/shared/PasswordCriteria';
 
-const roleColors = { Admin: 'red', Owner: 'purple', Employee: 'blue', Office_POC: 'orange', Warehouse_POC: 'green' };
+const roleColors = { Admin: 'red', Owner: 'purple', Employee: 'blue', Office_POC: 'orange', Warehouse_POC: 'green', Purchase_Head: 'navy' };
 
 const EMPTY_FORM = { name: '', username: '', roles: [ROLES.EMPLOYEE], password: '' };
 
@@ -40,9 +40,9 @@ export default function UserManagement() {
   // Roles = one base access role (Admin/Owner/Employee) + optional POC tags.
   const baseRole = form.roles.find(r => BASE_ROLES.includes(r)) || '';
   const setBaseRole = (role) => {
-    setForm(f => ({ ...f, roles: [role, ...f.roles.filter(r => POC_ROLES.includes(r))] }));
+    setForm(f => ({ ...f, roles: [role, ...f.roles.filter(r => TAG_ROLES.includes(r))] }));
   };
-  const togglePoc = (role) => {
+  const toggleTag = (role) => {
     setForm(f => {
       const has = f.roles.includes(role);
       return { ...f, roles: has ? f.roles.filter(r => r !== role) : [...f.roles, role] };
@@ -198,21 +198,21 @@ export default function UserManagement() {
             )}
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">POC Tags <span className="text-gray-400 font-normal">(optional)</span></label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Tags <span className="text-gray-400 font-normal">(optional)</span></label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-3 border border-gray-200 rounded-lg">
-              {POC_ROLES.map(r => (
+              {TAG_ROLES.map(r => (
                 <label key={r} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={form.roles.includes(r)}
-                    onChange={() => togglePoc(r)}
+                    onChange={() => toggleTag(r)}
                     className="w-4 h-4 accent-[#c1121f]"
                   />
                   {r}
                 </label>
               ))}
             </div>
-            <p className="text-xs text-gray-400 mt-1">Allows the user to be assigned as an Office / Warehouse POC on orders.</p>
+            <p className="text-xs text-gray-400 mt-1">Allows the user to be assigned as an Office / Warehouse POC on orders, or picked as Approved By on outbound POs.</p>
           </div>
           {modal === 'add' && (
             <div>

@@ -10,6 +10,7 @@ import { listOutboundVendors } from '../../api/outboundVendors.api';
 import { listCompanies } from '../../api/companies.api';
 import { listUsersLite } from '../../api/users.api';
 import { getOutboundPO, createOutboundPO, updateOutboundPO } from '../../api/outboundPOs.api';
+import { ROLES } from '../../utils/roles';
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
 
@@ -50,7 +51,7 @@ export default function OutboundPODetail() {
   useEffect(() => {
     listOutboundVendors().then(setVendors).catch(() => toast.error('Failed to load vendors'));
     listCompanies().then(setCompanies).catch(() => {});
-    listUsersLite().then(setApprovers).catch(() => {});
+    listUsersLite({ role: ROLES.PURCHASE_HEAD }).then(setApprovers).catch(() => {});
   }, []);
 
   useEffect(() => {

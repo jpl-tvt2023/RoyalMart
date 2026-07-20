@@ -10,14 +10,17 @@ export const ROLES = {
   EMPLOYEE: 'Employee',
   OFFICE_POC: 'Office_POC',
   WAREHOUSE_POC: 'Warehouse_POC',
+  PURCHASE_HEAD: 'Purchase_Head',
 };
 
 // Base access roles: Admin/Owner = everything, Employee = everything except the Admin section.
-// Office_POC / Warehouse_POC are assignment-qualifier tags, not access roles.
+// Office_POC / Warehouse_POC / Purchase_Head are assignment-qualifier tags, not access roles —
+// they only mark who's eligible to be picked for something (a PO's POC, an outbound PO's
+// Approved By), independent of the base role.
 export const BASE_ROLES = [ROLES.ADMIN, ROLES.OWNER, ROLES.EMPLOYEE];
-export const POC_ROLES = [ROLES.OFFICE_POC, ROLES.WAREHOUSE_POC];
+export const TAG_ROLES = [ROLES.OFFICE_POC, ROLES.WAREHOUSE_POC, ROLES.PURCHASE_HEAD];
 
-export const ALL_ROLES = [...BASE_ROLES, ...POC_ROLES];
+export const ALL_ROLES = [...BASE_ROLES, ...TAG_ROLES];
 const ORDER_FLOW_ROLES = ALL_ROLES;
 export const ADMIN_ONLY = [ROLES.ADMIN, ROLES.OWNER];
 

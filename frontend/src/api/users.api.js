@@ -2,8 +2,8 @@ import api from './axios';
 
 export const getUsers = () => api.get('/users');
 // id + name only, open to every logged-in user (unlike getUsers, Admin/Owner-only).
-export async function listUsersLite() {
-  const { data } = await api.get('/users/lite');
+export async function listUsersLite(params) {
+  const { data } = await api.get('/users/lite', { params });
   return data;
 }
 export const createUser = (data) => api.post('/users', data);

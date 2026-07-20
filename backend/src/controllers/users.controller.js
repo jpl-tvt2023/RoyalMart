@@ -63,7 +63,15 @@ async function fetchRolesMap(userIds) {
 // below which is Admin/Owner-only and exposes roles/login metadata.
 async function listLite(req, res, next) {
   try {
-    const { rows } = await db.execute('SELECT id, name FROM users ORDER BY name ASC');
+    const { role } = req.query;
+    const { rows } = role
+      ? await db.execute({
+          sql: `SELECT u.id, u.name FROM users u
+                JOIN user_roles r ON r.user_id = u.id
+                WHERE r.role = ? ORDER BY u.name ASC`,
+          args: [role],
+        })
+      : await db.execute('SELECT id, name FROM users ORDER BY name ASC');
     res.json(rows);
   } catch (err) { next(err); }
 }
