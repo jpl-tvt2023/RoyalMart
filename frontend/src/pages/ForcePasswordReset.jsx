@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { changePassword } from '../api/auth.api';
-import { Package2, Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 import PasswordCriteria from '../components/shared/PasswordCriteria';
 import { meetsPasswordPolicy } from '../utils/passwordPolicy';
@@ -41,9 +41,7 @@ export default function ForcePasswordReset() {
     <div className="min-h-screen bg-[#fdf0d5] flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-[#c1121f] rounded-2xl mb-4 shadow-lg">
-            <Package2 size={32} className="text-white" />
-          </div>
+          <img src="/logo-wordmark.png" alt="Royal Mart" className="h-16 w-auto object-contain mx-auto mb-4 rounded-lg shadow-lg" />
           <h1 className="text-2xl font-bold text-[#003049]">Set Your Password</h1>
           <p className="text-[#003049]/60 mt-1 text-sm">Hello {user?.name} — please set a new password to continue</p>
         </div>

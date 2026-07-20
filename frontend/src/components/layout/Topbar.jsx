@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { LogOut, Menu, X, Package2 } from 'lucide-react';
+import { LogOut, Menu, X } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { NAV } from '../../utils/roles';
 import NavDropdown from './NavDropdown';
@@ -64,9 +64,7 @@ export default function Topbar() {
       <div className="h-14 px-4 flex items-center gap-4">
         {/* Logo + brand */}
         <div className="flex items-center gap-2.5 shrink-0">
-          <div className="w-8 h-8 bg-[#c1121f] rounded-lg flex items-center justify-center">
-            <Package2 size={18} className="text-white" />
-          </div>
+          <img src="/logo-icon.png" alt="Royal Mart" className="h-8 w-8 object-contain" />
           <div className="hidden sm:block">
             <p className="text-white font-bold text-sm leading-tight">Royal Mart</p>
             <p className="text-white/50 text-xs">ROMS Portal</p>
