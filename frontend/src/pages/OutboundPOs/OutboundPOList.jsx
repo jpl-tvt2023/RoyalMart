@@ -318,7 +318,7 @@ export default function OutboundPOList() {
             <thead className="sticky top-0 z-10 bg-gray-50">
               <tr>
                 {LEFT_COLUMNS.map(col => (
-                  <th key={col.key} rowSpan={2} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50 align-bottom border-b border-gray-200">
+                  <th key={col.key} rowSpan={2} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50 align-middle border-b border-gray-200">
                     <button type="button" onClick={() => toggleSort(col.key)} className="inline-flex items-center gap-1 hover:text-[#003049]">
                       {col.label}<SortIcon colKey={col.key} />
                     </button>
@@ -328,13 +328,13 @@ export default function OutboundPOList() {
                   Article
                 </th>
                 {RIGHT_COLUMNS.map(col => (
-                  <th key={col.key} rowSpan={2} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50 align-bottom border-b border-gray-200">
+                  <th key={col.key} rowSpan={2} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50 align-middle border-b border-gray-200">
                     <button type="button" onClick={() => toggleSort(col.key)} className="inline-flex items-center gap-1 hover:text-[#003049]">
                       {col.label}<SortIcon colKey={col.key} />
                     </button>
                   </th>
                 ))}
-                <th rowSpan={2} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50 align-bottom border-b border-gray-200">Actions</th>
+                <th rowSpan={2} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50 align-middle border-b border-gray-200">Actions</th>
               </tr>
               <tr>
                 {ARTICLE_COLUMNS.map(c => (
@@ -356,13 +356,13 @@ export default function OutboundPOList() {
                   >
                     {idx === 0 && (
                       <>
-                        <td rowSpan={lines.length} className="px-4 py-3 font-mono font-semibold text-[#003049] align-top">
+                        <td rowSpan={lines.length} className="px-4 py-3 font-mono font-semibold text-[#003049] align-middle">
                           <Link to={`/outbound/purchase-orders/${po.id}`} className="flex items-center gap-2 hover:underline">
                             <FileText size={14} className="text-gray-400 shrink-0" />{po.order_no}
                           </Link>
                         </td>
-                        <td rowSpan={lines.length} className="px-4 py-3 whitespace-nowrap align-top">{po.vendor_name}</td>
-                        <td rowSpan={lines.length} className="px-4 py-3 align-top"><Badge color={STATUS_COLORS[po.status] || 'gray'}>{po.status}</Badge></td>
+                        <td rowSpan={lines.length} className="px-4 py-3 whitespace-nowrap align-middle">{po.vendor_name}</td>
+                        <td rowSpan={lines.length} className="px-4 py-3 align-middle"><Badge color={STATUS_COLORS[po.status] || 'gray'}>{po.status}</Badge></td>
                       </>
                     )}
                     {l ? (
@@ -405,8 +405,8 @@ export default function OutboundPOList() {
                     )}
                     {idx === 0 && (
                       <>
-                        <td rowSpan={lines.length} className="px-4 py-3 text-gray-600 whitespace-nowrap align-top">{po.po_date || '—'}</td>
-                        <td rowSpan={lines.length} className="px-4 py-3 align-top">
+                        <td rowSpan={lines.length} className="px-4 py-3 text-gray-600 whitespace-nowrap align-middle">{po.po_date || '—'}</td>
+                        <td rowSpan={lines.length} className="px-4 py-3 align-middle">
                           <select
                             value={po.approved_by || ''}
                             disabled={po.status === 'Deleted' || savingIds.has(po.id)}
@@ -417,11 +417,11 @@ export default function OutboundPOList() {
                             {approverOptionsFor(po, approvers).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                           </select>
                         </td>
-                        <td rowSpan={lines.length} className="px-4 py-3 whitespace-nowrap align-top">
+                        <td rowSpan={lines.length} className="px-4 py-3 whitespace-nowrap align-middle">
                           <div className="text-gray-700">{po.updated_by_name || '—'}</div>
                           <div className="text-xs text-gray-400">{formatDateTime(po.updated_at)}</div>
                         </td>
-                        <td rowSpan={lines.length} className="px-4 py-3 align-top">
+                        <td rowSpan={lines.length} className="px-4 py-3 align-middle">
                           <div className="flex items-center gap-1">
                             {dirtyIds.has(po.id) && (
                               <button
