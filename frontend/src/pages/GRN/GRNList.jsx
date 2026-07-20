@@ -558,6 +558,9 @@ export default function GRNList() {
   // GRN status labels are long (e.g. "Delivered - GRN Received"): give the in-cell
   // dropdown a min-width so the value stays readable; the table scrolls instead.
   const cellSelectCls = `${cellCls} min-w-[13rem]`;
+  // Notes are free text and can run long: widen the cell and clip with an
+  // ellipsis rather than letting the row grow or the text wrap.
+  const cellNoteCls = `${cellCls} min-w-[16rem] truncate`;
 
   const SortIcon = ({ colKey }) => {
     if (sort.key !== colKey) return <ArrowUpDown size={12} className="text-gray-300" />;
@@ -908,10 +911,11 @@ export default function GRNList() {
                                   onChange={e => setEdit(po.po_id, { note: e.target.value })}
                                   onKeyDown={onKey}
                                   placeholder="Add a comment..."
-                                  className={cellCls}
+                                  title={editNote || undefined}
+                                  className={cellNoteCls}
                                 />
                               ) : (
-                                <span className="text-gray-700">{po.note || '—'}</span>
+                                <span className="text-gray-700 block max-w-[16rem] truncate" title={po.note || undefined}>{po.note || '—'}</span>
                               )}
                             </td>
                           );
