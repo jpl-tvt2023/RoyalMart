@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { Plus, Pencil, Trash2, RotateCcw, FileText, Download, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { Plus, Pencil, Trash2, RotateCcw, FileText, Download, Save, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
@@ -9,8 +9,10 @@ import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Badge from '../../components/ui/Badge';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { useSessionState } from '../../hooks/useSessionState';
-import { listOutboundPOs, deleteOutboundPO, restoreOutboundPO } from '../../api/outboundPOs.api';
+import { listOutboundPOs, deleteOutboundPO, restoreOutboundPO, updateOutboundPO } from '../../api/outboundPOs.api';
 import { listOutboundVendors } from '../../api/outboundVendors.api';
+import { listUsersLite } from '../../api/users.api';
+import { ROLES } from '../../utils/roles';
 import { formatDateTime } from '../../utils/formatters';
 
 // One row per PO line, matching the on-screen sub-rows. `columns` is
@@ -33,15 +35,23 @@ const defaultFilters = () => ({
   po_date_from: '', po_date_to: '',
 });
 
-const COLUMNS = [
+// Vendor-level columns rendered once per PO (rowSpan across its line rows),
+// split around the Article sub-column group.
+const LEFT_COLUMNS = [
   { key: 'id', label: 'Order No' },
   { key: 'vendor_name', label: 'Vendor' },
   { key: 'status', label: 'Status' },
-  { key: null, label: 'Article' },
+];
+const RIGHT_COLUMNS = [
   { key: 'po_date', label: 'Order Date' },
   { key: 'approved_by_name', label: 'Approved By' },
   { key: 'updated_at', label: 'Last Updated' },
 ];
+// One real <td> per line row — no more chip+text blob. Order info first
+// (Qty, Rate), then fulfillment tracking (Received, Short), then the
+// number derived from those two (Pending) last.
+const ARTICLE_COLUMNS = ['Category', 'Item Name', 'Variant', 'Qty', 'Rate', 'Received', 'Short', 'Pending'];
+const TABLE_COL_COUNT = LEFT_COLUMNS.length + ARTICLE_COLUMNS.length + RIGHT_COLUMNS.length + 1; // + Actions
 
 const EXPORT_COLUMNS = [
   { key: 'order_no', header: 'order_no' },
@@ -56,14 +66,25 @@ const EXPORT_COLUMNS = [
   { key: 'qty', header: 'qty' },
   { key: 'rate', header: 'rate' },
   { key: 'received', header: 'received' },
-  { key: 'pending', header: 'pending' },
   { key: 'short', header: 'short' },
+  { key: 'pending', header: 'pending' },
   { key: 'updated_by_name', header: 'last_updated_by' },
   { key: 'updated_at', header: 'last_updated_at' },
 ];
 
 const pending = (l) => Math.max(0, l.qty - l.received - l.short);
 const fmtMoney = (n) => Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+
+// If a PO's current approver isn't in the live Purchase_Head list (tagged
+// before the role existed, or since untagged), keep them selectable so the
+// dropdown doesn't silently show "Not yet approved" over a real value.
+function approverOptionsFor(po, approvers) {
+  const opts = approvers.map(u => ({ value: u.id, label: u.name }));
+  if (po.approved_by && !opts.some(o => o.value === po.approved_by)) {
+    opts.push({ value: po.approved_by, label: `${po.approved_by_name || 'Unknown'} (not Purchase Head)` });
+  }
+  return opts;
+}
 
 export default function OutboundPOList() {
   const navigate = useNavigate();
@@ -79,7 +100,10 @@ export default function OutboundPOList() {
   const [confirmRestore, setConfirmRestore] = useState(null);
   const [restoring, setRestoring] = useState(false);
   const [vendors, setVendors] = useState([]);
+  const [approvers, setApprovers] = useState([]);
   const [downloading, setDownloading] = useState(false);
+  const [savingIds, setSavingIds] = useState(() => new Set());
+  const [dirtyIds, setDirtyIds] = useState(() => new Set());
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -109,7 +133,52 @@ export default function OutboundPOList() {
     listOutboundVendors()
       .then(rows => setVendors(rows.filter(v => v.is_active)))
       .catch(() => {});
+    listUsersLite({ role: ROLES.PURCHASE_HEAD }).then(setApprovers).catch(() => {});
   }, []);
+
+  // Inline editing: qty/rate/received/short and Approved By can all be
+  // edited directly in the table, no need to open the PO. Nothing saves as
+  // you type — edits just mark the row dirty; a Save icon appears in
+  // Actions and commits every staged change for that row (Approved By +
+  // all lines) together in one request. A full `lines` array is always
+  // sent since the backend does a delete-and-reinsert (same as the
+  // detail-page save).
+  const markDirty = (poId) => setDirtyIds(prev => new Set(prev).add(poId));
+
+  const setLineField = (poId, lineIdx, field, value) => {
+    setItems(prev => prev.map(po => po.id !== poId ? po : {
+      ...po,
+      lines: po.lines.map((l, i) => i !== lineIdx ? l : { ...l, [field]: value }),
+    }));
+    markDirty(poId);
+  };
+
+  const setApprovedByField = (poId, value) => {
+    setItems(prev => prev.map(po => po.id !== poId ? po : { ...po, approved_by: value ? Number(value) : null }));
+    markDirty(poId);
+  };
+
+  const saveRow = async (po) => {
+    setSavingIds(s => new Set(s).add(po.id));
+    try {
+      const res = await updateOutboundPO(po.id, {
+        approved_by: po.approved_by || null,
+        lines: po.lines.map(l => ({
+          line_no: l.line_no, category: l.category, item_name: l.item_name, variant: l.variant || null,
+          qty: Number(l.qty), rate: Number(l.rate), received: Number(l.received) || 0, short: Number(l.short) || 0,
+        })),
+      });
+      setItems(prev => prev.map(p => p.id === po.id ? { ...p, ...res } : p));
+      setDirtyIds(prev => { const n = new Set(prev); n.delete(po.id); return n; });
+      toast.success(`PO ${po.order_no} updated`);
+    } catch (err) {
+      // Keep the edits in place (don't revert) so the user can fix and retry —
+      // e.g. this fires when Approved By hasn't been set yet.
+      toast.error(err.response?.data?.message || 'Save failed');
+    } finally {
+      setSavingIds(s => { const n = new Set(s); n.delete(po.id); return n; });
+    }
+  };
 
   const buildParams = useCallback((overrides) => {
     const f = overrides?.filters ?? filters;
@@ -185,6 +254,7 @@ export default function OutboundPOList() {
   };
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30';
+  const cellCls = 'w-16 px-1.5 py-1 border border-gray-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-[#c1121f]/40 focus:border-[#c1121f] disabled:bg-gray-50 disabled:text-gray-400 disabled:border-transparent';
 
   const SortIcon = ({ colKey }) => {
     if (sort.key !== colKey) return <ArrowUpDown size={12} className="text-gray-300" />;
@@ -246,70 +316,136 @@ export default function OutboundPOList() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="sticky top-0 z-10 bg-gray-50">
-              <tr className="border-b border-gray-200">
-                {COLUMNS.map(col => (
-                  <th key={col.label} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50">
-                    {col.key ? (
-                      <button type="button" onClick={() => toggleSort(col.key)} className="inline-flex items-center gap-1 hover:text-[#003049]">
-                        {col.label}<SortIcon colKey={col.key} />
-                      </button>
-                    ) : col.label}
+              <tr>
+                {LEFT_COLUMNS.map(col => (
+                  <th key={col.key} rowSpan={2} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50 align-bottom border-b border-gray-200">
+                    <button type="button" onClick={() => toggleSort(col.key)} className="inline-flex items-center gap-1 hover:text-[#003049]">
+                      {col.label}<SortIcon colKey={col.key} />
+                    </button>
                   </th>
                 ))}
-                <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50">Actions</th>
+                <th colSpan={ARTICLE_COLUMNS.length} className="px-4 py-1.5 text-center font-semibold text-gray-600 whitespace-nowrap bg-gray-50 border-b border-gray-100">
+                  Article
+                </th>
+                {RIGHT_COLUMNS.map(col => (
+                  <th key={col.key} rowSpan={2} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50 align-bottom border-b border-gray-200">
+                    <button type="button" onClick={() => toggleSort(col.key)} className="inline-flex items-center gap-1 hover:text-[#003049]">
+                      {col.label}<SortIcon colKey={col.key} />
+                    </button>
+                  </th>
+                ))}
+                <th rowSpan={2} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50 align-bottom border-b border-gray-200">Actions</th>
+              </tr>
+              <tr>
+                {ARTICLE_COLUMNS.map(c => (
+                  <th key={c} className="px-3 py-2 text-left font-medium text-gray-500 whitespace-nowrap bg-gray-50 text-xs border-b border-gray-200">{c}</th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 [...Array(4)].map((_, i) => (
-                  <tr key={i}><td colSpan={8} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
+                  <tr key={i}><td colSpan={TABLE_COL_COUNT} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
-              ) : items.map(po => (
-                <tr key={po.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors align-top">
-                  <td className="px-4 py-3 font-mono font-semibold text-[#003049]">
-                    <Link to={`/outbound/purchase-orders/${po.id}`} className="flex items-center gap-2 hover:underline">
-                      <FileText size={14} className="text-gray-400 shrink-0" />{po.order_no}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap">{po.vendor_name}</td>
-                  <td className="px-4 py-3"><Badge color={STATUS_COLORS[po.status] || 'gray'}>{po.status}</Badge></td>
-                  <td className="px-4 py-3">
-                    <div className="space-y-1.5">
-                      {po.lines.map(l => (
-                        <div key={l.id} className="flex items-center gap-2 flex-wrap">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 border border-gray-200 whitespace-nowrap">
-                            {l.category} · {l.item_name}{l.variant ? ` · ${l.variant}` : ''}
-                          </span>
-                          <span className="text-xs text-gray-600 whitespace-nowrap">
-                            Qty <b className="text-gray-800">{l.qty}</b>
-                            <span className="mx-1 text-gray-300">|</span>Rate <b className="text-gray-800">{fmtMoney(l.rate)}</b>
-                            <span className="mx-1 text-gray-300">|</span>Received <b className="text-gray-800">{l.received}</b>
-                            <span className="mx-1 text-gray-300">|</span>Pending <b className={pending(l) > 0 ? 'text-amber-700' : 'text-gray-800'}>{pending(l)}</b>
-                            <span className="mx-1 text-gray-300">|</span>Short <b className={l.short > 0 ? 'text-red-600' : 'text-gray-800'}>{l.short}</b>
-                          </span>
-                        </div>
-                      ))}
-                      {po.lines.length === 0 && <span className="text-xs text-gray-400">—</span>}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{po.po_date || '—'}</td>
-                  <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{po.approved_by_name || '—'}</td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    <div className="text-gray-700">{po.updated_by_name || '—'}</div>
-                    <div className="text-xs text-gray-400">{formatDateTime(po.updated_at)}</div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1">
-                      <Link to={`/outbound/purchase-orders/${po.id}`} title="View/Edit" className="p-1.5 rounded hover:bg-blue-50 text-blue-500"><Pencil size={14} /></Link>
-                      {po.status === 'Deleted' ? (
-                        <button onClick={() => setConfirmRestore(po)} title="Restore" className="p-1.5 rounded hover:bg-green-50 text-green-600"><RotateCcw size={14} /></button>
-                      ) : (
-                        <button onClick={() => setConfirmDelete(po)} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-red-500"><Trash2 size={14} /></button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              ) : items.flatMap(po => {
+                const lines = po.lines.length ? po.lines : [null];
+                return lines.map((l, idx) => (
+                  <tr
+                    key={`${po.id}-${idx}`}
+                    className={`hover:bg-gray-50 transition-colors ${idx === lines.length - 1 ? 'border-b-2 border-gray-200' : 'border-b border-gray-50'}`}
+                  >
+                    {idx === 0 && (
+                      <>
+                        <td rowSpan={lines.length} className="px-4 py-3 font-mono font-semibold text-[#003049] align-top">
+                          <Link to={`/outbound/purchase-orders/${po.id}`} className="flex items-center gap-2 hover:underline">
+                            <FileText size={14} className="text-gray-400 shrink-0" />{po.order_no}
+                          </Link>
+                        </td>
+                        <td rowSpan={lines.length} className="px-4 py-3 whitespace-nowrap align-top">{po.vendor_name}</td>
+                        <td rowSpan={lines.length} className="px-4 py-3 align-top"><Badge color={STATUS_COLORS[po.status] || 'gray'}>{po.status}</Badge></td>
+                      </>
+                    )}
+                    {l ? (
+                      <>
+                        <td className="px-3 py-2 text-gray-700 whitespace-nowrap">{l.category}</td>
+                        <td className="px-3 py-2 text-gray-700 whitespace-nowrap">{l.item_name}</td>
+                        <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{l.variant || '—'}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="number" min={1} value={l.qty} disabled={po.status === 'Deleted'}
+                            onChange={e => setLineField(po.id, idx, 'qty', e.target.value)}
+                            className={cellCls}
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="number" min={0} step="0.01" value={l.rate} disabled={po.status === 'Deleted'}
+                            onChange={e => setLineField(po.id, idx, 'rate', e.target.value)}
+                            className={cellCls}
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="number" min={0} value={l.received} disabled={po.status === 'Deleted'}
+                            onChange={e => setLineField(po.id, idx, 'received', e.target.value)}
+                            className={cellCls}
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="number" min={0} value={l.short} disabled={po.status === 'Deleted'}
+                            onChange={e => setLineField(po.id, idx, 'short', e.target.value)}
+                            className={cellCls}
+                          />
+                        </td>
+                        <td className={`px-3 py-2 font-medium ${pending(l) > 0 ? 'text-amber-700' : 'text-gray-800'}`}>{pending(l)}</td>
+                      </>
+                    ) : (
+                      <td colSpan={ARTICLE_COLUMNS.length} className="px-3 py-2 text-xs text-gray-400">—</td>
+                    )}
+                    {idx === 0 && (
+                      <>
+                        <td rowSpan={lines.length} className="px-4 py-3 text-gray-600 whitespace-nowrap align-top">{po.po_date || '—'}</td>
+                        <td rowSpan={lines.length} className="px-4 py-3 align-top">
+                          <select
+                            value={po.approved_by || ''}
+                            disabled={po.status === 'Deleted' || savingIds.has(po.id)}
+                            onChange={e => setApprovedByField(po.id, e.target.value)}
+                            className={`${inputCls} py-1.5`}
+                          >
+                            <option value="">Not yet approved</option>
+                            {approverOptionsFor(po, approvers).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                        </td>
+                        <td rowSpan={lines.length} className="px-4 py-3 whitespace-nowrap align-top">
+                          <div className="text-gray-700">{po.updated_by_name || '—'}</div>
+                          <div className="text-xs text-gray-400">{formatDateTime(po.updated_at)}</div>
+                        </td>
+                        <td rowSpan={lines.length} className="px-4 py-3 align-top">
+                          <div className="flex items-center gap-1">
+                            {dirtyIds.has(po.id) && (
+                              <button
+                                onClick={() => saveRow(po)}
+                                disabled={savingIds.has(po.id)}
+                                title="Save changes"
+                                className="p-1.5 rounded hover:bg-green-50 text-green-600 disabled:opacity-40"
+                              >
+                                <Save size={14} />
+                              </button>
+                            )}
+                            <Link to={`/outbound/purchase-orders/${po.id}`} title="View/Edit" className="p-1.5 rounded hover:bg-blue-50 text-blue-500"><Pencil size={14} /></Link>
+                            {po.status === 'Deleted' ? (
+                              <button onClick={() => setConfirmRestore(po)} title="Restore" className="p-1.5 rounded hover:bg-green-50 text-green-600"><RotateCcw size={14} /></button>
+                            ) : (
+                              <button onClick={() => setConfirmDelete(po)} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-red-500"><Trash2 size={14} /></button>
+                            )}
+                          </div>
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                ));
+              })}
             </tbody>
           </table>
           {!loading && items.length === 0 && (

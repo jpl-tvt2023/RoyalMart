@@ -11,6 +11,7 @@ const SORT_COLUMNS = {
   company_name:    'c.name',
   status:          'p.status',
   po_date:         'p.po_date',
+  approved_by_name: 'ab.name',
   updated_at:      'p.updated_at',
   updated_by_name: 'ub.name',
   line_count:      '(SELECT COUNT(*) FROM outbound_po_lines WHERE po_id = p.id)',
