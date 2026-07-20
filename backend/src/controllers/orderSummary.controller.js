@@ -5,7 +5,7 @@ const { userHasRole } = require('../services/userRoles.service');
 const ORDER_SUMMARY_FIELDS = [
   'office_poc', 'warehouse_poc', 'status', 'dispatch_date', 'courier_id', 'tracking_id',
   'bill_no', 'bill_date', 'appointment_date', 'asn', 'appointment_id', 'grn_status', 'grn_date', 'grn_qty', 'grn_number',
-  'discrepancy_qty', 'discrepancy_number', 'note',
+  'discrepancy_qty', 'discrepancy_number', 'note', 'delivery_code',
 ];
 
 // Vendors whose appointment carries an extra reference alongside the appointment
@@ -51,6 +51,7 @@ const SORT_COLUMNS = {
   discrepancy_qty:     'p.discrepancy_qty',
   discrepancy_number:  'p.discrepancy_number',
   note:                'p.note',
+  delivery_code:       'p.delivery_code',
   computed_grn_status: COMPUTED_GRN_STATUS_SQL,
   courier_name:        'cr.name',
   updated_at:          'p.updated_at',
@@ -136,7 +137,7 @@ async function list(req, res, next) {
              p.party_name, p.bill_no, p.bill_date,
              p.appointment_date, p.asn, p.appointment_id, p.grn_status, p.grn_date,
              p.grn_qty, p.grn_number, p.discrepancy_qty, p.discrepancy_number,
-             p.note,
+             p.note, p.delivery_code,
              ${COMPUTED_GRN_STATUS_SQL} AS computed_grn_status,
              p.updated_by, p.updated_at,
              op.name AS office_poc_name,
@@ -179,7 +180,7 @@ async function updateOne(req, res, next) {
       sql: `SELECT po_id, vendor, city, status, dispatch_date, office_poc, warehouse_poc,
                    courier_id, tracking_id, bill_no, bill_date,
                    appointment_date, asn, appointment_id, grn_status, grn_date, grn_qty, grn_number,
-                   discrepancy_qty, discrepancy_number, note
+                   discrepancy_qty, discrepancy_number, note, delivery_code
             FROM marketplace_pos WHERE po_id = ?`,
       args: [poId],
     });
@@ -363,6 +364,7 @@ async function updateOne(req, res, next) {
     let nextDiscrepancyQty     = current.discrepancy_qty;
     let nextDiscrepancyNumber  = current.discrepancy_number;
     let nextNote               = current.note;
+    let nextDeliveryCode       = current.delivery_code;
 
     const parseDateField = (val, label) => {
       if (val == null || String(val).trim() === '') return null;
@@ -423,6 +425,10 @@ async function updateOne(req, res, next) {
       if (has('note')) {
         const n = req.body.note;
         nextNote = (n == null || String(n).trim() === '') ? null : String(n).trim();
+      }
+      if (has('delivery_code')) {
+        const d = req.body.delivery_code;
+        nextDeliveryCode = (d == null || String(d).trim() === '') ? null : String(d).trim();
       }
     } catch (e) {
       if (e.statusCode === 400) return res.status(400).json({ message: e.message });
@@ -505,14 +511,14 @@ async function updateOne(req, res, next) {
                   courier_id = ?, tracking_id = ?, bill_no = ?, bill_date = ?,
                   appointment_date = ?, asn = ?, appointment_id = ?, grn_status = ?, grn_date = ?,
                   grn_qty = ?, grn_number = ?, discrepancy_qty = ?, discrepancy_number = ?,
-                  note = ?,
+                  note = ?, delivery_code = ?,
                   updated_by = ?, updated_at = datetime('now')
               WHERE po_id = ?`,
         args: [
           officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, nextBillNo, nextBillDate,
           nextAppointmentDate, nextAsn, nextAppointmentId, nextGrnStatus, nextGrnDate,
           nextGrnQty, nextGrnNumber, nextDiscrepancyQty, nextDiscrepancyNumber,
-          nextNote,
+          nextNote, nextDeliveryCode,
           req.user.id, poId,
         ],
       });
@@ -523,13 +529,13 @@ async function updateOne(req, res, next) {
         appointment_id: nextAppointmentId,
         grn_status: nextGrnStatus, grn_date: nextGrnDate, grn_qty: nextGrnQty,
         grn_number: nextGrnNumber, discrepancy_qty: nextDiscrepancyQty,
-        discrepancy_number: nextDiscrepancyNumber, note: nextNote,
+        discrepancy_number: nextDiscrepancyNumber, note: nextNote, delivery_code: nextDeliveryCode,
       }, ORDER_SUMMARY_FIELDS);
       await logAction({
         client: tx,
         userId: req.user.id,
         actionType: 'ORDER_SUMMARY_UPDATE',
-        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}, bill_date=${nextBillDate || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, appointment_id=${nextAppointmentId || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}, note=${nextNote ? '"' + nextNote.slice(0, 60) + (nextNote.length > 60 ? '…' : '') + '"' : '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
+        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}, bill_date=${nextBillDate || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, appointment_id=${nextAppointmentId || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}, note=${nextNote ? '"' + nextNote.slice(0, 60) + (nextNote.length > 60 ? '…' : '') + '"' : '—'}, delivery_code=${nextDeliveryCode || '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
         entityType: 'marketplace_po',
         entityRef: poId,
         changes,

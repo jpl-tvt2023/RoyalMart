@@ -87,6 +87,8 @@ async function parseNow(buffer) {
 
   const party_name = labelValue(lines, 'Purchasing entity');
 
+  const delivery_code = labelValue(lines, 'Delivery Address'); // e.g. "HNR4"
+
   let city = null;
   const shipTo = labelValue(lines, 'Ship to location'); // e.g. "HHY7 - HYDERABAD, TELANGANA"
   if (shipTo) {
@@ -139,6 +141,7 @@ async function parseNow(buffer) {
     expected_delivery_date: null,
     po_expiry_date,
     party_name,
+    delivery_code,
     city,
     lines: result,
   };

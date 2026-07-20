@@ -248,8 +248,9 @@ async function create(req, res, next) {
   try {
     const err = validatePayload(req.body);
     if (err) return res.status(400).json({ message: err });
-    const { vendor, vendor_po_id, po_date, po_expiry_date, city, lines, party_name } = req.body;
+    const { vendor, vendor_po_id, po_date, po_expiry_date, city, lines, party_name, delivery_code } = req.body;
     const cleanPartyName = party_name == null ? null : (String(party_name).trim() || null);
+    const cleanDeliveryCode = delivery_code == null ? null : (String(delivery_code).trim() || null);
 
     // Amazon/Flipkart carry a pickup date instead of an expiry date, and it is
     // mandatory at onboarding. Other vendors keep pickup_date null.
@@ -288,12 +289,12 @@ async function create(req, res, next) {
         poId = existing[0].po_id;
         await tx.execute({
           sql: `UPDATE marketplace_pos
-                SET po_date = ?, po_expiry_date = ?, pickup_date = ?, city = ?, party_name = ?,
+                SET po_date = ?, po_expiry_date = ?, pickup_date = ?, city = ?, party_name = ?, delivery_code = ?,
                     appointment_date = COALESCE(?, appointment_date),
                     status = CASE WHEN status = 'Deleted' THEN 'Open' ELSE status END,
                     updated_by = ?, updated_at = datetime('now')
                 WHERE po_id = ?`,
-          args: [po_date || null, po_expiry_date || null, pickup_date, city || null, cleanPartyName, appointment_date, req.user.id, poId],
+          args: [po_date || null, po_expiry_date || null, pickup_date, city || null, cleanPartyName, cleanDeliveryCode, appointment_date, req.user.id, poId],
         });
       } else {
         isNew = true;
@@ -306,9 +307,9 @@ async function create(req, res, next) {
         poId = `${vendorPrefix(vendor)}${pad3(nextSeq)}`;
         await tx.execute({
           sql: `INSERT INTO marketplace_pos
-                (po_id, vendor, vendor_po_id, po_date, po_expiry_date, pickup_date, city, party_name, appointment_date, status, created_by, onboarded_by, updated_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`,
-          args: [poId, vendor, cleanVendorPoId, po_date || null, po_expiry_date || null, pickup_date, city || null, cleanPartyName, appointment_date, req.user.id, req.user.id, req.user.id],
+                (po_id, vendor, vendor_po_id, po_date, po_expiry_date, pickup_date, city, party_name, delivery_code, appointment_date, status, created_by, onboarded_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`,
+          args: [poId, vendor, cleanVendorPoId, po_date || null, po_expiry_date || null, pickup_date, city || null, cleanPartyName, cleanDeliveryCode, appointment_date, req.user.id, req.user.id, req.user.id],
         });
       }
 
