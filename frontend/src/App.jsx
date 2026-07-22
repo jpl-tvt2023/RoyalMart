@@ -17,6 +17,9 @@ import GRNList from './pages/GRN/GRNList';
 import ConfigurationsPage from './pages/Configurations/ConfigurationsPage';
 import ProductList from './pages/products/ProductList';
 import ProcurementPage from './pages/Procurement/ProcurementPage';
+import OutboundVendorsPage from './pages/OutboundVendors/OutboundVendorsPage';
+import OutboundPOList from './pages/OutboundPOs/OutboundPOList';
+import OutboundPODetail from './pages/OutboundPOs/OutboundPODetail';
 import ComingSoon from './pages/ComingSoon';
 import { ALL_ROLES, ADMIN_ONLY } from './utils/roles';
 
@@ -89,10 +92,16 @@ export default function App() {
             <ProtectedRoute roles={ALL_ROLES}><ComingSoon title="Packaging Items" /></ProtectedRoute>
           } />
           <Route path="/outbound/purchase-orders" element={
-            <ProtectedRoute roles={ALL_ROLES}><ComingSoon title="Outbound Purchase Orders" /></ProtectedRoute>
+            <ProtectedRoute roles={ALL_ROLES}><OutboundPOList /></ProtectedRoute>
+          } />
+          <Route path="/outbound/purchase-orders/new" element={
+            <ProtectedRoute roles={ALL_ROLES}><OutboundPODetail /></ProtectedRoute>
+          } />
+          <Route path="/outbound/purchase-orders/:id" element={
+            <ProtectedRoute roles={ALL_ROLES}><OutboundPODetail /></ProtectedRoute>
           } />
           <Route path="/outbound/vendors" element={
-            <ProtectedRoute roles={ALL_ROLES}><ComingSoon title="Outbound Vendors" /></ProtectedRoute>
+            <ProtectedRoute roles={ALL_ROLES}><OutboundVendorsPage /></ProtectedRoute>
           } />
 
           {/* Legacy routes redirect to current ones */}

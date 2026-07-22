@@ -2,8 +2,9 @@
 //   Admin / Owner    — full access, including the Admin section.
 //   Employee         — full access EXCEPT the Admin section (users, teams, configurations).
 //   Office_POC /      — assignment-qualifier roles only (who can be set as a PO's
-//   Warehouse_POC       Office/Warehouse POC); they do not grant page access on their own.
-const ALL_ROLES = ['Admin', 'Owner', 'Employee', 'Office_POC', 'Warehouse_POC'];
+//   Warehouse_POC /     Office/Warehouse POC, or as an outbound PO's Approved By);
+//   Purchase_Head       they do not grant page access on their own.
+const ALL_ROLES = ['Admin', 'Owner', 'Employee', 'Office_POC', 'Warehouse_POC', 'Purchase_Head'];
 const ADMIN_ROLES = ['Admin', 'Owner'];
 
 const allowRoles = (...allowed) => (req, res, next) => {

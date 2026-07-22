@@ -1,7 +1,13 @@
 import axios from 'axios';
 
+// Falls back to the same-origin '/api' proxy (see vercel.json / vite.config.js)
+// when unset, so behavior is unchanged unless VITE_API_BASE_URL is configured
+// for the current deployment (e.g. a Preview environment pointing at a
+// separate backend + test database).
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: API_BASE_URL,
   withCredentials: true,
 });
 
@@ -38,7 +44,7 @@ api.interceptors.response.use(
       original._retry = true;
       isRefreshing = true;
       try {
-        const { data } = await axios.post('/api/auth/refresh', {}, { withCredentials: true });
+        const { data } = await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true });
         localStorage.setItem('accessToken', data.accessToken);
         processQueue(null, data.accessToken);
         original.headers.Authorization = `Bearer ${data.accessToken}`;

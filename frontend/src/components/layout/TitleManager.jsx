@@ -21,6 +21,8 @@ const TITLES = [
   ['/grn', 'GRN'],
   ['/configurations', 'Configurations'],
   ['/packaging-items', 'Packaging Items'],
+  ['/outbound/purchase-orders/new', 'New Outbound PO'],
+  ['/outbound/purchase-orders/:id', (m) => `Outbound PO ${m.params.id}`],
   ['/outbound/purchase-orders', 'Outbound Purchase Orders'],
   ['/outbound/vendors', 'Outbound Vendors'],
 ];

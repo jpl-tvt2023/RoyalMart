@@ -111,6 +111,7 @@ const urlHasFilters = (params) => {
 // is mandatory once an appointment date is set (enforced on save + in the API).
 const ASN_VENDORS = ['Zepto'];
 const APPOINTMENT_ID_VENDORS = ['Now', 'Blinkit'];
+const DELIVERY_CODE_VENDORS = ['Now'];
 
 const buildColumns = (vendorTab) => [
   { key: 'dispatch_date',       label: 'Builty Date' },
@@ -124,6 +125,7 @@ const buildColumns = (vendorTab) => [
   { key: 'vendor_po_id',        label: 'PO Number' },
   { key: 'total_qty',           label: 'PO Qty' },
   { key: 'city',                label: 'City' },
+  ...(DELIVERY_CODE_VENDORS.includes(vendorTab) ? [{ key: 'delivery_code', label: 'Delivery Code' }] : []),
   { key: 'expiry_or_pickup',    label: usesPickupDate(vendorTab) ? 'Pickup Date' : 'Expiry Date' },
   { key: 'grn_date',            label: 'GRN Date' },
   { key: 'grn_qty',             label: 'GRN Qty' },
@@ -514,6 +516,7 @@ export default function GRNList() {
       if ('discrepancy_qty'    in e) payload.discrepancy_qty    = cleanInt(e.discrepancy_qty);
       if ('discrepancy_number' in e) payload.discrepancy_number = cleanStr(e.discrepancy_number);
       if ('note'               in e) payload.note               = cleanStr(e.note);
+      if ('delivery_code'      in e) payload.delivery_code      = cleanStr(e.delivery_code);
       await updateOrderSummary(po.po_id, payload);
       toast.success(`Saved ${po.po_id}`);
       cancelEdit(po.po_id);
@@ -555,6 +558,9 @@ export default function GRNList() {
   // GRN status labels are long (e.g. "Delivered - GRN Received"): give the in-cell
   // dropdown a min-width so the value stays readable; the table scrolls instead.
   const cellSelectCls = `${cellCls} min-w-[13rem]`;
+  // Notes are free text and can run long: widen the cell and clip with an
+  // ellipsis rather than letting the row grow or the text wrap.
+  const cellNoteCls = `${cellCls} min-w-[16rem] truncate`;
 
   const SortIcon = ({ colKey }) => {
     if (sort.key !== colKey) return <ArrowUpDown size={12} className="text-gray-300" />;
@@ -681,6 +687,7 @@ export default function GRNList() {
                 const editDiscQty = valueOf(po, 'discrepancy_qty');
                 const editDiscNo  = valueOf(po, 'discrepancy_number') ?? '';
                 const editNote    = valueOf(po, 'note') ?? '';
+                const editDeliveryCode = valueOf(po, 'delivery_code') ?? '';
                 const displayStatus = editStatus || po.computed_grn_status;
                 const isDGR = displayStatus === 'Delivered - GRN Received';
                 const discQtyNum = editDiscQty == null || editDiscQty === '' ? 0 : Number(editDiscQty);
@@ -784,6 +791,23 @@ export default function GRNList() {
                           return <td key={col.key} className="px-3 py-2 font-semibold text-gray-800">{po.total_qty ?? 0}</td>;
                         case 'city':
                           return <td key={col.key} className="px-3 py-2 text-gray-600 whitespace-nowrap">{po.city || '—'}</td>;
+                        case 'delivery_code':
+                          return (
+                            <td key={col.key} className="px-3 py-2">
+                              {canEdit ? (
+                                <input
+                                  type="text"
+                                  value={editDeliveryCode}
+                                  onChange={e => setEdit(po.po_id, { delivery_code: e.target.value })}
+                                  onKeyDown={onKey}
+                                  placeholder="—"
+                                  className={`${cellCls} font-mono`}
+                                />
+                              ) : (
+                                <span className="text-gray-700 font-mono">{po.delivery_code || '—'}</span>
+                              )}
+                            </td>
+                          );
                         case 'grn_date':
                           return (
                             <td key={col.key} className="px-3 py-2">
@@ -887,10 +911,11 @@ export default function GRNList() {
                                   onChange={e => setEdit(po.po_id, { note: e.target.value })}
                                   onKeyDown={onKey}
                                   placeholder="Add a comment..."
-                                  className={cellCls}
+                                  title={editNote || undefined}
+                                  className={cellNoteCls}
                                 />
                               ) : (
-                                <span className="text-gray-700">{po.note || '—'}</span>
+                                <span className="text-gray-700 block max-w-[16rem] truncate" title={po.note || undefined}>{po.note || '—'}</span>
                               )}
                             </td>
                           );

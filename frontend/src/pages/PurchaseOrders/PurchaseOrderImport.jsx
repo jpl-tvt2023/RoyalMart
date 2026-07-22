@@ -44,6 +44,7 @@ export default function PurchaseOrderImport() {
         city: data.city || '',
         status: 'Open',
         party_name: data.party_name || '',
+        delivery_code: data.delivery_code || '',
         appointment_date: data.appointment_date || '',
         lines: data.lines || [],
       });
@@ -70,6 +71,7 @@ export default function PurchaseOrderImport() {
       city: '',
       status: 'Open',
       party_name: '',
+      delivery_code: '',
       appointment_date: '',
       lines: [{ line_no: 1, item_code: '', qty: 1 }],
     });

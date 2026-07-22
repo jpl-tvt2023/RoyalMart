@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Package2, Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function Login() {
@@ -32,10 +32,7 @@ export default function Login() {
     <div className="min-h-screen bg-[#fdf0d5] flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-[#c1121f] rounded-2xl mb-4 shadow-lg">
-            <Package2 size={32} className="text-white" />
-          </div>
-          <h1 className="text-3xl font-bold text-[#003049]">Royal Mart</h1>
+          <img src="/logo-wordmark.png" alt="Royal Mart" className="h-16 w-auto object-contain mx-auto mb-4 rounded-lg shadow-lg" />
           <p className="text-[#003049]/60 mt-1">Resource & Order Management System</p>
         </div>
 
