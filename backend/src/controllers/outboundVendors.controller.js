@@ -227,6 +227,7 @@ async function bulkUpsert(req, res, next) {
     let inserted = 0; // mappings added under newly created vendors
     let updated = 0;  // mappings added to pre-existing vendors
     const touchedVendorIds = new Set();
+    const mappingsAddedByVendor = new Map(); // vendor_id -> mappings added to it this call
 
     for (let i = 0; i < input.length; i++) {
       const r = input[i] || {};
@@ -278,6 +279,7 @@ async function bulkUpsert(req, res, next) {
         });
         existingKeys.add(key);
         touchedVendorIds.add(vendorId);
+        mappingsAddedByVendor.set(vendorId, (mappingsAddedByVendor.get(vendorId) || 0) + 1);
         if (isNewVendor) inserted++;
         else updated++;
       } catch (e) {
@@ -285,10 +287,22 @@ async function bulkUpsert(req, res, next) {
       }
     }
 
+    // Bulk upsert touches many vendors in one call, so besides the aggregate
+    // entry below (entityId: null, for a future global-activity view), log one
+    // per-vendor entry too — otherwise a vendor's own History drawer could
+    // never show that it was updated by a bulk upload.
     for (const vendorId of touchedVendorIds) {
       await db.execute({
         sql: "UPDATE outbound_vendors SET updated_by = ?, updated_at = datetime('now') WHERE id = ?",
         args: [req.user.id, vendorId],
+      });
+      const count = mappingsAddedByVendor.get(vendorId) || 0;
+      await logAction({
+        userId: req.user.id,
+        actionType: 'OUTBOUND_VENDOR_BULK_UPSERT',
+        description: `Bulk upload added ${count} article mapping${count === 1 ? '' : 's'} to this vendor`,
+        entityType: 'outbound_vendor',
+        entityId: vendorId,
       });
     }
 

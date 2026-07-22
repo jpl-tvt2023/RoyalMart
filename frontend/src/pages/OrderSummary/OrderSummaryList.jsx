@@ -478,14 +478,6 @@ export default function OrderSummaryList() {
                 {activeCouriers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Has Tracking ID</label>
-              <select value={filters.has_tracking} onChange={e => setFilter('has_tracking', e.target.value)} className={inputCls}>
-                <option value="">Any</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </div>
           </div>
         )}
 

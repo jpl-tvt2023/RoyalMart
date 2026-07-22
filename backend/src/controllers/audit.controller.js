@@ -6,6 +6,7 @@ const { USER_HISTORY_RETENTION_DAYS } = require('../services/auditLog.service');
 const FK_FIELDS = {
   marketplace_po: { office_poc: 'users', warehouse_poc: 'users', courier_id: 'couriers' },
   product_vendor_code: { product_id: 'products' },
+  outbound_po: { approved_by: 'users', company_id: 'companies' },
 };
 
 // How to label a row from each source table: which column holds the display value.
@@ -13,6 +14,7 @@ const TABLE_LABEL = {
   users: 'name',
   couriers: 'name',
   products: 'sku_code',
+  companies: 'name',
 };
 
 // Resolve all FK IDs referenced across the given change-sets to labels, then
