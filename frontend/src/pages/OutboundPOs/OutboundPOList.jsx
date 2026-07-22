@@ -73,7 +73,6 @@ const EXPORT_COLUMNS = [
 ];
 
 const pending = (l) => Math.max(0, l.qty - l.received - l.short);
-const fmtMoney = (n) => Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
 // If a PO's current approver isn't in the live Purchase_Head list (tagged
 // before the role existed, or since untagged), keep them selectable so the

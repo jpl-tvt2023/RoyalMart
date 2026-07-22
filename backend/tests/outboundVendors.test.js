@@ -306,20 +306,41 @@ describe('Outbound Vendors API', () => {
       expect(res.body.skipped[0].row).toBe(3); // array index 1 + 2 (assumes a header row)
     });
 
-    test('writes an OUTBOUND_VENDOR_BULK_UPSERT audit row', async () => {
-      // The bulk-upsert audit entry is written with entityId: null, and
-      // GET /api/audit-logs requires a non-empty entity_id, so it can never be
-      // retrieved through that endpoint (a real gap in the History UI, not
-      // just a test limitation — see plan notes). Verify directly via db instead.
+    test('writes an aggregate OUTBOUND_VENDOR_BULK_UPSERT audit row (entityId: null)', async () => {
+      // The aggregate entry is written with entityId: null (a whole-batch
+      // summary, not tied to one vendor), and GET /api/audit-logs requires a
+      // non-empty entity_id, so this specific row can never be retrieved
+      // through that endpoint. Verify directly via db instead. Per-vendor
+      // retrievability is covered by the next test.
       const vendorName = `Bulk Audit ${uid()}`;
       await request(app)
         .post('/api/outbound-vendors/bulk')
         .set('Authorization', `Bearer ${token}`)
         .send({ rows: [{ vendor_name: vendorName, category: 'Raw Material', item_name: 'Caps' }] });
       const { rows } = await db.execute(
-        `SELECT * FROM audit_logs WHERE action_type = 'OUTBOUND_VENDOR_BULK_UPSERT' ORDER BY id DESC LIMIT 1`
+        `SELECT * FROM audit_logs WHERE action_type = 'OUTBOUND_VENDOR_BULK_UPSERT' AND entity_id IS NULL ORDER BY id DESC LIMIT 1`
       );
       expect(rows).toHaveLength(1);
+    });
+
+    test('also writes a per-vendor audit row, retrievable via the normal History endpoint', async () => {
+      const created = await createVendor([{ category: 'Raw Material', item_name: 'Caps' }]);
+      const res = await request(app)
+        .post('/api/outbound-vendors/bulk')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          rows: [
+            { vendor_name: created.body.name, category: 'Packaging', item_name: 'One Ply' },
+            { vendor_name: created.body.name, category: 'Others', item_name: 'Sample Kit' },
+          ],
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.updated).toBe(2);
+
+      const history = await auditFor('outbound_vendor', created.body.id);
+      const entry = history.body.find(e => e.action_type === 'OUTBOUND_VENDOR_BULK_UPSERT');
+      expect(entry).toBeTruthy();
+      expect(entry.description).toMatch(/added 2 article mappings to this vendor/);
     });
   });
 
