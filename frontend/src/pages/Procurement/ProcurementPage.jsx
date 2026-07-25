@@ -257,7 +257,7 @@ export default function ProcurementPage() {
             {data.unmapped_samples?.length > 0 && (
               <details className="mt-2">
                 <summary className="cursor-pointer text-xs font-medium text-amber-800 hover:underline">Show details</summary>
-                <div className="mt-2 overflow-x-auto scrollbar-thin rounded-lg border border-amber-200 bg-white">
+                <div className="mt-2 overflow-x-auto rounded-lg border border-amber-200 bg-white">
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="bg-amber-100/60 text-amber-900">
@@ -391,7 +391,7 @@ export default function ProcurementPage() {
         ) : batches.length === 0 ? (
           <p className="text-center text-gray-400 py-6">No batches marked as ordered yet.</p>
         ) : (
-          <div className="overflow-x-auto scrollbar-thin">
+          <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">

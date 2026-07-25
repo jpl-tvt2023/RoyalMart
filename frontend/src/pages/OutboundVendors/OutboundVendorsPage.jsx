@@ -166,7 +166,7 @@ export default function OutboundVendorsPage() {
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto scrollbar-thin">
+        <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
@@ -280,7 +280,7 @@ export default function OutboundVendorsPage() {
               <h3 className="text-sm font-semibold text-[#003049]">Article Mappings ({form.articles.length})</h3>
               <Button type="button" variant="ghost" onClick={addRow}><Plus size={14} />Add Mapping</Button>
             </div>
-            <div className="overflow-x-auto scrollbar-thin bg-white border border-gray-200 rounded-lg">
+            <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
