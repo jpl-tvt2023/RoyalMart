@@ -74,6 +74,7 @@ const buildColumns = (vendorTab) => {
     { key: 'dispatch_date',      label: 'Dispatch Date' },
     { key: 'courier_name',       label: 'Courier' },
     { key: 'tracking_id',        label: 'Tracking ID' },
+    { key: 'box',                label: 'Box' },
     { key: 'updated_at',         label: 'Last Updated' },
   ];
   return vendorTab ? cols.filter(c => c.key !== 'vendor') : cols;
@@ -241,11 +242,13 @@ export default function OrderSummaryList() {
     const nextDispatch = 'dispatch_date' in e ? e.dispatch_date : po.dispatch_date;
     const nextCourier  = 'courier_id'    in e ? e.courier_id    : po.courier_id;
     const nextTracking = 'tracking_id'   in e ? e.tracking_id   : po.tracking_id;
+    const nextBox       = 'box'          in e ? e.box           : po.box;
     if (nextStatus === 'Closed') {
       const missing = [];
       if (!nextDispatch) missing.push('dispatch date');
       if (nextCourier == null || nextCourier === '') missing.push('courier');
       if (!String(nextTracking ?? '').trim()) missing.push('tracking ID');
+      if (nextBox == null || nextBox === '' || !Number.isInteger(Number(nextBox)) || Number(nextBox) < 1) missing.push('box');
       if (missing.length) return toast.error(`Cannot close — missing: ${missing.join(', ')}`);
     }
     setSavingId(po.po_id);
@@ -263,6 +266,9 @@ export default function OrderSummaryList() {
       }
       if ('tracking_id' in e || reopening) {
         payload.tracking_id = reopening ? null : ((e.tracking_id ?? '').trim() || null);
+      }
+      if ('box' in e || reopening) {
+        payload.box = reopening ? null : (e.box === '' || e.box == null ? null : Number(e.box));
       }
       if (confirmDuplicate) payload.confirm_duplicate_tracking = true;
       await updateOrderSummary(po.po_id, payload);
@@ -577,6 +583,7 @@ export default function OrderSummaryList() {
                 const editWarehouse = valueOf(po, 'warehouse_poc');
                 const editCourier  = valueOf(po, 'courier_id');
                 const editTracking = valueOf(po, 'tracking_id') ?? '';
+                const editBox = valueOf(po, 'box') ?? '';
                 const onKey = onCellKeyDown(po.po_id);
                 return (
                   <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? DIRTY_ROW : 'hover:bg-gray-50'}`}>
@@ -656,6 +663,7 @@ export default function OrderSummaryList() {
                                       patch.dispatch_date = '';
                                       patch.courier_id = '';
                                       patch.tracking_id = '';
+                                      patch.box = '';
                                     }
                                     setEdit(po.po_id, patch);
                                   }}
@@ -733,6 +741,27 @@ export default function OrderSummaryList() {
                                 />
                               ) : (
                                 <span className="text-gray-700 font-mono">{po.tracking_id || '—'}</span>
+                              )}
+                            </td>
+                          );
+
+                        case 'box':
+                          return (
+                            <td key={col.key} className="px-3 py-2">
+                              {canEdit ? (
+                                <input
+                                  type="number"
+                                  min={1}
+                                  step={1}
+                                  value={editBox}
+                                  disabled={editStatus !== 'Closed' || editCourier == null || editCourier === ''}
+                                  onChange={e => setEdit(po.po_id, { box: e.target.value })}
+                                  onKeyDown={onKey}
+                                  placeholder="—"
+                                  className={cellCls}
+                                />
+                              ) : (
+                                <span className="text-gray-700">{po.box ?? '—'}</span>
                               )}
                             </td>
                           );

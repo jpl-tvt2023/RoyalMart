@@ -8,6 +8,7 @@ import Login from './pages/Login';
 import ForcePasswordReset from './pages/ForcePasswordReset';
 import Dashboard from './pages/Dashboard';
 import UserManagement from './pages/admin/UserManagement';
+import GlobalConfig from './pages/admin/GlobalConfig';
 import PurchaseOrdersList from './pages/PurchaseOrders/PurchaseOrdersList';
 import PurchaseOrderImport from './pages/PurchaseOrders/PurchaseOrderImport';
 import PurchaseOrderDetail from './pages/PurchaseOrders/PurchaseOrderDetail';
@@ -51,6 +52,10 @@ export default function App() {
 
           <Route path="/admin/users" element={
             <ProtectedRoute roles={ADMIN_ONLY}><UserManagement /></ProtectedRoute>
+          } />
+
+          <Route path="/admin/global-config" element={
+            <ProtectedRoute roles={ADMIN_ONLY}><GlobalConfig /></ProtectedRoute>
           } />
 
           <Route path="/products" element={

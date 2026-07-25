@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const auth = require('../middleware/auth');
-const { allowRoles, ALL_ROLES } = require('../middleware/rbac');
+const { allowRoles, ALL_ROLES, ADMIN_ROLES } = require('../middleware/rbac');
 const cities  = require('../controllers/cities.controller');
 const vendors = require('../controllers/vendors.controller');
 const categories = require('../controllers/categories.controller');
@@ -9,6 +9,10 @@ const companies = require('../controllers/companies.controller');
 const canView  = allowRoles(...ALL_ROLES);
 // Master data is editable by any logged-in user; every change is audited.
 const canAdmin = allowRoles(...ALL_ROLES);
+// Companies (Global Config) is managed by Admin/Owner only. GET stays open to
+// ALL_ROLES since Outbound PO creation (open to all roles) reads the company
+// list for its dropdown.
+const canAdminOnly = allowRoles(...ADMIN_ROLES);
 
 // Cities master
 router.get('/cities',         auth, canView,  cities.list);
@@ -23,10 +27,10 @@ router.patch('/categories/:id',   auth, canAdmin, categories.update);
 router.delete('/categories/:id',  auth, canAdmin, categories.remove);
 
 // Companies master
-router.get('/companies',        auth, canView,  companies.list);
-router.post('/companies',       auth, canAdmin, companies.create);
-router.patch('/companies/:id',  auth, canAdmin, companies.update);
-router.delete('/companies/:id', auth, canAdmin, companies.remove);
+router.get('/companies',        auth, canView,      companies.list);
+router.post('/companies',       auth, canAdminOnly, companies.create);
+router.patch('/companies/:id',  auth, canAdminOnly, companies.update);
+router.delete('/companies/:id', auth, canAdminOnly, companies.remove);
 
 // Vendors master
 router.get('/vendors',        auth, canView,  vendors.list);

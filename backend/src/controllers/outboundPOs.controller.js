@@ -158,9 +158,19 @@ async function list(req, res, next) {
     if (vendor_id) { conditions.push('p.vendor_id = ?'); args.push(vendor_id); }
     if (po_date_from) { conditions.push('p.po_date >= ?'); args.push(po_date_from); }
     if (po_date_to)   { conditions.push('p.po_date <= ?'); args.push(po_date_to); }
-    if (status === 'Deleted') { conditions.push("p.status = 'Deleted'"); }
-    else if (status && VALID_STATUSES.includes(status)) { conditions.push('p.status = ?'); args.push(status); }
-    else { conditions.push("p.status <> 'Deleted'"); }
+    if (status === 'Deleted') {
+      conditions.push("p.status = 'Deleted'");
+    } else if (status) {
+      const values = String(status).split(',').map(s => s.trim()).filter(s => VALID_STATUSES.includes(s));
+      if (values.length) {
+        conditions.push(`p.status IN (${values.map(() => '?').join(',')})`);
+        args.push(...values);
+      } else {
+        conditions.push("p.status <> 'Deleted'");
+      }
+    } else {
+      conditions.push("p.status <> 'Deleted'");
+    }
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
     const orderBy = buildOrderBy(req.query, SORT_COLUMNS);

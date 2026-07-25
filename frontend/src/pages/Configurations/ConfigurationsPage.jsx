@@ -13,16 +13,12 @@ import {
 import {
   listCategories, createCategory, updateCategory, deleteCategory,
 } from '../../api/categories.api';
-import {
-  listCompanies, createCompany, updateCompany, deleteCompany,
-} from '../../api/companies.api';
 
 const TABS = [
   { key: 'cities',     label: 'Cities' },
   { key: 'vendors',    label: 'Vendors' },
   { key: 'couriers',   label: 'Courier Partners' },
   { key: 'categories', label: 'Categories' },
-  { key: 'companies',  label: 'Companies' },
 ];
 
 export default function ConfigurationsPage() {
@@ -32,7 +28,7 @@ export default function ConfigurationsPage() {
     <AppShell>
       <div className="mb-4">
         <h1 className="text-2xl font-bold text-[#003049]">Configurations</h1>
-        <p className="text-gray-500 text-sm">Master data for cities, vendors, courier partners, categories, and companies</p>
+        <p className="text-gray-500 text-sm">Master data for cities, vendors, courier partners, and categories</p>
       </div>
 
       <div className="flex gap-1 mb-4 border-b border-gray-200">
@@ -96,17 +92,6 @@ export default function ConfigurationsPage() {
           createFn={createCategory}
           updateFn={updateCategory}
           deleteFn={deleteCategory}
-        />
-      )}
-      {tab === 'companies' && (
-        <MasterTab
-          label="Company"
-          labelPlural="companies"
-          entityType="company"
-          listFn={listCompanies}
-          createFn={createCompany}
-          updateFn={updateCompany}
-          deleteFn={deleteCompany}
         />
       )}
     </AppShell>

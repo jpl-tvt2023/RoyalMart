@@ -1,7 +1,7 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { Plus, Pencil, Trash2, RotateCcw, FileText, Download, Save, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { Plus, Pencil, Trash2, RotateCcw, FileText, Download, Save, ArrowUp, ArrowDown, ArrowUpDown, ChevronDown } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
@@ -30,10 +30,46 @@ function downloadRows(filename, columns, rows) {
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
 
+const STATUS_MULTI_OPTIONS = ['Open', 'Partially Received', 'Closed'];
+
 const defaultFilters = () => ({
-  order_no: '', vendor_id: '', status: 'Open',
+  order_no: '', vendor_id: '', status: ['Open', 'Partially Received'], show_deleted: false,
   po_date_from: '', po_date_to: '',
 });
+
+// Checkbox dropdown for the Status filter — mirrors GRNList's StatusMultiSelect.
+function StatusMultiSelect({ selected, onChange, disabled }) {
+  const detRef = useRef(null);
+  useEffect(() => {
+    const handler = (e) => {
+      if (detRef.current?.open && !detRef.current.contains(e.target)) detRef.current.open = false;
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+  const toggle = (s) => {
+    onChange(selected.includes(s) ? selected.filter(x => x !== s) : [...selected, s]);
+  };
+  const label = (selected.length === 0 || selected.length === STATUS_MULTI_OPTIONS.length)
+    ? 'All statuses'
+    : `${selected.length} selected`;
+  return (
+    <details ref={detRef} className={`relative ${disabled ? 'pointer-events-none opacity-50' : ''}`}>
+      <summary className="list-none cursor-pointer flex items-center justify-between w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30">
+        <span className="text-gray-700 truncate">{label}</span>
+        <ChevronDown size={14} className="text-gray-400 shrink-0" />
+      </summary>
+      <div className="absolute z-20 mt-1 w-60 bg-white border border-gray-200 rounded-lg shadow-lg p-1 max-h-64 overflow-auto">
+        {STATUS_MULTI_OPTIONS.map(s => (
+          <label key={s} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer text-sm">
+            <input type="checkbox" checked={selected.includes(s)} onChange={() => toggle(s)} />
+            <span className="text-gray-700">{s}</span>
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
 
 // Vendor-level columns rendered once per PO (rowSpan across its line rows),
 // split around the Article sub-column group.
@@ -185,10 +221,15 @@ export default function OutboundPOList() {
     const p = overrides?.page ?? page;
     const ps = overrides?.pageSize ?? pageSize;
     const params = { page: p, page_size: ps, sort_by: s.key, sort_dir: s.dir };
-    Object.entries(f).forEach(([k, v]) => {
-      if (k === 'status' && v === 'All') return;
-      if (v) params[k] = v;
-    });
+    if (f.order_no) params.order_no = f.order_no;
+    if (f.vendor_id) params.vendor_id = f.vendor_id;
+    if (f.po_date_from) params.po_date_from = f.po_date_from;
+    if (f.po_date_to) params.po_date_to = f.po_date_to;
+    if (f.show_deleted) {
+      params.status = 'Deleted';
+    } else if (Array.isArray(f.status) && f.status.length) {
+      params.status = f.status.join(',');
+    }
     return params;
   }, [filters, sort, page, pageSize]);
 
@@ -277,13 +318,13 @@ export default function OutboundPOList() {
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
-            <select value={filters.status} onChange={e => setFilter('status', e.target.value)} className={inputCls}>
-              <option value="Open">Open</option>
-              <option value="Partially Received">Partially Received</option>
-              <option value="Closed">Closed</option>
-              <option value="All">All</option>
-              <option value="Deleted">Deleted</option>
-            </select>
+            <StatusMultiSelect selected={filters.status} onChange={v => setFilter('status', v)} disabled={filters.show_deleted} />
+          </div>
+          <div className="flex items-end pb-2">
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input type="checkbox" checked={filters.show_deleted} onChange={e => setFilter('show_deleted', e.target.checked)} />
+              Show deleted
+            </label>
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Order No</label>
