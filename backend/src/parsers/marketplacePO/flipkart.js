@@ -1,4 +1,4 @@
-const pdf = require('pdf-parse');
+const extractPdfText = require('./pdfText');
 const { parseIndianDate } = require('./dates');
 
 // Flipkart Stock Transfer Invoices glue the label and value together with no
@@ -23,7 +23,7 @@ function extractCity(blockLines) {
 }
 
 async function parseFlipkart(buffer) {
-  const { text } = await pdf(buffer);
+  const text = await extractPdfText(buffer);
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
   // Flipkart POs are keyed on the Consignment Note No — the identifier both
@@ -63,12 +63,16 @@ async function parseFlipkart(buffer) {
     const item_desc = i > 0 ? lines[i - 1].trim() : '';
 
     // Find the numeric tail for this row (after the HSN line), before the next
-    // SKU/TOTAL.
+    // SKU/TOTAL. Different PDF-text engines vary on whether they glue this row's
+    // numbers together or insert spaces between them (seen: pdf-parse glues them,
+    // its pdfjs-dist fallback in ./pdfText.js does not) — strip whitespace before
+    // matching so either form works.
     let qty = null;
     for (let k = i + 1; k < lines.length; k++) {
       if (/^SKU:/i.test(lines[k]) || /^TOTAL\b/i.test(lines[k])) break;
-      const m = lines[k].match(/^(\d+)\.\d/);
-      if (m && /^[\d.]+$/.test(lines[k])) { qty = parseInt(m[1], 10); break; }
+      const compact = lines[k].replace(/\s+/g, '');
+      const m = compact.match(/^(\d+)\.\d/);
+      if (m && /^[\d.]+$/.test(compact)) { qty = parseInt(m[1], 10); break; }
     }
     if (!item_code || !(qty > 0)) continue;
     result.push({ line_no: result.length + 1, item_code, item_desc, qty });
