@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Download } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
@@ -13,6 +14,36 @@ import { getOutboundPO, createOutboundPO, updateOutboundPO } from '../../api/out
 import { ROLES } from '../../utils/roles';
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
+
+// One row per PO line, matching the on-screen sub-rows. `columns` is
+// [{ key, header }]; values come straight off the flattened row.
+function downloadRows(filename, columns, rows) {
+  const header = columns.map(c => c.header);
+  const data = rows.map(r => columns.map(c => (r[c.key] == null ? '' : r[c.key])));
+  const ws = XLSX.utils.aoa_to_sheet([header, ...data]);
+  ws['!cols'] = header.map(() => ({ wch: 20 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Export');
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
+  XLSX.writeFile(wb, `${filename}-${stamp}.xlsx`);
+}
+
+const EXPORT_COLUMNS = [
+  { key: 'order_no', header: 'order_no' },
+  { key: 'vendor_name', header: 'vendor' },
+  { key: 'company_name', header: 'company' },
+  { key: 'status', header: 'status' },
+  { key: 'approved_by_name', header: 'approved_by' },
+  { key: 'po_date', header: 'order_date' },
+  { key: 'category', header: 'category' },
+  { key: 'item_name', header: 'item_name' },
+  { key: 'variant', header: 'variant' },
+  { key: 'qty', header: 'qty' },
+  { key: 'rate', header: 'rate' },
+  { key: 'received', header: 'received' },
+  { key: 'short', header: 'short' },
+  { key: 'pending', header: 'pending' },
+];
 
 const today = () => new Date().toISOString().slice(0, 10);
 const emptyLine = () => ({ mapping: '', category: '', item_name: '', variant: '', qty: 1, rate: 0, received: 0, short: 0 });
@@ -41,6 +72,7 @@ export default function OutboundPODetail() {
   const [approvers, setApprovers] = useState([]);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [notFound, setNotFound] = useState(false);
 
   const [po, setPo] = useState({
@@ -120,6 +152,28 @@ export default function OutboundPODetail() {
   const liveStatus = isNew ? 'Open' : (po.status === 'Deleted' ? 'Deleted' : deriveStatus(lines));
   const readOnly = po.status === 'Deleted';
 
+  const handleDownload = () => {
+    setDownloading(true);
+    try {
+      const companyName = companies.find(c => c.id === Number(po.company_id))?.name || '';
+      const approverName = approvers.find(a => a.id === Number(po.approved_by))?.name || '';
+      const base = {
+        order_no: po.order_no || '', vendor_name: vendor?.name || '', company_name: companyName,
+        status: liveStatus, approved_by_name: approverName, po_date: po.po_date || '',
+      };
+      const exportRows = lines.length
+        ? lines.map(l => ({
+            ...base,
+            category: l.category, item_name: l.item_name, variant: l.variant || '',
+            qty: l.qty, rate: l.rate,
+            received: isNew ? '' : l.received, short: isNew ? '' : l.short,
+            pending: isNew ? '' : pendingOf(l),
+          }))
+        : [{ ...base, category: '', item_name: '', variant: '', qty: '', rate: '', received: '', short: '', pending: '' }];
+      downloadRows(`outbound-po-${po.order_no || 'new'}`, EXPORT_COLUMNS, exportRows);
+    } finally { setDownloading(false); }
+  };
+
   const handleSave = async (e) => {
     e.preventDefault();
     if (!po.vendor_id) { toast.error('Select a vendor'); return; }
@@ -177,7 +231,12 @@ export default function OutboundPODetail() {
             )}
           </div>
         </div>
-        {!isNew && <HistoryButton entityType="outbound_po" entityId={Number(id)} title={`PO ${po.order_no} history`} />}
+        {!isNew && (
+          <div className="flex gap-2">
+            <Button type="button" variant="ghost" onClick={handleDownload} loading={downloading}><Download size={16} />Download XLSX</Button>
+            <HistoryButton entityType="outbound_po" entityId={Number(id)} title={`PO ${po.order_no} history`} />
+          </div>
+        )}
       </div>
 
       {loading ? (

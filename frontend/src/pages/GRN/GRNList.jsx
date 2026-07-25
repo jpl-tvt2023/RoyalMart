@@ -116,6 +116,7 @@ const DELIVERY_CODE_VENDORS = ['Now'];
 const buildColumns = (vendorTab) => [
   { key: 'dispatch_date',       label: 'Builty Date' },
   { key: 'tracking_id',         label: 'Tracking' },
+  { key: 'box',                 label: 'Box' },
   { key: 'appointment_date',    label: 'Appointment Date' },
   ...(ASN_VENDORS.includes(vendorTab) ? [{ key: 'asn', label: 'ASN' }] : []),
   ...(APPOINTMENT_ID_VENDORS.includes(vendorTab) ? [{ key: 'appointment_id', label: 'Appointment ID' }] : []),
@@ -701,6 +702,8 @@ export default function GRNList() {
                           return <td key={col.key} className="px-3 py-2 text-gray-700 whitespace-nowrap">{po[col.key] || '—'}</td>;
                         case 'tracking_id':
                           return <td key={col.key} className="px-3 py-2 text-gray-700 font-mono whitespace-nowrap">{po.tracking_id || '—'}</td>;
+                        case 'box':
+                          return <td key={col.key} className="px-3 py-2 text-gray-700 font-mono whitespace-nowrap">{po.box ?? '—'}</td>;
                         case 'appointment_date':
                           return (
                             <td key={col.key} className="px-3 py-2">

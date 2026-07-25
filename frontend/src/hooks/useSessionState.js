@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 
 // useState that persists to sessionStorage under `key` (per browser tab/window).
 // `initial` may be a value or a factory. Bump VERSION to invalidate old shapes.
-const VERSION = 'v1';
+const VERSION = 'v2';
 export function useSessionState(key, initial) {
   const storageKey = `roms:${key}:${VERSION}`;
   const [value, setValue] = useState(() => {

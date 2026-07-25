@@ -3,7 +3,7 @@ const { logAction, diffFields } = require('../services/auditLog.service');
 const { userHasRole } = require('../services/userRoles.service');
 
 const ORDER_SUMMARY_FIELDS = [
-  'office_poc', 'warehouse_poc', 'status', 'dispatch_date', 'courier_id', 'tracking_id',
+  'office_poc', 'warehouse_poc', 'status', 'dispatch_date', 'courier_id', 'tracking_id', 'box',
   'bill_no', 'bill_date', 'appointment_date', 'asn', 'appointment_id', 'grn_status', 'grn_date', 'grn_qty', 'grn_number',
   'discrepancy_qty', 'discrepancy_number', 'note', 'delivery_code',
 ];
@@ -41,6 +41,7 @@ const SORT_COLUMNS = {
   expiry_or_pickup:    'COALESCE(p.pickup_date, p.po_expiry_date)',
   dispatch_date:       'p.dispatch_date',
   tracking_id:         'p.tracking_id',
+  box:                 'p.box',
   bill_no:             'p.bill_no',
   party_name:          'p.party_name',
   appointment_date:    'p.appointment_date',
@@ -133,7 +134,7 @@ async function list(req, res, next) {
              p.pickup_date, COALESCE(p.pickup_date, p.po_expiry_date) AS expiry_or_pickup,
              p.city, p.status, p.dispatch_date,
              p.office_poc, p.warehouse_poc,
-             p.courier_id, p.tracking_id,
+             p.courier_id, p.tracking_id, p.box,
              p.party_name, p.bill_no, p.bill_date,
              p.appointment_date, p.asn, p.appointment_id, p.grn_status, p.grn_date,
              p.grn_qty, p.grn_number, p.discrepancy_qty, p.discrepancy_number,
@@ -178,7 +179,7 @@ async function updateOne(req, res, next) {
     const { poId } = req.params;
     const { rows: existing } = await db.execute({
       sql: `SELECT po_id, vendor, city, status, dispatch_date, office_poc, warehouse_poc,
-                   courier_id, tracking_id, bill_no, bill_date,
+                   courier_id, tracking_id, box, bill_no, bill_date,
                    appointment_date, asn, appointment_id, grn_status, grn_date, grn_qty, grn_number,
                    discrepancy_qty, discrepancy_number, note, delivery_code
             FROM marketplace_pos WHERE po_id = ?`,
@@ -331,6 +332,8 @@ async function updateOne(req, res, next) {
       }
     }
 
+    let nextBox = current.box;
+
     let nextBillNo = current.bill_no;
     if (has('bill_no')) {
       const b = req.body.bill_no;
@@ -396,6 +399,16 @@ async function updateOne(req, res, next) {
       }
       return s;
     };
+    const parsePositiveInt = (val, label) => {
+      if (val == null || val === '') return null;
+      const n = Number(val);
+      if (!Number.isInteger(n) || n < 1) {
+        const err = new Error(`${label} must be a positive integer`);
+        err.statusCode = 400;
+        throw err;
+      }
+      return n;
+    };
 
     try {
       if (has('bill_date')) nextBillDate = parseDateField(req.body.bill_date, 'bill_date');
@@ -430,6 +443,7 @@ async function updateOne(req, res, next) {
         const d = req.body.delivery_code;
         nextDeliveryCode = (d == null || String(d).trim() === '') ? null : String(d).trim();
       }
+      if (has('box')) nextBox = parsePositiveInt(req.body.box, 'Box');
     } catch (e) {
       if (e.statusCode === 400) return res.status(400).json({ message: e.message });
       throw e;
@@ -491,6 +505,7 @@ async function updateOne(req, res, next) {
       if (!nextDispatchDate) missing.push('dispatch date');
       if (nextCourierId == null) missing.push('courier');
       if (!nextTrackingId) missing.push('tracking ID');
+      if (nextBox == null) missing.push('box');
       if (missing.length) {
         return res.status(400).json({
           message: `Cannot close order — missing: ${missing.join(', ')}`,
@@ -501,6 +516,7 @@ async function updateOne(req, res, next) {
       nextDispatchDate = null;
       nextCourierId = null;
       nextTrackingId = null;
+      nextBox = null;
     }
 
     const tx = await db.transaction('write');
@@ -508,14 +524,14 @@ async function updateOne(req, res, next) {
       await tx.execute({
         sql: `UPDATE marketplace_pos
               SET office_poc = ?, warehouse_poc = ?, status = ?, dispatch_date = ?,
-                  courier_id = ?, tracking_id = ?, bill_no = ?, bill_date = ?,
+                  courier_id = ?, tracking_id = ?, box = ?, bill_no = ?, bill_date = ?,
                   appointment_date = ?, asn = ?, appointment_id = ?, grn_status = ?, grn_date = ?,
                   grn_qty = ?, grn_number = ?, discrepancy_qty = ?, discrepancy_number = ?,
                   note = ?, delivery_code = ?,
                   updated_by = ?, updated_at = datetime('now')
               WHERE po_id = ?`,
         args: [
-          officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, nextBillNo, nextBillDate,
+          officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, nextBox, nextBillNo, nextBillDate,
           nextAppointmentDate, nextAsn, nextAppointmentId, nextGrnStatus, nextGrnDate,
           nextGrnQty, nextGrnNumber, nextDiscrepancyQty, nextDiscrepancyNumber,
           nextNote, nextDeliveryCode,
@@ -524,7 +540,7 @@ async function updateOne(req, res, next) {
       });
       const changes = diffFields(current, {
         office_poc: officePoc, warehouse_poc: warehousePoc, status: nextStatus,
-        dispatch_date: nextDispatchDate, courier_id: nextCourierId, tracking_id: nextTrackingId,
+        dispatch_date: nextDispatchDate, courier_id: nextCourierId, tracking_id: nextTrackingId, box: nextBox,
         bill_no: nextBillNo, bill_date: nextBillDate, appointment_date: nextAppointmentDate, asn: nextAsn,
         appointment_id: nextAppointmentId,
         grn_status: nextGrnStatus, grn_date: nextGrnDate, grn_qty: nextGrnQty,
@@ -535,7 +551,7 @@ async function updateOne(req, res, next) {
         client: tx,
         userId: req.user.id,
         actionType: 'ORDER_SUMMARY_UPDATE',
-        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, bill_no=${nextBillNo || '—'}, bill_date=${nextBillDate || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, appointment_id=${nextAppointmentId || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}, note=${nextNote ? '"' + nextNote.slice(0, 60) + (nextNote.length > 60 ? '…' : '') + '"' : '—'}, delivery_code=${nextDeliveryCode || '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
+        description: `Order Summary update on ${poId}: status=${nextStatus}, dispatch_date=${nextDispatchDate || '—'}, office_poc=${officePoc || '—'}, warehouse_poc=${warehousePoc || '—'}, courier_id=${nextCourierId || '—'}, tracking_id=${nextTrackingId || '—'}, box=${nextBox == null ? '—' : nextBox}, bill_no=${nextBillNo || '—'}, bill_date=${nextBillDate || '—'}, appointment_date=${nextAppointmentDate || '—'}, asn=${nextAsn || '—'}, appointment_id=${nextAppointmentId || '—'}, grn_status=${nextGrnStatus || '—'}, grn_date=${nextGrnDate || '—'}, grn_qty=${nextGrnQty == null ? '—' : nextGrnQty}, grn_number=${nextGrnNumber || '—'}, discrepancy_qty=${nextDiscrepancyQty == null ? '—' : nextDiscrepancyQty}, discrepancy_number=${nextDiscrepancyNumber || '—'}, note=${nextNote ? '"' + nextNote.slice(0, 60) + (nextNote.length > 60 ? '…' : '') + '"' : '—'}, delivery_code=${nextDeliveryCode || '—'}${trackingDuplicateConfirmed ? ' (duplicate tracking ID confirmed)' : ''}`,
         entityType: 'marketplace_po',
         entityRef: poId,
         changes,
