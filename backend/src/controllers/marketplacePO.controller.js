@@ -66,8 +66,19 @@ async function parsePreview(req, res, next) {
 
     let parsed;
     try {
+      // TEMP diagnostic (2026-07-25): tracing a prod-only "bad XRef entry" parse
+      // failure that doesn't reproduce locally with the identical file — logging
+      // buffer length/hash to compare what Vercel actually receives against the
+      // known-good source file. Remove once root-caused.
+      console.log('[parsePreview] buffer diag', {
+        vendor,
+        filename: req.file.originalname,
+        length: req.file.buffer.length,
+        sha256: require('crypto').createHash('sha256').update(req.file.buffer).digest('hex'),
+      });
       parsed = await parse(vendor, req.file.buffer);
     } catch (err) {
+      console.error('[parsePreview] parse threw', { vendor, filename: req.file.originalname, message: err.message });
       return res.status(400).json({ message: `Parse failed: ${err.message}` });
     }
 
