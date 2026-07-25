@@ -27,4 +27,15 @@
     scrollbar-width: thin;
     scrollbar-color: #c1121f #fdf0d5;
   }
+  .scrollbar-thin::-webkit-scrollbar {
+    height: 10px;
+    width: 10px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: #fdf0d5;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: #c1121f;
+    border-radius: 9999px;
+  }
 }

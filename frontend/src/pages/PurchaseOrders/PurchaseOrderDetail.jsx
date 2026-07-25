@@ -177,7 +177,7 @@ export default function PurchaseOrderDetail() {
               </h3>
               <Button type="button" variant="ghost" onClick={addLine}><Plus size={14} />Add Line</Button>
             </div>
-            <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
+            <div className="overflow-x-auto scrollbar-thin bg-white border border-gray-200 rounded-lg">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">

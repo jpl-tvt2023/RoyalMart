@@ -88,7 +88,7 @@ function GrnAppointmentTable({ title, date, rows, navigate, vendors }) {
       <div className="px-3 py-2 border-b border-gray-100 text-xs font-medium text-[#003049]">
         {title} <span className="text-gray-400 font-normal">· {date}</span>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto scrollbar-thin">
         <table className="w-full text-xs">
           <thead className="bg-gray-50">
             <tr>
@@ -149,7 +149,7 @@ function PocSummaryTable({ title, rows, pocParam, navigate }) {
       <div className="px-3 py-2 border-b border-gray-100 text-xs font-medium text-[#003049]">
         {title}
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto scrollbar-thin">
         <table className="w-full text-xs">
           <thead className="bg-gray-50">
             <tr>
@@ -215,7 +215,7 @@ function PoStatusByVendorTable({ data, vendors, navigate }) {
       <div className="px-3 py-2 border-b border-gray-100 text-xs font-medium text-[#003049]">
         PO Status by Vendor
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto scrollbar-thin">
         <table className="w-full text-xs">
           <thead className="bg-gray-50">
             <tr>

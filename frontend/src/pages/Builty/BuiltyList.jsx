@@ -302,7 +302,7 @@ export default function BuiltyList() {
       <Legend items={UNSAVED_LEGEND} className="mb-2" />
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto scrollbar-thin">
           <table className="w-full text-sm">
             <thead className="sticky top-0 z-10 bg-gray-50">
               <tr className="border-b border-gray-200">

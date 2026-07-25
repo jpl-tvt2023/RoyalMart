@@ -113,7 +113,7 @@ export default function BulkUploadModal({ isOpen, onClose, onDone, config }) {
               <Download size={14} /> Download template
             </button>
           </div>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto scrollbar-thin">
             <table className="w-full text-xs">
               <thead>
                 <tr className="bg-white border border-gray-200">
