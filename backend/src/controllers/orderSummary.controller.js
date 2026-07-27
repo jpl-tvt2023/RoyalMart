@@ -500,7 +500,13 @@ async function updateOne(req, res, next) {
       if (nextDiscrepancyQty === 0) nextDiscrepancyNumber = null;
     }
 
-    if (nextStatus === 'Closed') {
+    // Only re-check close-completeness when the request actually touches one of
+    // these fields — otherwise unrelated saves (e.g. GRN fields on the GRN page)
+    // would fail on legacy POs closed before the `box` column existed (box is
+    // null there with no backfill).
+    const touchesCloseFields = has('status') || has('dispatch_date') || has('courier_id')
+      || has('tracking_id') || has('box');
+    if (nextStatus === 'Closed' && touchesCloseFields) {
       const missing = [];
       if (!nextDispatchDate) missing.push('dispatch date');
       if (nextCourierId == null) missing.push('courier');
