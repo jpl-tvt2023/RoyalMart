@@ -13,6 +13,9 @@ const ORDER_SUMMARY_FIELDS = [
 // becomes mandatory once an appointment date is set.
 const ASN_VENDORS = ['Zepto'];
 const APPOINTMENT_ID_VENDORS = ['Now', 'Blinkit'];
+// Box is only tracked for the Now/Minutes quick-commerce vendors. Keep this
+// list in sync with BOX_VENDORS in frontend OrderSummaryList.jsx.
+const BOX_VENDORS = ['Now', 'Minutes'];
 const { buildPagination, buildOrderBy } = require('./marketplacePO.controller');
 
 const VALID_STATUSES = ['Open', 'Closed'];
@@ -500,12 +503,18 @@ async function updateOne(req, res, next) {
       if (nextDiscrepancyQty === 0) nextDiscrepancyNumber = null;
     }
 
-    if (nextStatus === 'Closed') {
+    // Only re-check close-completeness when the request actually touches one of
+    // these fields — otherwise unrelated saves (e.g. GRN fields on the GRN page)
+    // would fail on legacy POs closed before the `box` column existed (box is
+    // null there with no backfill).
+    const touchesCloseFields = has('status') || has('dispatch_date') || has('courier_id')
+      || has('tracking_id') || has('box');
+    if (nextStatus === 'Closed' && touchesCloseFields) {
       const missing = [];
       if (!nextDispatchDate) missing.push('dispatch date');
       if (nextCourierId == null) missing.push('courier');
       if (!nextTrackingId) missing.push('tracking ID');
-      if (nextBox == null) missing.push('box');
+      if (BOX_VENDORS.includes(current.vendor) && nextBox == null) missing.push('box');
       if (missing.length) {
         return res.status(400).json({
           message: `Cannot close order — missing: ${missing.join(', ')}`,

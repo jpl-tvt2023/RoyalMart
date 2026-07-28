@@ -28,6 +28,10 @@ const UNSAVED_LEGEND = [{ swatch: DIRTY_ROW, label: 'Unsaved changes' }];
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
+// Box is only tracked for the Now/Minutes quick-commerce vendors. Keep this
+// list in sync with BOX_VENDORS in backend orderSummary.controller.js.
+const BOX_VENDORS = ['Now', 'Minutes'];
+
 const defaultFilters = () => ({
   po_id: '', city: '',
   po_date_from: '', po_date_to: '',
@@ -77,7 +81,11 @@ const buildColumns = (vendorTab) => {
     { key: 'box',                label: 'Box' },
     { key: 'updated_at',         label: 'Last Updated' },
   ];
-  return vendorTab ? cols.filter(c => c.key !== 'vendor') : cols;
+  return cols.filter(c => {
+    if (c.key === 'vendor') return !vendorTab;
+    if (c.key === 'box') return !vendorTab || BOX_VENDORS.includes(vendorTab);
+    return true;
+  });
 };
 
 export default function OrderSummaryList() {
@@ -248,7 +256,7 @@ export default function OrderSummaryList() {
       if (!nextDispatch) missing.push('dispatch date');
       if (nextCourier == null || nextCourier === '') missing.push('courier');
       if (!String(nextTracking ?? '').trim()) missing.push('tracking ID');
-      if (nextBox == null || nextBox === '' || !Number.isInteger(Number(nextBox)) || Number(nextBox) < 1) missing.push('box');
+      if (BOX_VENDORS.includes(po.vendor) && (nextBox == null || nextBox === '' || !Number.isInteger(Number(nextBox)) || Number(nextBox) < 1)) missing.push('box');
       if (missing.length) return toast.error(`Cannot close — missing: ${missing.join(', ')}`);
     }
     setSavingId(po.po_id);
@@ -748,7 +756,7 @@ export default function OrderSummaryList() {
                         case 'box':
                           return (
                             <td key={col.key} className="px-3 py-2">
-                              {canEdit ? (
+                              {canEdit && BOX_VENDORS.includes(po.vendor) ? (
                                 <input
                                   type="number"
                                   min={1}
