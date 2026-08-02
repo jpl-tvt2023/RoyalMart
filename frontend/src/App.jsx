@@ -21,7 +21,7 @@ import ProcurementPage from './pages/Procurement/ProcurementPage';
 import OutboundVendorsPage from './pages/OutboundVendors/OutboundVendorsPage';
 import OutboundPOList from './pages/OutboundPOs/OutboundPOList';
 import OutboundPODetail from './pages/OutboundPOs/OutboundPODetail';
-import ComingSoon from './pages/ComingSoon';
+import PackagingList from './pages/packaging/PackagingList';
 import { ALL_ROLES, ADMIN_ONLY } from './utils/roles';
 
 export default function App() {
@@ -92,9 +92,8 @@ export default function App() {
             <ProtectedRoute roles={ALL_ROLES}><ConfigurationsPage /></ProtectedRoute>
           } />
 
-          {/* Scaffolded as placeholders, built next */}
           <Route path="/packaging-items" element={
-            <ProtectedRoute roles={ALL_ROLES}><ComingSoon title="Packaging Items" /></ProtectedRoute>
+            <ProtectedRoute roles={ALL_ROLES}><PackagingList /></ProtectedRoute>
           } />
           <Route path="/outbound/purchase-orders" element={
             <ProtectedRoute roles={ALL_ROLES}><OutboundPOList /></ProtectedRoute>
