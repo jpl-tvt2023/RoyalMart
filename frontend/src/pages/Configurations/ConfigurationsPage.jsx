@@ -13,16 +13,12 @@ import {
 import {
   listCategories, createCategory, updateCategory, deleteCategory,
 } from '../../api/categories.api';
-import {
-  listOutboundCategories, createOutboundCategory, updateOutboundCategory, deleteOutboundCategory,
-} from '../../api/outboundCategories.api';
 
 const TABS = [
-  { key: 'cities',             label: 'Cities' },
-  { key: 'vendors',            label: 'Vendors' },
-  { key: 'couriers',           label: 'Courier Partners' },
-  { key: 'categories',         label: 'Categories' },
-  { key: 'outboundCategories', label: 'Outbound Categories' },
+  { key: 'cities',     label: 'Cities' },
+  { key: 'vendors',    label: 'Vendors' },
+  { key: 'couriers',   label: 'Courier Partners' },
+  { key: 'categories', label: 'Categories' },
 ];
 
 export default function ConfigurationsPage() {
@@ -96,17 +92,6 @@ export default function ConfigurationsPage() {
           createFn={createCategory}
           updateFn={updateCategory}
           deleteFn={deleteCategory}
-        />
-      )}
-      {tab === 'outboundCategories' && (
-        <MasterTab
-          label="Category"
-          labelPlural="outbound categories"
-          entityType="outbound_category"
-          listFn={listOutboundCategories}
-          createFn={createOutboundCategory}
-          updateFn={updateOutboundCategory}
-          deleteFn={deleteOutboundCategory}
         />
       )}
     </AppShell>

@@ -5,7 +5,6 @@ const cities  = require('../controllers/cities.controller');
 const vendors = require('../controllers/vendors.controller');
 const categories = require('../controllers/categories.controller');
 const companies = require('../controllers/companies.controller');
-const outboundCategories = require('../controllers/outboundCategories.controller');
 
 const canView  = allowRoles(...ALL_ROLES);
 // Master data is editable by any logged-in user; every change is audited.
@@ -26,12 +25,6 @@ router.get('/categories',         auth, canView,  categories.list);
 router.post('/categories',        auth, canAdmin, categories.create);
 router.patch('/categories/:id',   auth, canAdmin, categories.update);
 router.delete('/categories/:id',  auth, canAdmin, categories.remove);
-
-// Outbound Categories master
-router.get('/outbound-categories',        auth, canView,  outboundCategories.list);
-router.post('/outbound-categories',       auth, canAdmin, outboundCategories.create);
-router.patch('/outbound-categories/:id',  auth, canAdmin, outboundCategories.update);
-router.delete('/outbound-categories/:id', auth, canAdmin, outboundCategories.remove);
 
 // Companies master
 router.get('/companies',        auth, canView,      companies.list);

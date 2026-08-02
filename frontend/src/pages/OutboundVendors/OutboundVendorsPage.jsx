@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { Plus, Pencil, Power, Trash2, Upload, Download } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -9,13 +9,14 @@ import BulkUploadModal from '../products/BulkUploadModal';
 import { useRBAC } from '../../hooks/useRBAC';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { formatDateTime } from '../../utils/formatters';
-import { CATEGORIES, ITEM_NAME_OPTIONS } from '../../constants/outboundArticles';
+import { sortByText } from '../../utils/sort';
 import {
   listOutboundVendors, createOutboundVendor, updateOutboundVendor, deleteOutboundVendor,
   bulkUpsertOutboundVendors,
 } from '../../api/outboundVendors.api';
+import { getPackagingRawMaterials } from '../../api/packagingRawMaterials.api';
 
-const emptyRow = () => ({ category: 'Raw Material', item_name: '', variant: '' });
+const emptyRow = () => ({ category: '', item_name: '', variant: '' });
 const emptyForm = () => ({ name: '', is_active: true, articles: [emptyRow()] });
 
 // Export columns match the bulk-upload template so a downloaded file can be
@@ -37,7 +38,7 @@ const uploadConfig = {
   headers: ['vendor_name', 'category', 'item_name', 'variant'],
   sampleRow: ['Om Sai Packaging', 'Packaging', 'Corrugated', '60'],
   requiredKeys: ['vendor_name', 'category', 'item_name'],
-  instructions: `One row per article mapping. category must be one of ${CATEGORIES.join(' / ')}; item_name must match the fixed options for Raw Material (${ITEM_NAME_OPTIONS['Raw Material'].join(', ')}) or Packaging (${ITEM_NAME_OPTIONS['Packaging'].join(', ')}), and is free text for Others. New vendor names are created automatically; rows matching an existing mapping are skipped — nothing is ever deleted.`,
+  instructions: 'One row per article mapping. category and item_name must match an existing entry on the Packaging Products → Raw Material page. New vendor names are created automatically; rows matching an existing mapping are skipped — nothing is ever deleted.',
   submit: (rows) => bulkUpsertOutboundVendors(rows),
 };
 
@@ -57,6 +58,28 @@ export default function OutboundVendorsPage() {
   const [saving, setSaving] = useState(false);
   const [togglingId, setTogglingId] = useState(null);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [catalogRows, setCatalogRows] = useState([]);
+
+  useEffect(() => {
+    getPackagingRawMaterials()
+      .then(r => setCatalogRows(r.data || []))
+      .catch(() => {});
+  }, []);
+
+  // Category/Item Name options for the article-mapping sub-form, sourced
+  // from the Packaging Products → Raw Material master.
+  const catalogCategories = useMemo(
+    () => sortByText(Array.from(new Set(catalogRows.map(r => r.category)))),
+    [catalogRows]
+  );
+  const itemNamesByCategory = useMemo(() => {
+    const map = catalogRows.reduce((acc, r) => {
+      (acc[r.category] ||= []).push(r.item_name);
+      return acc;
+    }, {});
+    for (const cat of Object.keys(map)) map[cat] = sortByText(map[cat]);
+    return map;
+  }, [catalogRows]);
 
   // One export row per mapping, headers matching the upload template.
   const downloadXlsx = () => downloadRows('outbound-vendors', [
@@ -106,6 +129,7 @@ export default function OutboundVendorsPage() {
     const name = form.name.trim();
     if (!name) { setFormError('Vendor name is required'); return; }
     if (!form.articles.length) { setFormError('Add at least one article mapping'); return; }
+    if (form.articles.some(a => !a.category)) { setFormError('Every mapping needs a category'); return; }
     if (form.articles.some(a => !a.item_name?.trim())) { setFormError('Every mapping needs an item name'); return; }
 
     setSaving(true);
@@ -280,6 +304,9 @@ export default function OutboundVendorsPage() {
               <h3 className="text-sm font-semibold text-[#003049]">Article Mappings ({form.articles.length})</h3>
               <Button type="button" variant="ghost" onClick={addRow}><Plus size={14} />Add Mapping</Button>
             </div>
+            {catalogCategories.length === 0 && (
+              <p className="text-xs text-amber-600 mb-2">No packaging raw materials exist yet — add them on the Packaging Products → Raw Material page first.</p>
+            )}
             <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
               <table className="w-full text-sm">
                 <thead>
@@ -299,23 +326,20 @@ export default function OutboundVendorsPage() {
                           onChange={e => updateRow(idx, { category: e.target.value, item_name: '' })}
                           className={cellCls}
                         >
-                          {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                          <option value="">Select category...</option>
+                          {catalogCategories.map(c => <option key={c} value={c}>{c}</option>)}
                         </select>
                       </td>
                       <td className="px-3 py-2">
-                        {ITEM_NAME_OPTIONS[a.category] ? (
-                          <select value={a.item_name} onChange={e => updateRow(idx, { item_name: e.target.value })} className={cellCls}>
-                            <option value="">Select...</option>
-                            {ITEM_NAME_OPTIONS[a.category].map(n => <option key={n} value={n}>{n}</option>)}
-                          </select>
-                        ) : (
-                          <input
-                            value={a.item_name}
-                            onChange={e => updateRow(idx, { item_name: e.target.value })}
-                            placeholder="e.g. Wooden Pallet"
-                            className={cellCls}
-                          />
-                        )}
+                        <select
+                          value={a.item_name}
+                          onChange={e => updateRow(idx, { item_name: e.target.value })}
+                          disabled={!a.category}
+                          className={cellCls}
+                        >
+                          <option value="">Select...</option>
+                          {(itemNamesByCategory[a.category] || []).map(n => <option key={n} value={n}>{n}</option>)}
+                        </select>
                       </td>
                       <td className="px-3 py-2">
                         <input

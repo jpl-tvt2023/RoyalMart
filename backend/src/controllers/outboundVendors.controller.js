@@ -1,6 +1,5 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
-const { CATEGORIES, ITEM_NAME_OPTIONS } = require('../constants/outboundArticles');
 
 function normName(v) {
   return v == null ? '' : String(v).trim();
@@ -14,16 +13,21 @@ function normalizeArticles(articles) {
   }));
 }
 
-// Category must be one of the fixed set; Item Name must be one of that
-// category's fixed choices, except 'Others' which accepts any free text.
-function validateArticles(articles) {
+// Category/item_name must match an existing packaging_raw_materials entry —
+// that master list is maintained on the Packaging Products page.
+async function loadAllowedArticles() {
+  const { rows } = await db.execute('SELECT category, item_name FROM packaging_raw_materials');
+  return rows;
+}
+
+function validateArticles(articles, allowed) {
   if (!articles.length) return 'At least one article mapping is required';
+  const allowedSet = new Set(allowed.map(a => `${a.category}|${a.item_name}`));
   for (const a of articles) {
-    if (!CATEGORIES.includes(a.category)) return `Invalid category "${a.category}"`;
+    if (!a.category) return 'Category is required for every mapping';
     if (!a.item_name) return 'Item name is required for every mapping';
-    const fixedList = ITEM_NAME_OPTIONS[a.category];
-    if (fixedList && !fixedList.includes(a.item_name)) {
-      return `"${a.item_name}" is not a valid item name for ${a.category}`;
+    if (!allowedSet.has(`${a.category}|${a.item_name}`)) {
+      return `"${a.category} / ${a.item_name}" is not a recognized packaging raw material — add it on the Packaging Products page first`;
     }
   }
   return null;
@@ -55,7 +59,8 @@ async function create(req, res, next) {
     const name = normName(req.body?.name);
     if (!name) return res.status(400).json({ message: 'name is required' });
     const articles = normalizeArticles(req.body?.articles || []);
-    const articlesError = validateArticles(articles);
+    const allowed = await loadAllowedArticles();
+    const articlesError = validateArticles(articles, allowed);
     if (articlesError) return res.status(400).json({ message: articlesError });
 
     const tx = await db.transaction('write');
@@ -117,7 +122,8 @@ async function update(req, res, next) {
     let nextArticles = null;
     if (has('articles')) {
       nextArticles = normalizeArticles(req.body.articles || []);
-      const articlesError = validateArticles(nextArticles);
+      const allowed = await loadAllowedArticles();
+      const articlesError = validateArticles(nextArticles, allowed);
       if (articlesError) return res.status(400).json({ message: articlesError });
     }
 
@@ -195,14 +201,6 @@ async function remove(req, res, next) {
 
 const BULK_LIMIT = 2000;
 
-// Case-insensitive lookup of the canonical value from a fixed list, so
-// hand-edited spreadsheets ("packaging", "CAPS") still map to the official
-// casing stored in the DB.
-function canonical(list, value) {
-  const v = String(value || '').trim().toLowerCase();
-  return list.find(x => x.toLowerCase() === v) || null;
-}
-
 async function bulkUpsert(req, res, next) {
   try {
     const { rows: input } = req.body || {};
@@ -223,6 +221,20 @@ async function bulkUpsert(req, res, next) {
       `${vendorId}${a.category.toLowerCase()}${a.item_name.toLowerCase()}${(a.variant || '').toLowerCase()}`;
     const existingKeys = new Set(articles.map(a => articleKey(a.vendor_id, a)));
 
+    // Case-insensitive lookup against the current packaging_raw_materials
+    // catalog, so hand-edited spreadsheets ("packaging", "CAPS") still map to
+    // the official casing stored there.
+    const allowed = await loadAllowedArticles();
+    const categoryByLower = new Map();
+    const itemNamesByCategory = new Map(); // canonical category -> Map(lower item_name -> canonical item_name)
+    for (const a of allowed) {
+      const catLower = a.category.toLowerCase();
+      if (!categoryByLower.has(catLower)) categoryByLower.set(catLower, a.category);
+      const canonicalCat = categoryByLower.get(catLower);
+      if (!itemNamesByCategory.has(canonicalCat)) itemNamesByCategory.set(canonicalCat, new Map());
+      itemNamesByCategory.get(canonicalCat).set(a.item_name.toLowerCase(), a.item_name);
+    }
+
     const skipped = [];
     let inserted = 0; // mappings added under newly created vendors
     let updated = 0;  // mappings added to pre-existing vendors
@@ -232,7 +244,7 @@ async function bulkUpsert(req, res, next) {
     for (let i = 0; i < input.length; i++) {
       const r = input[i] || {};
       const vendorName = normName(r.vendor_name);
-      const category = canonical(CATEGORIES, r.category);
+      const category = categoryByLower.get(normName(r.category).toLowerCase());
       const variant = normName(r.variant) || null;
 
       if (!vendorName) {
@@ -240,18 +252,13 @@ async function bulkUpsert(req, res, next) {
         continue;
       }
       if (!category) {
-        skipped.push({ row: i + 2, reason: `Invalid category "${normName(r.category)}" (use ${CATEGORIES.join(', ')})` });
+        skipped.push({ row: i + 2, reason: `Invalid category "${normName(r.category)}" — add it on the Packaging Products page first` });
         continue;
       }
-      const fixedList = ITEM_NAME_OPTIONS[category];
-      const itemName = fixedList ? canonical(fixedList, r.item_name) : normName(r.item_name);
+      const itemNameMap = itemNamesByCategory.get(category);
+      const itemName = itemNameMap && itemNameMap.get(normName(r.item_name).toLowerCase());
       if (!itemName) {
-        skipped.push({
-          row: i + 2,
-          reason: fixedList
-            ? `Invalid item_name "${normName(r.item_name)}" for ${category} (use ${fixedList.join(', ')})`
-            : 'item_name is required',
-        });
+        skipped.push({ row: i + 2, reason: `Invalid item_name "${normName(r.item_name)}" for ${category} — add it on the Packaging Products page first` });
         continue;
       }
 

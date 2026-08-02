@@ -9,8 +9,6 @@ import {
   deletePackagingRawMaterial, bulkUpsertPackagingRawMaterials, bulkDeletePackagingRawMaterials,
 } from '../../api/packagingRawMaterials.api';
 import { getPackagingProducts } from '../../api/packagingProducts.api';
-import { listOutboundCategories } from '../../api/outboundCategories.api';
-import { sortByText } from '../../utils/sort';
 import { Plus, Pencil, Trash2, Search, Upload, Download } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useRBAC } from '../../hooks/useRBAC';
@@ -115,7 +113,6 @@ function PackagingRawMaterialsTab() {
   const { canEdit: canWrite } = useRBAC();
 
   const [rows, setRows] = useState([]);
-  const [categories, setCategories] = useState([]);
   const [search, setSearch] = useSessionState('packaging.raw.search', '');
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
@@ -135,12 +132,6 @@ function PackagingRawMaterialsTab() {
       .finally(() => setLoading(false));
   };
   useEffect(load, []);
-
-  useEffect(() => {
-    listOutboundCategories()
-      .then(rows => setCategories(sortByText((rows || []).filter(c => c.is_active), c => c.name)))
-      .catch(() => {});
-  }, []);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -282,16 +273,13 @@ function PackagingRawMaterialsTab() {
         <form onSubmit={handleSave} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Category <span className="text-red-500">*</span></label>
-            <select required value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} className={inputCls}>
-              <option value="">Select a category…</option>
-              {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-              {form.category && !categories.some(c => c.name === form.category) && (
-                <option value={form.category}>{form.category} (inactive)</option>
-              )}
-            </select>
-            {categories.length === 0 && (
-              <p className="mt-1 text-xs text-amber-600">No outbound categories exist yet — add them on Configurations → Outbound Categories first.</p>
-            )}
+            <input
+              required
+              value={form.category}
+              onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+              placeholder="e.g. Raw Material, Packaging"
+              className={inputCls}
+            />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Item Name <span className="text-red-500">*</span></label>
