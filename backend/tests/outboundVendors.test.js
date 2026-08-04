@@ -78,13 +78,13 @@ describe('Outbound Vendors API', () => {
     test('rejects an invalid category', async () => {
       const res = await createVendor([{ category: 'Bogus', item_name: 'Caps' }]);
       expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/Invalid category/);
+      expect(res.body.message).toMatch(/not a recognized packaging raw material/);
     });
 
-    test('rejects an item_name not in the fixed list for the category', async () => {
+    test('rejects an item_name not in the packaging raw materials catalog for the category', async () => {
       const res = await createVendor([{ category: 'Raw Material', item_name: 'Umbrellas' }]);
       expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/not a valid item name/);
+      expect(res.body.message).toMatch(/not a recognized packaging raw material/);
     });
 
     test('is case-sensitive on item_name (unlike the bulk endpoint)', async () => {
@@ -92,10 +92,15 @@ describe('Outbound Vendors API', () => {
       expect(res.status).toBe(400);
     });
 
-    test('accepts Others category with arbitrary free-text item_name', async () => {
-      const res = await createVendor([{ category: 'Others', item_name: 'Anything Goes' }]);
+    test('accepts an Others-category item_name that exists in the packaging raw materials catalog', async () => {
+      const itemName = `Custom Widget ${uid()}`;
+      await db.execute({
+        sql: 'INSERT INTO packaging_raw_materials (category, item_name, unit_metric) VALUES (?, ?, ?)',
+        args: ['Others', itemName, 'pcs'],
+      });
+      const res = await createVendor([{ category: 'Others', item_name: itemName }]);
       expect(res.status).toBe(201);
-      expect(res.body.articles[0]).toMatchObject({ category: 'Others', item_name: 'Anything Goes' });
+      expect(res.body.articles[0]).toMatchObject({ category: 'Others', item_name: itemName });
     });
   });
 
@@ -331,7 +336,7 @@ describe('Outbound Vendors API', () => {
         .send({
           rows: [
             { vendor_name: created.body.name, category: 'Packaging', item_name: 'One Ply' },
-            { vendor_name: created.body.name, category: 'Others', item_name: 'Sample Kit' },
+            { vendor_name: created.body.name, category: 'Raw Material', item_name: 'Handkerchief' },
           ],
         });
       expect(res.status).toBe(200);
