@@ -8,6 +8,7 @@ import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Badge from '../../components/ui/Badge';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
+import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { useSessionState } from '../../hooks/useSessionState';
 import { listOutboundPOs, deleteOutboundPO, restoreOutboundPO, updateOutboundPO } from '../../api/outboundPOs.api';
 import { listOutboundVendors } from '../../api/outboundVendors.api';
@@ -171,13 +172,14 @@ export default function OutboundPOList() {
     listUsersLite({ role: ROLES.PURCHASE_HEAD }).then(setApprovers).catch(() => {});
   }, []);
 
-  // Inline editing: qty/rate/received/short and Approved By can all be
-  // edited directly in the table, no need to open the PO. Nothing saves as
-  // you type — edits just mark the row dirty; a Save icon appears in
-  // Actions and commits every staged change for that row (Approved By +
-  // all lines) together in one request. A full `lines` array is always
-  // sent since the backend does a delete-and-reinsert (same as the
-  // detail-page save).
+  // Inline editing: qty/rate and Approved By/Approval Date can all be edited
+  // directly in the table, no need to open the PO. Received/Short live on
+  // the PO detail page's Receiving Details section instead, since Received
+  // is now a sum of individually bill-tracked receipts. Nothing saves as you
+  // type — edits just mark the row dirty; a Save icon appears in Actions and
+  // commits every staged change for that row together in one request. A full
+  // `lines` array is always sent, each with its `id` so the backend updates
+  // existing rows in place instead of replacing them.
   const markDirty = (poId) => setDirtyIds(prev => new Set(prev).add(poId));
 
   const setLineField = (poId, lineIdx, field, value) => {
@@ -188,22 +190,38 @@ export default function OutboundPOList() {
     markDirty(poId);
   };
 
+  // Changing the approver clears Approval Date so a stale date tied to the
+  // old approver is never silently reused — it must be re-entered.
   const setApprovedByField = (poId, value) => {
-    setItems(prev => prev.map(po => po.id !== poId ? po : { ...po, approved_by: value ? Number(value) : null }));
+    setItems(prev => prev.map(po => po.id !== poId ? po : { ...po, approved_by: value ? Number(value) : null, approval_date: '' }));
+    markDirty(poId);
+  };
+
+  const setApprovalDateField = (poId, value) => {
+    setItems(prev => prev.map(po => po.id !== poId ? po : { ...po, approval_date: value }));
     markDirty(poId);
   };
 
   const saveRow = async (po) => {
+    const approverChanged = String(po.approved_by || '') !== String(po._originalApprovedBy || '');
+    if (approverChanged && po.approved_by && !po.approval_date) {
+      toast.error('Approval Date is required when changing the approver');
+      return;
+    }
     setSavingIds(s => new Set(s).add(po.id));
     try {
       const res = await updateOutboundPO(po.id, {
         approved_by: po.approved_by || null,
+        approval_date: po.approval_date || null,
         lines: po.lines.map(l => ({
+          id: l.id || undefined,
           line_no: l.line_no, category: l.category, item_name: l.item_name, variant: l.variant || null,
-          qty: Number(l.qty), rate: Number(l.rate), received: Number(l.received) || 0, short: Number(l.short) || 0,
+          qty: Number(l.qty), rate: Number(l.rate),
         })),
       });
-      setItems(prev => prev.map(p => p.id === po.id ? { ...p, ...res } : p));
+      setItems(prev => prev.map(p => p.id === po.id
+        ? { ...p, ...res, _originalApprovedBy: res.approved_by, approval_date: res.approval_date || '' }
+        : p));
       setDirtyIds(prev => { const n = new Set(prev); n.delete(po.id); return n; });
       toast.success(`PO ${po.order_no} updated`);
     } catch (err) {
@@ -236,7 +254,10 @@ export default function OutboundPOList() {
   const load = useCallback((overrides) => {
     setLoading(true);
     listOutboundPOs(buildParams(overrides))
-      .then(res => { setItems(res.rows || []); setTotal(res.total || 0); })
+      .then(res => {
+        setItems((res.rows || []).map(po => ({ ...po, _originalApprovedBy: po.approved_by, approval_date: po.approval_date || '' })));
+        setTotal(res.total || 0);
+      })
       .catch(() => toast.error('Failed to load outbound POs'))
       .finally(() => setLoading(false));
   }, [buildParams]);
@@ -412,7 +433,7 @@ export default function OutboundPOList() {
                         <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{l.variant || '—'}</td>
                         <td className="px-3 py-2">
                           <input
-                            type="number" min={1} value={l.qty} disabled={po.status === 'Deleted'}
+                            type="number" min={0.01} step="0.01" value={l.qty} disabled={po.status === 'Deleted'}
                             onChange={e => setLineField(po.id, idx, 'qty', e.target.value)}
                             className={cellCls}
                           />
@@ -424,20 +445,11 @@ export default function OutboundPOList() {
                             className={cellCls}
                           />
                         </td>
-                        <td className="px-3 py-2">
-                          <input
-                            type="number" min={0} value={l.received} disabled={po.status === 'Deleted'}
-                            onChange={e => setLineField(po.id, idx, 'received', e.target.value)}
-                            className={cellCls}
-                          />
-                        </td>
-                        <td className="px-3 py-2">
-                          <input
-                            type="number" min={0} value={l.short} disabled={po.status === 'Deleted'}
-                            onChange={e => setLineField(po.id, idx, 'short', e.target.value)}
-                            className={cellCls}
-                          />
-                        </td>
+                        {/* Received/Short are edited on the PO detail page's Receiving
+                            Details section (each receipt has its own bill/rate) —
+                            read-only here. */}
+                        <td className="px-3 py-2 text-gray-700">{l.received}</td>
+                        <td className="px-3 py-2 text-gray-700">{l.short}</td>
                         <td className={`px-3 py-2 font-medium ${pending(l) > 0 ? 'text-amber-700' : 'text-gray-800'}`}>{pending(l)}</td>
                       </>
                     ) : (
@@ -456,6 +468,16 @@ export default function OutboundPOList() {
                             <option value="">Not yet approved</option>
                             {approverOptionsFor(po, approvers).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                           </select>
+                          {po.approved_by && (
+                            <input
+                              type="date"
+                              value={po.approval_date || ''}
+                              disabled={po.status === 'Deleted' || savingIds.has(po.id)}
+                              onChange={e => setApprovalDateField(po.id, e.target.value)}
+                              title="Approval Date"
+                              className={`${inputCls} py-1.5 mt-1`}
+                            />
+                          )}
                         </td>
                         <td rowSpan={lines.length} className="px-4 py-3 whitespace-nowrap align-middle">
                           <div className="text-gray-700">{po.updated_by_name || '—'}</div>
@@ -479,6 +501,7 @@ export default function OutboundPOList() {
                             ) : (
                               <button onClick={() => setConfirmDelete(po)} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-red-500"><Trash2 size={14} /></button>
                             )}
+                            <HistoryButton entityType="outbound_po" entityId={po.id} title={`PO ${po.order_no} history`} />
                           </div>
                         </td>
                       </>
