@@ -82,6 +82,7 @@ const LEFT_COLUMNS = [
 const RIGHT_COLUMNS = [
   { key: 'po_date', label: 'Order Date' },
   { key: 'approved_by_name', label: 'Approved By' },
+  { key: 'approval_date', label: 'Approval Date' },
   { key: 'updated_at', label: 'Last Updated' },
 ];
 // One real <td> per line row — no more chip+text blob. Order info first
@@ -468,16 +469,15 @@ export default function OutboundPOList() {
                             <option value="">Not yet approved</option>
                             {approverOptionsFor(po, approvers).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                           </select>
-                          {po.approved_by && (
-                            <input
-                              type="date"
-                              value={po.approval_date || ''}
-                              disabled={po.status === 'Deleted' || savingIds.has(po.id)}
-                              onChange={e => setApprovalDateField(po.id, e.target.value)}
-                              title="Approval Date"
-                              className={`${inputCls} py-1.5 mt-1`}
-                            />
-                          )}
+                        </td>
+                        <td rowSpan={lines.length} className="px-4 py-3 align-middle">
+                          <input
+                            type="date"
+                            value={po.approval_date || ''}
+                            disabled={po.status === 'Deleted' || savingIds.has(po.id) || !po.approved_by}
+                            onChange={e => setApprovalDateField(po.id, e.target.value)}
+                            className={`${inputCls} py-1.5`}
+                          />
                         </td>
                         <td rowSpan={lines.length} className="px-4 py-3 whitespace-nowrap align-middle">
                           <div className="text-gray-700">{po.updated_by_name || '—'}</div>

@@ -171,25 +171,11 @@ export default function OutboundPODetail() {
     setDownloading(true);
     try {
       const companyName = companies.find(c => c.id === Number(po.company_id))?.name || '';
-
       const totalQty = activeLines.reduce((s, l) => s + Number(l.qty || 0), 0);
-      const totalReceived = activeLines.reduce((s, l) => s + Number(l.received || 0), 0);
-      const totalShort = activeLines.reduce((s, l) => s + Number(l.short || 0), 0);
-      const totalPending = activeLines.reduce((s, l) => s + pendingOf(l), 0);
 
-      const dataRows = activeLines.map((l, idx) => {
-        const activeReceipts = (l.receipts || []).filter(r => !r.deleted_at);
-        const billNos = [...new Set(activeReceipts.map(r => r.bill_no).filter(Boolean))].join(', ');
-        const rates = [...new Set(activeReceipts.map(r => r.received_rate).filter(v => v != null))].join(', ');
-        const touchPoints = [{ updated_by_name: l.updated_by_name, updated_at: l.updated_at }, ...activeReceipts];
-        const latest = touchPoints.reduce((best, x) => (!best || (x.updated_at && x.updated_at > (best.updated_at || ''))) ? x : best, null);
-        return [
-          idx + 1, l.category, l.item_name, l.variant || '', l.qty, l.rate,
-          isNew ? '' : l.received, isNew ? '' : l.short, isNew ? '' : pendingOf(l),
-          isNew ? '' : computeLineStatus(l), rates, billNos,
-          latest?.updated_by_name || '', latest?.updated_at ? formatDateTime(latest.updated_at) : '',
-        ];
-      });
+      const dataRows = activeLines.map((l, idx) => [
+        idx + 1, l.category, l.item_name, l.variant || '', l.qty, l.rate,
+      ]);
 
       const aoa = [
         ['Order no.', po.order_no || ''],
@@ -197,9 +183,9 @@ export default function OutboundPODetail() {
         ['Vendor Name', vendor?.name || ''],
         ['Company Name', companyName],
         [],
-        ['Sr.no.', 'Category', 'Item name', 'Variant', 'Qty', 'Rate', 'Received', 'Short', 'Pending', 'Status', 'Received Rate', 'Bill No', 'Updated By', 'Updated Timestamp'],
+        ['Sr.no.', 'Category', 'Item name', 'Variant', 'Qty', 'Rate'],
         ...dataRows,
-        ['', '', '', 'Total', totalQty, '', isNew ? '' : totalReceived, isNew ? '' : totalShort, isNew ? '' : totalPending, '', '', '', '', ''],
+        ['', '', '', 'Total', totalQty, ''],
       ];
 
       const ws = XLSX.utils.aoa_to_sheet(aoa);
