@@ -28,6 +28,14 @@ const addDaysISO = (n) => {
 };
 const yesterdayLabel = () => (new Date().getDay() === 1 ? 'Saturday' : 'Yesterday');
 
+const splitByPoCount = (rows) => {
+  const list = rows || [];
+  return {
+    withPos: list.filter(r => Number(r.po_count || 0) > 0),
+    zeroPos: list.filter(r => Number(r.po_count || 0) === 0),
+  };
+};
+
 const TH_ORDERS   = { warn: 25, alert: 50 };
 const TH_AWAITING = { warn: 10, alert: 25 };
 const thresholdColor = (n, t) => {
@@ -259,6 +267,7 @@ export default function Dashboard() {
   const [state, setState] = useState({});
   const [loading, setLoading] = useState(true);
   const [grnVendors, setGrnVendors] = useState([]);
+  const [showZeroPoc, setShowZeroPoc] = useState(false);
 
   useEffect(() => {
     listVendors()
@@ -371,15 +380,35 @@ export default function Dashboard() {
             </section>
           )}
 
-          {canSeeGRN && (
-            <section className="mt-6">
-              <h2 className="text-sm font-semibold text-[#003049] mb-2">Order Summary Status</h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                <PocSummaryTable title="Office POC" rows={state.pocCounts?.office} pocParam="office_poc" navigate={navigate} />
-                <PocSummaryTable title="Warehouse POC" rows={state.pocCounts?.warehouse} pocParam="warehouse_poc" navigate={navigate} />
-              </div>
-            </section>
-          )}
+          {canSeeGRN && (() => {
+            const officeSplit = splitByPoCount(state.pocCounts?.office);
+            const warehouseSplit = splitByPoCount(state.pocCounts?.warehouse);
+            return (
+              <section className="mt-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h2 className="text-sm font-semibold text-[#003049]">Order Summary Status</h2>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showZeroPoc}
+                      onChange={(e) => setShowZeroPoc(e.target.checked)}
+                    />
+                    Show employees with 0 POs
+                  </label>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <PocSummaryTable title="Office POC" rows={officeSplit.withPos} pocParam="office_poc" navigate={navigate} />
+                  <PocSummaryTable title="Warehouse POC" rows={warehouseSplit.withPos} pocParam="warehouse_poc" navigate={navigate} />
+                </div>
+                {showZeroPoc && (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-3">
+                    <PocSummaryTable title="Office POC — 0 Open POs" rows={officeSplit.zeroPos} pocParam="office_poc" navigate={navigate} />
+                    <PocSummaryTable title="Warehouse POC — 0 Open POs" rows={warehouseSplit.zeroPos} pocParam="warehouse_poc" navigate={navigate} />
+                  </div>
+                )}
+              </section>
+            );
+          })()}
         </>
       )}
     </AppShell>
