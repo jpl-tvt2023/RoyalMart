@@ -8,6 +8,7 @@ import {
   getPackagingRawMaterials, createPackagingRawMaterial, updatePackagingRawMaterial,
   deletePackagingRawMaterial, bulkUpsertPackagingRawMaterials, bulkDeletePackagingRawMaterials,
 } from '../../api/packagingRawMaterials.api';
+import { listOutboundProducts } from '../../api/outboundProducts.api';
 import { Plus, Pencil, Trash2, Search, Upload, Download } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useRBAC } from '../../hooks/useRBAC';
@@ -60,13 +61,16 @@ function BulkDeleteBar({ count, onDelete, onClear }) {
 
 // ───────────────────────────── bulk-upload config ─────────────────────────────
 
+// unit_metric stays in the template columns so a downloaded export can be
+// edited and re-uploaded round-trip, but it is no longer required or read — the
+// Outbound Product List owns it.
 const rawMaterialUploadConfig = {
   title: 'Bulk Upload Packaging Products',
   templateFileName: 'packaging-products-template.xlsx',
   headers: ['category', 'item_name', 'variant', 'unit_metric'],
   sampleRow: ['Packaging', 'Corrugated', '5 Ply', 'pcs'],
-  requiredKeys: ['category', 'item_name', 'unit_metric'],
-  instructions: 'Rows whose Category + Item Name + Variant match an existing product update its unit metric; new combinations are added. Variant is optional — leave it blank for an item that has no variants. The other three columns are required.',
+  requiredKeys: ['category', 'item_name'],
+  instructions: 'Category + Item Name must already exist in Configurations → Outbound Product List; rows that do not match are skipped. Variant is optional — leave it blank for an item that has no variants. The unit metric column is ignored: it is taken from the Outbound Product List. Rows whose Category + Item Name + Variant match an existing product are updated, new combinations are added.',
   submit: (rows) => bulkUpsertPackagingRawMaterials(rows),
 };
 
@@ -93,7 +97,9 @@ function PackagingCatalogTab() {
   const { canEdit: canWrite } = useRBAC();
 
   const [rows, setRows] = useState([]);
+  const [masterRows, setMasterRows] = useState([]);
   const [search, setSearch] = useSessionState('packaging.catalog.search', '');
+  const [activeCategory, setActiveCategory] = useSessionState('packaging.catalog.category', '');
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState(EMPTY_RAW_MATERIAL);
@@ -101,8 +107,6 @@ function PackagingCatalogTab() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [confirmBulk, setConfirmBulk] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
-
-  const sel = useRowSelection(rows);
 
   const load = () => {
     setLoading(true);
@@ -113,7 +117,16 @@ function PackagingCatalogTab() {
   };
   useEffect(load, []);
 
-  const filtered = useMemo(() => {
+  // The Outbound Product List drives the Category / Item Name pickers and the
+  // unit metric. The endpoint returns deactivated entries too (the config tab
+  // shows them); they must not be offered here.
+  useEffect(() => {
+    listOutboundProducts()
+      .then(r => setMasterRows((r || []).filter(m => m.is_active)))
+      .catch(() => toast.error('Failed to load the outbound product list'));
+  }, []);
+
+  const searchMatched = useMemo(() => {
     const q = search.toLowerCase();
     if (!q) return rows;
     return rows.filter(r =>
@@ -124,15 +137,94 @@ function PackagingCatalogTab() {
     );
   }, [search, rows]);
 
-  // Categories stay free text (new ones are legitimate), but offering the
-  // existing ones as autocomplete keeps "Packaging" from fragmenting into
-  // "packaging" / "Packageing" and splitting the catalog.
-  const categoryOptions = useMemo(
-    () => [...new Set(rows.map(r => r.category).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
-    [rows],
+  // One tab per category actually present in the catalog — never a hardcoded
+  // list, so a category added to the Outbound Product List gets a tab the
+  // moment its first product is onboarded. Derived from all rows rather than
+  // the search results, so tabs don't appear and vanish while typing.
+  const categoryTabs = useMemo(() => {
+    const counts = rows.reduce((acc, r) => {
+      if (r.category) acc[r.category] = (acc[r.category] || 0) + 1;
+      return acc;
+    }, {});
+    return Object.entries(counts)
+      .map(([category, count]) => ({ category, count }))
+      .sort((a, b) => {
+        // Others is pinned last whatever its size; the rest are largest first,
+        // ties broken alphabetically so the order stays stable.
+        const aOther = a.category.toLowerCase() === 'others';
+        const bOther = b.category.toLowerCase() === 'others';
+        if (aOther !== bOther) return aOther ? 1 : -1;
+        return b.count - a.count || a.category.localeCompare(b.category);
+      });
+  }, [rows]);
+
+  // Match counts per tab, so a search shows at a glance which tab the hits are
+  // in instead of the current tab just looking empty.
+  const matchesByCategory = useMemo(() => searchMatched.reduce((acc, r) => {
+    acc[r.category] = (acc[r.category] || 0) + 1;
+    return acc;
+  }, {}), [searchMatched]);
+
+  // Fall back to the first tab whenever the remembered category no longer
+  // exists — first load, or its last product deleted/recategorised.
+  useEffect(() => {
+    if (!categoryTabs.length) return;
+    if (!categoryTabs.some(t => t.category === activeCategory)) {
+      setActiveCategory(categoryTabs[0].category);
+    }
+  }, [categoryTabs, activeCategory, setActiveCategory]);
+
+  const visible = useMemo(
+    () => searchMatched.filter(r => r.category === activeCategory),
+    [searchMatched, activeCategory],
   );
 
-  const openAdd = () => { setForm(EMPTY_RAW_MATERIAL); setModal('add'); };
+  const categoryTotal = categoryTabs.find(t => t.category === activeCategory)?.count || 0;
+
+  // Selection is scoped to what is on screen, so "select all" means "all
+  // visible" and a bulk delete can never reach rows in another tab.
+  const sel = useRowSelection(visible);
+
+  const switchCategory = (category) => {
+    if (category === activeCategory) return;
+    sel.clear();
+    setActiveCategory(category);
+  };
+
+  // Category / Item Name / Unit Metric all come from the Outbound Product List
+  // rather than being typed here, which is what stops "Packaging" fragmenting
+  // into "packaging" / "Packageing" and splitting the catalog. Same option-map
+  // shape as the article sub-form on the Outbound Vendors page.
+  const masterCategories = useMemo(
+    () => [...new Set(masterRows.map(m => m.category).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [masterRows],
+  );
+
+  const itemNamesByCategory = useMemo(() => {
+    const map = masterRows.reduce((acc, m) => {
+      (acc[m.category] ||= new Set()).add(m.item_name);
+      return acc;
+    }, {});
+    for (const cat of Object.keys(map)) map[cat] = [...map[cat]].sort((a, b) => a.localeCompare(b));
+    return map;
+  }, [masterRows]);
+
+  const unitMetricFor = (category, itemName) => masterRows.find(
+    m => m.category === category && m.item_name === itemName,
+  )?.unit_metric || '';
+
+  // A product onboarded before its entry was deactivated or renamed keeps that
+  // value selectable, so the row stays editable instead of silently resetting.
+  const orphanCategory = !!form.category && !masterCategories.includes(form.category);
+  const orphanItemName = !!form.item_name && !(itemNamesByCategory[form.category] || []).includes(form.item_name);
+
+  // Prefill the category from the tab being viewed — that is almost always the
+  // one being added to, and it keeps the new row on screen after saving.
+  const openAdd = () => {
+    const preset = masterCategories.includes(activeCategory) ? activeCategory : '';
+    setForm({ ...EMPTY_RAW_MATERIAL, category: preset });
+    setModal('add');
+  };
   const openEdit = (r) => {
     setForm({ category: r.category, item_name: r.item_name, variant: r.variant || '', unit_metric: r.unit_metric });
     setModal({ type: 'edit', id: r.id });
@@ -155,6 +247,9 @@ function PackagingCatalogTab() {
         await updatePackagingRawMaterial(modal.id, payload);
         toast.success('Packaging product updated');
       }
+      // Follow the saved row if it landed in another category, so it is not
+      // saved "into thin air" from the user's point of view.
+      if (payload.category !== activeCategory) switchCategory(payload.category);
       setModal(null);
       load();
     } catch (err) {
@@ -188,7 +283,7 @@ function PackagingCatalogTab() {
   };
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
-  const colSpan = 5 + (canWrite ? 2 : 0);
+  const colSpan = 4 + (canWrite ? 2 : 0);
 
   const downloadXlsx = () => downloadRows('packaging-products', [
     { key: 'category', header: 'category' },
@@ -201,7 +296,11 @@ function PackagingCatalogTab() {
   return (
     <>
       <div className="mb-4 flex items-start justify-between flex-wrap gap-3">
-        <p className="text-gray-500 text-sm">{filtered.length} of {rows.length} product{rows.length !== 1 ? 's' : ''}</p>
+        <p className="text-gray-500 text-sm">
+          {activeCategory
+            ? <>{visible.length} of {categoryTotal} in {activeCategory} · {rows.length} total</>
+            : <>{rows.length} product{rows.length !== 1 ? 's' : ''}</>}
+        </p>
         <div className="flex gap-3 items-center flex-wrap">
           <div className="relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -209,9 +308,46 @@ function PackagingCatalogTab() {
           </div>
           <Button variant="ghost" onClick={downloadXlsx} disabled={!rows.length}><Download size={16} />Download XLSX</Button>
           {canWrite && <Button variant="ghost" onClick={() => setBulkOpen(true)}><Upload size={16} />Bulk Upload</Button>}
-          {canWrite && <Button onClick={openAdd}><Plus size={16} />Add Packaging Product</Button>}
+          {canWrite && (
+            <Button
+              onClick={openAdd}
+              disabled={masterRows.length === 0}
+              title={masterRows.length === 0 ? 'Add entries to the Outbound Product List first' : undefined}
+            >
+              <Plus size={16} />Add Packaging Product
+            </Button>
+          )}
         </div>
       </div>
+
+      {canWrite && masterRows.length === 0 && (
+        <p className="mb-4 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+          The Outbound Product List is empty — add categories and items under Configurations → Outbound Product List before onboarding packaging products.
+        </p>
+      )}
+
+      {categoryTabs.length > 0 && (
+        <div className="flex gap-1 mb-4 border-b border-gray-200 overflow-x-auto">
+          {categoryTabs.map(t => {
+            const matches = search ? (matchesByCategory[t.category] || 0) : t.count;
+            const dimmed = !!search && matches === 0;
+            return (
+              <button
+                key={t.category}
+                type="button"
+                onClick={() => switchCategory(t.category)}
+                className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
+                  t.category === activeCategory
+                    ? 'border-[#c1121f] text-[#c1121f]'
+                    : `border-transparent hover:text-[#003049] ${dimmed ? 'text-gray-300' : 'text-gray-500'}`
+                }`}
+              >
+                {t.category} ({matches})
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {canWrite && <BulkDeleteBar count={sel.selected.size} onDelete={() => setConfirmBulk(true)} onClear={sel.clear} />}
 
@@ -225,7 +361,8 @@ function PackagingCatalogTab() {
                     <input type="checkbox" checked={sel.allSelected} onChange={sel.toggleAll} aria-label="Select all" />
                   </th>
                 )}
-                {['Category', 'Item Name', 'Variant', 'Unit Metric', 'Vendors Mapped', canWrite ? 'Actions' : ''].filter(Boolean).map(h => (
+                {/* No Category column — the active tab already states it. */}
+                {['Item Name', 'Variant', 'Unit Metric', 'Vendors Mapped', canWrite ? 'Actions' : ''].filter(Boolean).map(h => (
                   <th key={h} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -235,14 +372,13 @@ function PackagingCatalogTab() {
                 [...Array(5)].map((_, i) => (
                   <tr key={i}><td colSpan={colSpan} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
-              ) : filtered.map(r => (
+              ) : visible.map(r => (
                 <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                   {canWrite && (
                     <td className="px-4 py-3">
                       <input type="checkbox" checked={sel.selected.has(r.id)} onChange={() => sel.toggle(r.id)} />
                     </td>
                   )}
-                  <td className="px-4 py-3 text-gray-700">{r.category}</td>
                   <td className="px-4 py-3 font-medium text-gray-900">{r.item_name}</td>
                   <td className="px-4 py-3 text-gray-600">{r.variant || '—'}</td>
                   <td className="px-4 py-3 text-gray-700">{r.unit_metric}</td>
@@ -270,8 +406,14 @@ function PackagingCatalogTab() {
               ))}
             </tbody>
           </table>
-          {!loading && filtered.length === 0 && (
-            <p className="text-center text-gray-400 py-8">{search ? 'No packaging products match your search' : 'No packaging products added yet'}</p>
+          {!loading && visible.length === 0 && (
+            <p className="text-center text-gray-400 py-8">
+              {rows.length === 0
+                ? 'No packaging products added yet'
+                : search
+                  ? `No packaging products in ${activeCategory} match your search`
+                  : `No packaging products in ${activeCategory} yet`}
+            </p>
           )}
         </div>
       </div>
@@ -280,27 +422,32 @@ function PackagingCatalogTab() {
         <form onSubmit={handleSave} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Category <span className="text-red-500">*</span></label>
-            <input
+            <select
               required
-              list="packaging-category-options"
               value={form.category}
-              onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
-              placeholder="e.g. Raw Material, Packaging, Barcode"
+              onChange={e => setForm(f => ({ ...f, category: e.target.value, item_name: '', unit_metric: '' }))}
               className={inputCls}
-            />
-            <datalist id="packaging-category-options">
-              {categoryOptions.map(c => <option key={c} value={c} />)}
-            </datalist>
+            >
+              <option value="">Select category…</option>
+              {masterCategories.map(c => <option key={c} value={c}>{c}</option>)}
+              {/* An entry deactivated (or renamed) after this product was
+                  onboarded stays selectable so the row remains editable. */}
+              {orphanCategory && <option value={form.category}>{form.category} (not in Outbound Product List)</option>}
+            </select>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Item Name <span className="text-red-500">*</span></label>
-            <input
+            <select
               required
+              disabled={!form.category}
               value={form.item_name}
-              onChange={e => setForm(f => ({ ...f, item_name: e.target.value }))}
-              placeholder="e.g. Corrugated Sheet"
+              onChange={e => setForm(f => ({ ...f, item_name: e.target.value, unit_metric: unitMetricFor(f.category, e.target.value) }))}
               className={inputCls}
-            />
+            >
+              <option value="">Select item…</option>
+              {(itemNamesByCategory[form.category] || []).map(n => <option key={n} value={n}>{n}</option>)}
+              {orphanItemName && <option value={form.item_name}>{form.item_name} (not in Outbound Product List)</option>}
+            </select>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Variant</label>
@@ -312,14 +459,17 @@ function PackagingCatalogTab() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Unit Metric <span className="text-red-500">*</span></label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Unit Metric</label>
+            {/* Read-only: the metric belongs to the item in the Outbound Product
+                List, and the server takes it from there regardless of what is
+                submitted here. Change it on that tab to change it everywhere. */}
             <input
-              required
+              readOnly
               value={form.unit_metric}
-              onChange={e => setForm(f => ({ ...f, unit_metric: e.target.value }))}
-              placeholder="e.g. kg, pcs, meter, roll"
-              className={inputCls}
+              placeholder={form.item_name ? '—' : 'Set by the selected item'}
+              className={`${inputCls} bg-gray-50 text-gray-600`}
             />
+            <p className="mt-1 text-xs text-gray-400">Set on Configurations → Outbound Product List</p>
           </div>
           <div className="flex gap-3 justify-end pt-2">
             <Button variant="ghost" type="button" onClick={() => setModal(null)}>Cancel</Button>

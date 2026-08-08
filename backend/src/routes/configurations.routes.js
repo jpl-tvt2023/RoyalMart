@@ -5,6 +5,7 @@ const cities  = require('../controllers/cities.controller');
 const vendors = require('../controllers/vendors.controller');
 const categories = require('../controllers/categories.controller');
 const companies = require('../controllers/companies.controller');
+const outboundProducts = require('../controllers/outboundProducts.controller');
 
 const canView  = allowRoles(...ALL_ROLES);
 // Master data is editable by any logged-in user; every change is audited.
@@ -31,6 +32,13 @@ router.get('/companies',        auth, canView,      companies.list);
 router.post('/companies',       auth, canAdminOnly, companies.create);
 router.patch('/companies/:id',  auth, canAdminOnly, companies.update);
 router.delete('/companies/:id', auth, canAdminOnly, companies.remove);
+
+// Outbound Product List master — the Category / Item Name / Unit Metric
+// taxonomy that packaging product onboarding validates against.
+router.get('/outbound-products',        auth, canView,  outboundProducts.list);
+router.post('/outbound-products',       auth, canAdmin, outboundProducts.create);
+router.patch('/outbound-products/:id',  auth, canAdmin, outboundProducts.update);
+router.delete('/outbound-products/:id', auth, canAdmin, outboundProducts.remove);
 
 // Vendors master
 router.get('/vendors',        auth, canView,  vendors.list);
