@@ -5,6 +5,11 @@ export async function listOutboundPOs(params) {
   return data;
 }
 
+export async function getOutboundPOItemNameCounts(params) {
+  const { data } = await api.get('/outbound-pos/item-name-counts', { params });
+  return data;
+}
+
 export async function getOutboundPO(id, { includeDeleted } = {}) {
   const { data } = await api.get(`/outbound-pos/${id}`, { params: includeDeleted ? { include_deleted: 1 } : undefined });
   return data;
