@@ -112,10 +112,10 @@ export const NAV = [
         roles: ALL_ROLES,
       },
       {
-        label: 'Inbound Cities, Vendors & Masters',
+        label: 'Cities, Vendors & Masters',
         path: '/configurations',
         icon: Store,
-        description: 'Cities, vendors, couriers & categories',
+        description: 'Cities, vendors, couriers, categories & outbound product list',
         roles: ALL_ROLES,
       },
       {

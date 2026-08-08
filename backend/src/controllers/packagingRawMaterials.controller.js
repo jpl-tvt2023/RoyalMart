@@ -13,7 +13,23 @@ function normText(v) {
 // module see null instead, which is what the rest of the API uses.
 const variantKey = (v) => normText(v).toLowerCase();
 const tripleKey = (c, i, v) => `${normText(c).toLowerCase()}|${normText(i).toLowerCase()}|${variantKey(v)}`;
+const pairKey = (c, i) => `${normText(c).toLowerCase()}|${normText(i).toLowerCase()}`;
 const outward = (row) => ({ ...row, variant: row.variant || null });
+
+// (Category, Item Name) must exist and be active in the Outbound Product List,
+// which is maintained under Configurations. Same shape as loadAllowedArticles /
+// validateArticles in outboundVendors.controller.js, one level up: that file
+// validates vendor mappings against this catalog, this one validates the
+// catalog against the taxonomy above it.
+async function loadOutboundProducts() {
+  const { rows } = await db.execute(
+    'SELECT category, item_name, unit_metric FROM outbound_products WHERE is_active = 1'
+  );
+  return new Map(rows.map(r => [pairKey(r.category, r.item_name), r]));
+}
+
+const unlistedMessage = (category, itemName) =>
+  `"${category} / ${itemName}" is not in the Outbound Product List — add it under Configurations → Outbound Product List first`;
 
 async function list(req, res, next) {
   try {
@@ -50,13 +66,22 @@ async function list(req, res, next) {
 
 async function create(req, res, next) {
   try {
-    const category = normText(req.body.category);
-    const itemName = normText(req.body.item_name);
+    const inputCategory = normText(req.body.category);
+    const inputItemName = normText(req.body.item_name);
     const variant = normText(req.body.variant);
-    const unitMetric = normText(req.body.unit_metric);
-    if (!category) return res.status(400).json({ message: 'category is required' });
-    if (!itemName) return res.status(400).json({ message: 'item_name is required' });
-    if (!unitMetric) return res.status(400).json({ message: 'unit_metric is required' });
+    if (!inputCategory) return res.status(400).json({ message: 'category is required' });
+    if (!inputItemName) return res.status(400).json({ message: 'item_name is required' });
+
+    // Category, item name and unit metric all come from the Outbound Product
+    // List: the stored values are canonicalised to the master's casing, and the
+    // unit metric is taken from it rather than from the request, so the master
+    // stays the single source of truth for it.
+    const master = await loadOutboundProducts();
+    const listed = master.get(pairKey(inputCategory, inputItemName));
+    if (!listed) return res.status(400).json({ message: unlistedMessage(inputCategory, inputItemName) });
+    const category = listed.category;
+    const itemName = listed.item_name;
+    const unitMetric = listed.unit_metric;
 
     const { rows } = await db.execute({
       sql: `INSERT INTO packaging_raw_materials (category, item_name, variant, unit_metric, updated_by, updated_at)
@@ -85,13 +110,18 @@ async function update(req, res, next) {
     const { rows: existing } = await db.execute({ sql: 'SELECT * FROM packaging_raw_materials WHERE id = ?', args: [id] });
     if (!existing.length) return res.status(404).json({ message: 'Packaging product not found' });
 
-    const category = normText(req.body.category ?? existing[0].category);
-    const itemName = normText(req.body.item_name ?? existing[0].item_name);
+    const inputCategory = normText(req.body.category ?? existing[0].category);
+    const inputItemName = normText(req.body.item_name ?? existing[0].item_name);
     const variant = normText(req.body.variant ?? existing[0].variant);
-    const unitMetric = normText(req.body.unit_metric ?? existing[0].unit_metric);
-    if (!category) return res.status(400).json({ message: 'category is required' });
-    if (!itemName) return res.status(400).json({ message: 'item_name is required' });
-    if (!unitMetric) return res.status(400).json({ message: 'unit_metric is required' });
+    if (!inputCategory) return res.status(400).json({ message: 'category is required' });
+    if (!inputItemName) return res.status(400).json({ message: 'item_name is required' });
+
+    const master = await loadOutboundProducts();
+    const listed = master.get(pairKey(inputCategory, inputItemName));
+    if (!listed) return res.status(400).json({ message: unlistedMessage(inputCategory, inputItemName) });
+    const category = listed.category;
+    const itemName = listed.item_name;
+    const unitMetric = listed.unit_metric;
 
     const { rows } = await db.execute({
       sql: `UPDATE packaging_raw_materials
@@ -176,7 +206,10 @@ async function bulkUpsert(req, res, next) {
       return res.status(400).json({ message: `Too many rows; max ${BULK_LIMIT}` });
     }
 
-    const { rows: existing } = await db.execute('SELECT category, item_name, variant FROM packaging_raw_materials');
+    const [{ rows: existing }, master] = await Promise.all([
+      db.execute('SELECT category, item_name, variant FROM packaging_raw_materials'),
+      loadOutboundProducts(),
+    ]);
     const existingKeys = new Set(existing.map(e => tripleKey(e.category, e.item_name, e.variant)));
 
     const skipped = [];
@@ -185,13 +218,19 @@ async function bulkUpsert(req, res, next) {
 
     for (let i = 0; i < input.length; i++) {
       const r = input[i] || {};
-      const category = normText(r.category);
-      const itemName = normText(r.item_name);
+      const inputCategory = normText(r.category);
+      const inputItemName = normText(r.item_name);
       const variant = normText(r.variant);
-      const unitMetric = normText(r.unit_metric);
-      if (!category) { skipped.push({ row: i + 2, reason: 'Missing category' }); continue; }
-      if (!itemName) { skipped.push({ row: i + 2, reason: 'Missing item_name' }); continue; }
-      if (!unitMetric) { skipped.push({ row: i + 2, reason: 'Missing unit_metric' }); continue; }
+      if (!inputCategory) { skipped.push({ row: i + 2, reason: 'Missing category' }); continue; }
+      if (!inputItemName) { skipped.push({ row: i + 2, reason: 'Missing item_name' }); continue; }
+
+      // A unit_metric column in the sheet is ignored -- it comes from the
+      // Outbound Product List, as does the canonical casing of the pair.
+      const listed = master.get(pairKey(inputCategory, inputItemName));
+      if (!listed) { skipped.push({ row: i + 2, reason: unlistedMessage(inputCategory, inputItemName) }); continue; }
+      const category = listed.category;
+      const itemName = listed.item_name;
+      const unitMetric = listed.unit_metric;
 
       const key = tripleKey(category, itemName, variant);
       const isUpdate = existingKeys.has(key);
