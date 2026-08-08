@@ -42,7 +42,6 @@ function skuPayload({ raw, packaging, barcode, overrides = {} }) {
   return {
     sku_code: `SKU-${uid()}`,
     description: 'Test SKU',
-    hsn_code: '1234',
     category: null,
     requirements: raw ? [{ raw_product_id: raw.id, qty: 1 }] : [],
     packaging_requirements: packaging ? [{ packaging_raw_material_id: packaging.id, qty: 2 }] : [],
@@ -173,5 +172,55 @@ describe('SKU packaging/barcode requirements', () => {
     expect(pkgRows).toMatchObject([{ packaging_raw_material_id: packaging.id, qty: 2 }]);
 
     await db.execute({ sql: 'DELETE FROM products WHERE sku_code = ?', args: [skuCode] });
+  });
+});
+
+describe('hsn_code has been fully removed', () => {
+  test('the products table no longer has an hsn_code column', async () => {
+    const { rows } = await db.execute('PRAGMA table_info(products)');
+    expect(rows.some(r => r.name === 'hsn_code')).toBe(false);
+  });
+
+  test('POST /api/products silently ignores a stray hsn_code in the body', async () => {
+    const raw = await createRawProduct();
+    const packaging = await createArticle('Packaging');
+    const barcode = await createArticle('Barcode');
+    const res = await authed(request(app).post('/api/products')).send(
+      skuPayload({ raw, packaging, barcode, overrides: { hsn_code: '9999' } })
+    );
+    expect(res.status).toBe(201);
+    expect(res.body).not.toHaveProperty('hsn_code');
+
+    await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [res.body.id] });
+  });
+
+  test('GET /api/products rows never carry an hsn_code key', async () => {
+    const raw = await createRawProduct();
+    const packaging = await createArticle('Packaging');
+    const barcode = await createArticle('Barcode');
+    const created = await authed(request(app).post('/api/products')).send(skuPayload({ raw, packaging, barcode }));
+    expect(created.status).toBe(201);
+
+    const list = await authed(request(app).get('/api/products'));
+    const sku = list.body.find(s => s.id === created.body.id);
+    expect(sku).not.toHaveProperty('hsn_code');
+
+    await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [created.body.id] });
+  });
+
+  test('PUT /api/products/:id silently ignores a stray hsn_code in the body', async () => {
+    const raw = await createRawProduct();
+    const packaging = await createArticle('Packaging');
+    const barcode = await createArticle('Barcode');
+    const created = await authed(request(app).post('/api/products')).send(skuPayload({ raw, packaging, barcode }));
+    expect(created.status).toBe(201);
+
+    const updated = await authed(request(app).put(`/api/products/${created.body.id}`)).send(
+      skuPayload({ raw, packaging, barcode, overrides: { sku_code: created.body.sku_code, hsn_code: '5555' } })
+    );
+    expect(updated.status).toBe(200);
+    expect(updated.body).not.toHaveProperty('hsn_code');
+
+    await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [created.body.id] });
   });
 });

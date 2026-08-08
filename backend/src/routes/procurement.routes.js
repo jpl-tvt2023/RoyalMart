@@ -15,6 +15,7 @@ router.delete('/batches/:id', auth, canWrite, c.undoBatch);
 
 router.get('/outbound/defaults',       auth, canView,  c.getOutboundDefaults);
 router.get('/outbound/requirements',   auth, canView,  c.getOutboundRequirements);
+router.get('/outbound/vendor-counts',  auth, canView,  c.getOutboundVendorCounts);
 router.post('/outbound/mark-ordered',  auth, canWrite, c.markPackagingOrdered);
 router.get('/outbound/batches',        auth, canView,  c.listPackagingBatches);
 router.delete('/outbound/batches/:id', auth, canWrite, c.undoPackagingBatch);

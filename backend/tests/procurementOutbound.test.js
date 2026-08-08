@@ -166,6 +166,39 @@ describe('Outbound (packaging/barcode) procurement', () => {
     await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [sku.body.id] });
   });
 
+  test('vendor-counts and vendor-scoped requirements mirror Inbound\'s vendor-tab behavior', async () => {
+    const poDate = '2026-08-03';
+    const v1 = `V1-${uid().replace(/-/g, '')}`;
+    const v2 = `V2-${uid().replace(/-/g, '')}`;
+    const seed1 = await seedDemand({ poDate, vendor: v1 });
+    const seed2 = await seedDemand({ poDate, vendor: v2 });
+
+    const counts = await authed(request(app).get('/api/procurement/outbound/vendor-counts'))
+      .query({ po_date_from: poDate, po_date_to: poDate });
+    expect(counts.status).toBe(200);
+    expect(counts.body.counts[v1]).toBe(1);
+    expect(counts.body.counts[v2]).toBe(1);
+    expect(counts.body.counts.All).toBe(2);
+
+    const scoped = await authed(request(app).get('/api/procurement/outbound/requirements'))
+      .query({ po_date_from: poDate, po_date_to: poDate, vendor: v1 });
+    expect(scoped.status).toBe(200);
+    expect(scoped.body.pos.map(p => p.po_id)).toEqual([seed1.poId]);
+
+    const mark = await authed(request(app).post('/api/procurement/outbound/mark-ordered'))
+      .send({ po_ids: [seed1.poId], po_date_from: poDate, po_date_to: poDate, vendor: v1 });
+    expect(mark.status).toBe(201);
+
+    const countsAfter = await authed(request(app).get('/api/procurement/outbound/vendor-counts'))
+      .query({ po_date_from: poDate, po_date_to: poDate });
+    expect(countsAfter.body.counts[v1] || 0).toBe(0);
+    expect(countsAfter.body.counts.All).toBe(1);
+
+    await cleanupPO(seed1.poId);
+    await cleanupPO(seed2.poId);
+    await db.execute({ sql: 'DELETE FROM products WHERE id IN (?, ?)', args: [seed1.sku.body.id, seed2.sku.body.id] });
+  }, 15000);
+
   test('a line with no vendor mapping counts as unmapped', async () => {
     const poId = `TESTPO-${uid()}`;
     const poDate = '2026-08-02';

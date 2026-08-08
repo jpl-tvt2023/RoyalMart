@@ -361,6 +361,73 @@ describe('Outbound POs API', () => {
     });
   });
 
+  // Builds a vendor with the given articles + one PO covering all of them,
+  // bypassing createVendorAndPO (which always seeds a single 'Caps' article).
+  async function createPOWithItems(items) {
+    const vendor = await createVendor(items);
+    const po = await createPO({
+      vendor_id: vendor.body.id,
+      lines: vendor.body.articles.map(a => lineFor(a)),
+    });
+    expect(po.status).toBe(201);
+    return { vendor, po };
+  }
+
+  describe('GET /api/outbound-pos — item_name filter and item-name-counts', () => {
+    test('item_name filter narrows to POs with a matching line', async () => {
+      const { po: capsPO } = await createPOWithItems([{ category: 'Raw Material', item_name: 'Caps' }]);
+      await createPOWithItems([{ category: 'Raw Material', item_name: 'Handkerchief' }]);
+
+      const res = await request(app).get('/api/outbound-pos').query({ item_name: 'Caps' }).set('Authorization', `Bearer ${token}`);
+      const ids = res.body.rows.map(r => r.id);
+      expect(ids).toContain(capsPO.body.id);
+      expect(ids.length).toBe(res.body.total);
+    });
+
+    test('filters POs, not lines — a matching PO still returns all its lines', async () => {
+      const vendor = await createVendor([
+        { category: 'Raw Material', item_name: 'Caps' },
+        { category: 'Raw Material', item_name: 'Handkerchief' },
+      ]);
+      const po = await createPO({
+        vendor_id: vendor.body.id,
+        lines: [lineFor(vendor.body.articles[0]), lineFor(vendor.body.articles[1])],
+      });
+      expect(po.status).toBe(201);
+
+      const res = await request(app).get('/api/outbound-pos').query({ item_name: 'Caps' }).set('Authorization', `Bearer ${token}`);
+      const row = res.body.rows.find(r => r.id === po.body.id);
+      expect(row).toBeDefined();
+      expect(row.lines.map(l => l.item_name).sort()).toEqual(['Caps', 'Handkerchief']);
+    });
+
+    test('item-name-counts: per-item counts and the All total', async () => {
+      const before = await request(app).get('/api/outbound-pos').set('Authorization', `Bearer ${token}`);
+      const totalBefore = before.body.total;
+
+      await createPOWithItems([{ category: 'Raw Material', item_name: 'Socks' }]);
+
+      const counts = await request(app).get('/api/outbound-pos/item-name-counts').set('Authorization', `Bearer ${token}`);
+      expect(counts.status).toBe(200);
+      expect(counts.body.counts.Socks).toBeGreaterThanOrEqual(1);
+      expect(counts.body.counts.All).toBe(totalBefore + 1);
+    });
+
+    test('item-name-counts respects other active filters', async () => {
+      const { po } = await createPOWithItems([{ category: 'Raw Material', item_name: 'Bandana' }]);
+      await request(app).delete(`/api/outbound-pos/${po.body.id}`).set('Authorization', `Bearer ${token}`);
+
+      const counts = await request(app).get('/api/outbound-pos/item-name-counts').query({ status: 'Deleted' }).set('Authorization', `Bearer ${token}`);
+      expect(counts.status).toBe(200);
+      expect(counts.body.counts.Bandana).toBeGreaterThanOrEqual(1);
+
+      const activeCounts = await request(app).get('/api/outbound-pos/item-name-counts').set('Authorization', `Bearer ${token}`);
+      // The just-deleted PO's item shouldn't inflate the default (non-deleted) view.
+      const deletedContribution = activeCounts.body.counts.Bandana || 0;
+      expect(deletedContribution).toBeLessThan(counts.body.counts.Bandana);
+    });
+  });
+
   describe('GET /api/outbound-pos/:id — getOne', () => {
     test('returns the full PO with order_no and lines', async () => {
       const { po } = await createVendorAndPO();

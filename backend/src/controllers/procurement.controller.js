@@ -268,13 +268,12 @@ async function undoBatch(req, res, next) {
 // packaging_procurement_batch_id/packaging_ordered_at so a PO can be
 // raw-ordered and packaging-ordered on separate schedules.
 //
-// Unlike Inbound's vendor tabs (which change the PO set in scope), the
-// Outbound UI's item-name tabs only filter which rows are *displayed* — one
-// PO's demand can span many item names at once, so the PO set/stats are the
-// same regardless of which tab is active. That's why there's no vendor/tab
-// query param here: one call always returns the full article roster, and the
-// item-name tabs are derived client-side, same as Inbound's raw_products roster
-// is always returned in full regardless of which vendor tab is selected.
+// The Outbound UI's tabs are the same vendor tabs as Inbound (All + one per
+// active marketplace vendor) — the whole point is to check, PO by PO, what
+// packaging/barcode status looks like for the same inbound POs you'd see on
+// the Inbound tab. `vendor` narrows the matrix exactly like Inbound's does;
+// the article roster (rows) is always shown in full regardless of vendor tab,
+// same as Inbound always shows the full raw_products roster.
 
 async function getOutboundDefaults(req, res, next) {
   try {
@@ -284,6 +283,34 @@ async function getOutboundDefaults(req, res, next) {
          (SELECT MIN(po_date) FROM marketplace_pos WHERE po_date IS NOT NULL AND status <> 'Deleted') AS earliest`
     );
     res.json({ po_date_from: rows[0]?.after_last_ordered || rows[0]?.earliest || null });
+  } catch (err) { next(err); }
+}
+
+// Per-vendor count of not-yet-packaging-ordered POs in the date range (drives
+// the Outbound vendor tab badges) — mirrors getVendorCounts, scoped by the
+// packaging batch column instead of the raw-material one.
+async function getOutboundVendorCounts(req, res, next) {
+  try {
+    const { where, args } = scopeWhere({
+      po_date_from: req.query.po_date_from,
+      po_date_to: req.query.po_date_to,
+    }, 'packaging_procurement_batch_id');
+    const { rows } = await db.execute({
+      sql: `SELECT po.vendor AS vendor, COUNT(*) AS n
+            FROM marketplace_pos po
+            WHERE ${where} AND po.po_date IS NOT NULL
+            GROUP BY po.vendor`,
+      args,
+    });
+    const counts = {};
+    let all = 0;
+    for (const r of rows) {
+      const n = Number(r.n) || 0;
+      counts[r.vendor] = n;
+      all += n;
+    }
+    counts.All = all;
+    res.json({ counts });
   } catch (err) { next(err); }
 }
 
@@ -495,5 +522,6 @@ async function undoPackagingBatch(req, res, next) {
 
 module.exports = {
   getDefaults, getRequirements, getVendorCounts, markOrdered, listBatches, undoBatch,
-  getOutboundDefaults, getOutboundRequirements, markPackagingOrdered, listPackagingBatches, undoPackagingBatch,
+  getOutboundDefaults, getOutboundRequirements, getOutboundVendorCounts,
+  markPackagingOrdered, listPackagingBatches, undoPackagingBatch,
 };

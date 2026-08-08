@@ -42,6 +42,11 @@ export async function getOutboundRequirements(params = {}) {
   return data;
 }
 
+export async function getOutboundVendorCounts(params = {}) {
+  const { data } = await api.get('/procurement/outbound/vendor-counts', { params });
+  return data;
+}
+
 export async function markPackagingOrdered(payload) {
   const { data } = await api.post('/procurement/outbound/mark-ordered', payload);
   return data;

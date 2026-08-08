@@ -83,8 +83,8 @@ const mappingsUploadConfig = {
 const skuUploadConfig = {
   title: 'Bulk Upload SKUs',
   templateFileName: 'skus-template.xlsx',
-  headers: ['sku_code', 'description', 'hsn_code', 'category', 'requirements', 'packaging_requirements', 'barcode_requirements'],
-  sampleRow: ['TSHIRT-RED-M', 'Red Tee M', '6109', 'Apparel', 'Cotton Fabric Roll:2; Thread Spool:1', 'Corrugated Box|5 Ply:2', 'EAN Barcode:1'],
+  headers: ['sku_code', 'description', 'category', 'requirements', 'packaging_requirements', 'barcode_requirements'],
+  sampleRow: ['TSHIRT-RED-M', 'Red Tee M', 'Apparel', 'Cotton Fabric Roll:2; Thread Spool:1', 'Corrugated Box|5 Ply:2', 'EAN Barcode:1'],
   requiredKeys: ['sku_code', 'requirements', 'packaging_requirements', 'barcode_requirements'],
   instructions: 'sku_code, requirements, packaging_requirements and barcode_requirements are all required. requirements lists "Raw Product Name:qty" entries separated by semicolons (raw products must already exist on the Raw Products tab). packaging_requirements and barcode_requirements use "Item Name|Variant:qty" entries the same way — omit "|Variant" for items with no variant (e.g. "EAN Barcode:1") — items must already exist under the matching category on the Packaging Products page (Packaging tab / Barcode tab). Rows whose SKU Code matches an existing SKU update it (and replace all three requirement sections); new SKU codes are added.',
   submit: (rows) => bulkUpsertProducts(rows),
@@ -429,7 +429,7 @@ function VendorMappingsTab() {
 // ───────────────────────────────── SKUs tab ─────────────────────────────────
 
 const EMPTY_SKU = {
-  sku_code: '', description: '', hsn_code: '', category: '',
+  sku_code: '', description: '', category: '',
   requirements: [{ raw_product_id: '', qty: '' }],
   packaging_requirements: [{ packaging_raw_material_id: '', item_name: '', qty: '' }],
   barcode_requirements: [{ packaging_raw_material_id: '', item_name: '', qty: '' }],
@@ -533,7 +533,6 @@ function SKUsTab() {
     setForm({
       sku_code: s.sku_code,
       description: s.description || '',
-      hsn_code: s.hsn_code || '',
       category: s.category || '',
       requirements: (s.requirements && s.requirements.length)
         ? s.requirements.map(r => ({ raw_product_id: String(r.raw_product_id), qty: String(r.qty) }))
@@ -573,7 +572,6 @@ function SKUsTab() {
       const payload = {
         sku_code: form.sku_code.trim(),
         description: form.description.trim() || null,
-        hsn_code: form.hsn_code.trim() || null,
         category: form.category || null,
         requirements: raw.ok,
         packaging_requirements: pkg.ok,
@@ -620,12 +618,11 @@ function SKUsTab() {
 
   const fieldBase = 'px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
   const inputCls = `w-full ${fieldBase}`;
-  const colSpan = 7 + (canWrite ? 2 : 0);
+  const colSpan = 6 + (canWrite ? 2 : 0);
 
   const downloadXlsx = () => downloadRows('skus', [
     { key: 'sku_code', header: 'sku_code' },
     { key: 'description', header: 'description' },
-    { key: 'hsn_code', header: 'hsn_code' },
     { key: 'category', header: 'category' },
     { key: 'requirements', header: 'requirements' },
     { key: 'packaging_requirements', header: 'packaging_requirements' },
@@ -665,7 +662,7 @@ function SKUsTab() {
                     <input type="checkbox" checked={sel.allSelected} onChange={sel.toggleAll} aria-label="Select all" />
                   </th>
                 )}
-                {['SKU Code', 'Description', 'HSN', 'Category', 'Raw Product', 'Packaging', 'Barcode', canWrite ? 'Actions' : ''].filter(Boolean).map(h => (
+                {['SKU Code', 'Description', 'Category', 'Raw Product', 'Packaging', 'Barcode', canWrite ? 'Actions' : ''].filter(Boolean).map(h => (
                   <th key={h} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -684,7 +681,6 @@ function SKUsTab() {
                   )}
                   <td className="px-4 py-3 font-mono text-xs font-semibold text-[#003049]">{s.sku_code}</td>
                   <td className="px-4 py-3 text-gray-900">{s.description || '—'}</td>
-                  <td className="px-4 py-3 text-gray-500">{s.hsn_code || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{s.category || '—'}</td>
                   <td className="px-4 py-3 text-gray-700">{reqSummary(s.requirements) || '—'}</td>
                   <td className="px-4 py-3 text-gray-700">{articleReqSummary(s.packaging_requirements) || '—'}</td>
@@ -724,10 +720,6 @@ function SKUsTab() {
                   <option value={form.category}>{form.category} (inactive)</option>
                 )}
               </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">HSN Code</label>
-              <input value={form.hsn_code} onChange={e => setForm(f => ({ ...f, hsn_code: e.target.value }))} placeholder="e.g. 6109" className={inputCls} />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
@@ -9,10 +9,11 @@ import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import { useRBAC } from '../../hooks/useRBAC';
 import { useSessionState, hasSessionState } from '../../hooks/useSessionState';
 import { formatDateTime } from '../../utils/formatters';
-import { cmpText } from '../../utils/sort';
 import {
-  getOutboundDefaults, getOutboundRequirements, markPackagingOrdered, listPackagingBatches, undoPackagingBatch,
+  getOutboundDefaults, getOutboundRequirements, getOutboundVendorCounts,
+  markPackagingOrdered, listPackagingBatches, undoPackagingBatch,
 } from '../../api/procurement.api';
+import { listVendors } from '../../api/vendors.api';
 
 const isoLocal = (d) => {
   const y = d.getFullYear();
@@ -23,8 +24,9 @@ const isoLocal = (d) => {
 const todayISO = () => isoLocal(new Date());
 
 const EMPTY = { pos: [], articles: [], po_count: 0, unmapped_line_count: 0, unmapped_samples: [] };
-const ALL_TAB_KEY = 'All';
 
+// Same vendor tabs as Inbound — the point of this tab is to check, PO by PO,
+// packaging/barcode status for the same inbound POs Inbound shows.
 export default function OutboundTab() {
   const { canEdit } = useRBAC();
 
@@ -33,11 +35,10 @@ export default function OutboundTab() {
   const [filters, setFilters] = useSessionState('procurement.outbound.filters', { po_date_from: '', po_date_to: '' });
   const seeded = useRef(hasSessionState('procurement.outbound.filters'));
 
-  // Sub-tabs are the distinct item names present in the packaging/barcode
-  // article roster — NOT vendors (that's Inbound's tab set). One PO's demand
-  // can span many item names at once, so unlike Inbound's vendor tabs, these
-  // only filter which rows are displayed; the PO set/stats never change.
-  const [itemNameTab, setItemNameTab] = useSessionState('procurement.outbound.itemNameTab', ALL_TAB_KEY);
+  const ALL_TAB = { key: 'All', label: 'All' };
+  const [vendorTabs, setVendorTabs] = useState([ALL_TAB]);
+  const [vendorTab, setVendorTab] = useSessionState('procurement.outbound.vendorTab', 'All');
+  const [vendorCounts, setVendorCounts] = useState({});
   const [confirmMark, setConfirmMark] = useState(false);
   const [marking, setMarking] = useState(false);
   const [selected, setSelected] = useState(new Set()); // po_ids checked for marking
@@ -47,11 +48,12 @@ export default function OutboundTab() {
   const [batchesLoading, setBatchesLoading] = useState(false);
   const [undoingId, setUndoingId] = useState(null);
 
-  const load = useCallback((f) => {
+  const load = useCallback((f, vendor) => {
     setLoading(true);
     const params = {};
     if (f.po_date_from) params.po_date_from = f.po_date_from;
     if (f.po_date_to) params.po_date_to = f.po_date_to;
+    if (vendor && vendor !== 'All') params.vendor = vendor;
     return getOutboundRequirements(params)
       .then((d) => {
         setData(d);
@@ -62,40 +64,36 @@ export default function OutboundTab() {
   }, []);
 
   useEffect(() => {
+    listVendors()
+      .then(rows => setVendorTabs([ALL_TAB, ...rows.filter(v => v.is_active).map(v => ({ key: v.name, label: v.name }))]))
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadCounts = useCallback((f) => {
+    const params = {};
+    if (f.po_date_from) params.po_date_from = f.po_date_from;
+    if (f.po_date_to) params.po_date_to = f.po_date_to;
+    return getOutboundVendorCounts(params)
+      .then(res => setVendorCounts(res.counts || {}))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
     if (seeded.current) {
-      load(filters);
+      loadCounts(filters);
+      load(filters, vendorTab);
       return;
     }
     getOutboundDefaults()
       .then(d => {
         const f = { po_date_from: d.po_date_from || '', po_date_to: todayISO() };
         setFilters(f);
-        return load(f);
+        loadCounts(f);
+        return load(f, 'All');
       })
-      .catch(() => { const f = { po_date_from: '', po_date_to: todayISO() }; setFilters(f); load(f); });
+      .catch(() => { const f = { po_date_from: '', po_date_to: todayISO() }; setFilters(f); loadCounts(f); load(f, 'All'); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [load]);
-
-  // Item-name tabs derived client-side from the returned article roster —
-  // "All" always first, sorted alpha ascending, an item literally named
-  // "Others" always pinned last (mirrors PackagingList.jsx's category-tab
-  // pinning, but alpha not count-based).
-  const itemNameTabs = useMemo(() => {
-    const counts = data.articles.reduce((acc, a) => { acc[a.item_name] = (acc[a.item_name] || 0) + 1; return acc; }, {});
-    const names = Object.keys(counts).sort((a, b) => {
-      const aOther = a.toLowerCase() === 'others', bOther = b.toLowerCase() === 'others';
-      if (aOther !== bOther) return aOther ? 1 : -1;
-      return cmpText(a, b);
-    });
-    return [
-      { key: ALL_TAB_KEY, label: 'All', count: data.articles.length },
-      ...names.map(n => ({ key: n, label: n, count: counts[n] })),
-    ];
-  }, [data.articles]);
-
-  const visibleArticles = itemNameTab === ALL_TAB_KEY
-    ? data.articles
-    : data.articles.filter(a => a.item_name === itemNameTab);
+  }, [load, loadCounts]);
 
   const notOrderedPos = data.pos.filter(p => !p.ordered);
   const allSelected = notOrderedPos.length > 0 && notOrderedPos.every(p => selected.has(p.po_id));
@@ -104,8 +102,9 @@ export default function OutboundTab() {
   const toggleSelect = (poId) =>
     setSelected(prev => { const n = new Set(prev); n.has(poId) ? n.delete(poId) : n.add(poId); return n; });
 
-  const applyFilters = () => load(filters);
-  const clearFilters = () => { const f = { po_date_from: '', po_date_to: '' }; setFilters(f); load(f); };
+  const applyFilters = () => { load(filters, vendorTab); loadCounts(filters); };
+  const clearFilters = () => { const f = { po_date_from: '', po_date_to: '' }; setFilters(f); load(f, vendorTab); loadCounts(f); };
+  const switchTab = (key) => { setVendorTab(key); load(filters, key); };
 
   const loadBatches = () => {
     setBatchesLoading(true);
@@ -123,10 +122,12 @@ export default function OutboundTab() {
         po_ids: [...selected],
         po_date_from: filters.po_date_from || undefined,
         po_date_to: filters.po_date_to || undefined,
+        vendor: vendorTab !== 'All' ? vendorTab : undefined,
       });
       toast.success(`Marked ${r.po_count} PO${r.po_count !== 1 ? 's' : ''} as packaging-ordered`);
       setConfirmMark(false);
-      load(filters);
+      load(filters, vendorTab);
+      loadCounts(filters);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to mark as packaging-ordered');
     } finally { setMarking(false); }
@@ -138,20 +139,18 @@ export default function OutboundTab() {
       const r = await undoPackagingBatch(batch.id);
       toast.success(`Returned ${r.po_count} PO${r.po_count !== 1 ? 's' : ''} to pending`);
       loadBatches();
-      load(filters);
+      load(filters, vendorTab);
+      loadCounts(filters);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Undo failed');
     } finally { setUndoingId(null); }
   };
 
-  // Exports what's currently visible (respects the active item-name tab) —
-  // unlike Inbound's export, which always exports the full roster since
-  // Inbound has no row-filtering tab to respect.
   const exportXLSX = () => {
-    const { pos } = data;
-    if (!visibleArticles.length) { toast('Nothing to export'); return; }
+    const { pos, articles } = data;
+    if (!articles.length) { toast('Nothing to export'); return; }
     const header = ['Category', 'Item Name', 'Variant', 'Total Required', ...pos.map(p => `${p.po_id} · ${p.po_date || '—'} · ${p.vendor}${p.ordered ? ' (packaging-ordered)' : ''}`)];
-    const body = visibleArticles.map(a => [
+    const body = articles.map(a => [
       a.category,
       a.item_name,
       a.variant || '',
@@ -163,12 +162,12 @@ export default function OutboundTab() {
     XLSX.utils.book_append_sheet(wb, ws, 'Outbound Procurement');
     const from = filters.po_date_from || 'all';
     const to = filters.po_date_to || 'all';
-    const scope = itemNameTab === ALL_TAB_KEY ? 'all-items' : itemNameTab.toLowerCase();
+    const scope = vendorTab === 'All' ? 'all-vendors' : vendorTab.toLowerCase();
     XLSX.writeFile(wb, `procurement-outbound-${scope}-${from}_${to}.xlsx`);
   };
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
-  const { pos } = data;
+  const { pos, articles } = data;
 
   const stickyName = 'md:sticky md:left-0 z-10 bg-white w-56 min-w-[14rem] max-w-[14rem]';
   const stickyTotal = 'md:sticky md:left-56 z-10 bg-white w-36 min-w-[9rem] max-w-[9rem]';
@@ -179,25 +178,25 @@ export default function OutboundTab() {
     <>
       <div className="flex items-start justify-end mb-4 flex-wrap gap-3">
         <div className="flex gap-2">
-          <Button variant="outline" onClick={exportXLSX} disabled={loading || visibleArticles.length === 0}><Download size={16} />Export</Button>
+          <Button variant="outline" onClick={exportXLSX} disabled={loading || articles.length === 0}><Download size={16} />Export</Button>
           <Button variant="outline" onClick={openHistory}><History size={16} />Ordered history</Button>
         </div>
       </div>
 
-      {/* Item-name tabs */}
+      {/* Vendor tabs: All (master) + one per vendor — same tab set as Inbound */}
       <div className="flex gap-1 mb-4 border-b border-gray-200 overflow-x-auto">
-        {itemNameTabs.map(t => (
+        {vendorTabs.map(t => (
           <button
             key={t.key}
             type="button"
-            onClick={() => setItemNameTab(t.key)}
+            onClick={() => switchTab(t.key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
-              itemNameTab === t.key
+              vendorTab === t.key
                 ? 'border-[#c1121f] text-[#c1121f]'
                 : 'border-transparent text-gray-500 hover:text-[#003049]'
             }`}
           >
-            {t.label} <span className="ml-1 text-gray-400">({t.count})</span>
+            {t.label} <span className="ml-1 text-gray-400">({vendorCounts[t.key] ?? 0})</span>
           </button>
         ))}
       </div>
@@ -331,11 +330,11 @@ export default function OutboundTab() {
                 [...Array(5)].map((_, i) => (
                   <tr key={i}><td colSpan={2 + pos.length} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
-              ) : visibleArticles.map(a => (
+              ) : articles.map(a => (
                 <tr key={a.packaging_raw_material_id} className="hover:bg-gray-50">
                   <td className={`${stickyName} px-4 py-2.5 font-medium text-gray-900 border-b border-r border-gray-100`}>
                     <div>{a.item_name}{a.variant ? ` · ${a.variant}` : ''}</div>
-                    {itemNameTab === ALL_TAB_KEY && <div className="text-[11px] font-normal text-gray-400">{a.category}</div>}
+                    <div className="text-[11px] font-normal text-gray-400">{a.category}</div>
                   </td>
                   <td className={`${stickyTotal} px-4 py-2.5 font-semibold text-gray-800 border-b border-r border-gray-100`}>{Number(a.total_required_qty).toLocaleString('en-IN')}</td>
                   {pos.map(p => {
@@ -350,10 +349,10 @@ export default function OutboundTab() {
               ))}
             </tbody>
           </table>
-          {!loading && visibleArticles.length === 0 && (
+          {!loading && articles.length === 0 && (
             <p className="text-center text-gray-400 py-8">No packaging/barcode products yet — add them on the Packaging Products page.</p>
           )}
-          {!loading && visibleArticles.length > 0 && pos.length === 0 && (
+          {!loading && articles.length > 0 && pos.length === 0 && (
             <p className="text-center text-gray-400 py-8">No POs in the selected date range.</p>
           )}
         </div>

@@ -1,7 +1,7 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
 
-const PRODUCT_FIELDS = ['sku_code', 'description', 'hsn_code', 'category'];
+const PRODUCT_FIELDS = ['sku_code', 'description', 'category'];
 const BULK_LIMIT = 2000;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ async function fetchArticleRequirementsByProduct(productIds, tableName) {
 async function list(req, res, next) {
   try {
     const { rows } = await db.execute(
-      `SELECT p.id, p.sku_code, p.description, p.hsn_code, p.category,
+      `SELECT p.id, p.sku_code, p.description, p.category,
               p.created_at, p.updated_at, u.name AS updated_by_name
        FROM products p
        LEFT JOIN users u ON u.id = p.updated_by
@@ -157,15 +157,14 @@ async function create(req, res, next) {
     if (bcError) return res.status(400).json({ message: bcError });
 
     const description = normText(req.body.description);
-    const hsn_code = normText(req.body.hsn_code);
     const category = normText(req.body.category);
 
     const tx = await db.transaction('write');
     try {
       const { rows } = await tx.execute({
-        sql: `INSERT INTO products (sku_code, description, hsn_code, category, updated_by, updated_at)
-              VALUES (?, ?, ?, ?, ?, datetime('now')) RETURNING *`,
-        args: [sku_code, description, hsn_code, category, req.user.id],
+        sql: `INSERT INTO products (sku_code, description, category, updated_by, updated_at)
+              VALUES (?, ?, ?, ?, datetime('now')) RETURNING *`,
+        args: [sku_code, description, category, req.user.id],
       });
       const product = rows[0];
       for (const r of requirements) {
@@ -233,17 +232,16 @@ async function update(req, res, next) {
     if (bcError) return res.status(400).json({ message: bcError });
 
     const description = normText(req.body.description);
-    const hsn_code = normText(req.body.hsn_code);
     const category = normText(req.body.category);
 
     const tx = await db.transaction('write');
     try {
       const { rows } = await tx.execute({
         sql: `UPDATE products SET
-                sku_code = ?, description = ?, hsn_code = ?, category = ?,
+                sku_code = ?, description = ?, category = ?,
                 updated_by = ?, updated_at = datetime('now')
               WHERE id = ? RETURNING *`,
-        args: [sku_code, description, hsn_code, category, req.user.id, id],
+        args: [sku_code, description, category, req.user.id, id],
       });
       await tx.execute({ sql: 'DELETE FROM product_requirements WHERE product_id = ?', args: [id] });
       for (const r of requirements) {
@@ -477,16 +475,15 @@ async function bulkUpsert(req, res, next) {
       const tx = await db.transaction('write');
       try {
         const { rows: up } = await tx.execute({
-          sql: `INSERT INTO products (sku_code, description, hsn_code, category, updated_by, updated_at)
-                VALUES (?, ?, ?, ?, ?, datetime('now'))
+          sql: `INSERT INTO products (sku_code, description, category, updated_by, updated_at)
+                VALUES (?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(sku_code) DO UPDATE SET
                   description = excluded.description,
-                  hsn_code = excluded.hsn_code,
                   category = excluded.category,
                   updated_by = excluded.updated_by,
                   updated_at = excluded.updated_at
                 RETURNING id`,
-          args: [sku_code, normText(r.description), normText(r.hsn_code), normText(r.category), req.user.id],
+          args: [sku_code, normText(r.description), normText(r.category), req.user.id],
         });
         const productId = up[0].id;
         await tx.execute({ sql: 'DELETE FROM product_requirements WHERE product_id = ?', args: [productId] });

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { Plus, Pencil, Trash2, RotateCcw, FileText, Download, ArrowUp, ArrowDown, ArrowUpDown, ChevronDown } from 'lucide-react';
@@ -10,10 +10,12 @@ import Badge from '../../components/ui/Badge';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { useSessionState } from '../../hooks/useSessionState';
-import { listOutboundPOs, deleteOutboundPO, restoreOutboundPO } from '../../api/outboundPOs.api';
+import { listOutboundPOs, getOutboundPOItemNameCounts, deleteOutboundPO, restoreOutboundPO } from '../../api/outboundPOs.api';
 import { listOutboundVendors } from '../../api/outboundVendors.api';
+import { listOutboundProducts } from '../../api/outboundProducts.api';
 import { FLAG_META, FLAG_FILTER_OPTIONS, flagLabel } from '../../utils/outboundPOFlags';
 import { formatDateTime } from '../../utils/formatters';
+import { cmpText } from '../../utils/sort';
 
 // One row per PO line, matching the on-screen sub-rows. `columns` is
 // [{ key, header }]; values come straight off the flattened row.
@@ -34,7 +36,7 @@ const STATUS_MULTI_OPTIONS = ['Open', 'Partially Received', 'Closed'];
 
 const defaultFilters = () => ({
   order_no: '', vendor_id: '', status: ['Open', 'Partially Received'], show_deleted: false,
-  po_date_from: '', po_date_to: '', flags: [],
+  po_date_from: '', po_date_to: '', flags: ['rate_mismatch', 'missing_incoming_no'],
 });
 
 // Checkbox dropdown used by both the Status and Flags filters — mirrors
@@ -149,6 +151,9 @@ export default function OutboundPOList() {
   const [restoring, setRestoring] = useState(false);
   const [vendors, setVendors] = useState([]);
   const [downloading, setDownloading] = useState(false);
+  const [itemNameTab, setItemNameTab] = useSessionState('outboundPOs.itemNameTab', 'All');
+  const [taxonomy, setTaxonomy] = useState([]);
+  const [itemCounts, setItemCounts] = useState({});
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -180,13 +185,40 @@ export default function OutboundPOList() {
     listOutboundVendors()
       .then(rows => setVendors(rows.filter(v => v.is_active)))
       .catch(() => {});
+    listOutboundProducts()
+      .then(rows => setTaxonomy((rows || []).filter(r => r.is_active)))
+      .catch(() => {});
   }, []);
+
+  // Tabs = All + distinct item names (flat, irrespective of category in the
+  // tab bar itself), ordered by (category asc, item_name asc) with an
+  // 'Others'-category item pinned last -- mirrors PackagingList.jsx's
+  // category-tab pinning, but keyed on the item's category rather than the
+  // tab's own label. Sourced from the Outbound Product List taxonomy (one row
+  // per (category, item_name), not per variant) rather than the paginated PO
+  // list, so tabs reflect the full known set regardless of what page you're on.
+  const itemNameTabs = useMemo(() => {
+    const sorted = [...taxonomy].sort((a, b) => {
+      const aOther = (a.category || '').toLowerCase() === 'others';
+      const bOther = (b.category || '').toLowerCase() === 'others';
+      if (aOther !== bOther) return aOther ? 1 : -1;
+      return cmpText(a.category, b.category) || cmpText(a.item_name, b.item_name);
+    });
+    // De-dupe by item_name -- outbound_products' UNIQUE is (category, item_name),
+    // not item_name alone, so in principle two categories could share a name;
+    // the tab bar is "irrespective of category" (flat, one tab per name), so
+    // the first sorted occurrence wins. Not observed in current data.
+    const seen = new Set();
+    const names = sorted.filter(r => (seen.has(r.item_name) ? false : (seen.add(r.item_name), true)));
+    return [{ key: 'All', label: 'All' }, ...names.map(r => ({ key: r.item_name, label: r.item_name }))];
+  }, [taxonomy]);
 
   const buildParams = useCallback((overrides) => {
     const f = overrides?.filters ?? filters;
     const s = overrides?.sort ?? sort;
     const p = overrides?.page ?? page;
     const ps = overrides?.pageSize ?? pageSize;
+    const itn = overrides?.itemNameTab ?? itemNameTab;
     const params = { page: p, page_size: ps, sort_by: s.key, sort_dir: s.dir };
     if (f.order_no) params.order_no = f.order_no;
     if (f.vendor_id) params.vendor_id = f.vendor_id;
@@ -200,8 +232,9 @@ export default function OutboundPOList() {
     // Array.isArray guard: a filter object persisted in sessionStorage before
     // this key existed would otherwise blow up on .length.
     if (Array.isArray(f.flags) && f.flags.length) params.flag = f.flags.join(',');
+    if (itn && itn !== 'All') params.item_name = itn;
     return params;
-  }, [filters, sort, page, pageSize]);
+  }, [filters, sort, page, pageSize, itemNameTab]);
 
   const load = useCallback((overrides) => {
     setLoading(true);
@@ -214,15 +247,36 @@ export default function OutboundPOList() {
       .finally(() => setLoading(false));
   }, [buildParams]);
 
+  // Item-name tab badges, scoped by every OTHER active filter (item_name
+  // itself excluded server-side) so each tab shows "how many POs would show
+  // if I picked this tab, given today's other filters" -- mirrors how
+  // Inbound Procurement pairs load()/loadCounts().
+  const loadItemCounts = useCallback((overrides) => {
+    const { item_name, ...params } = buildParams(overrides); // eslint-disable-line no-unused-vars
+    return getOutboundPOItemNameCounts(params)
+      .then(res => setItemCounts(res.counts || {}))
+      .catch(() => {});
+  }, [buildParams]);
+
   useEffect(() => {
     load({ filters, page });
+    loadItemCounts({ filters, page });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
   const onSearchKey = (e) => { if (e.key === 'Enter') applySearch(); };
-  const applySearch = () => { setPage(1); load({ page: 1 }); };
-  const clearFilters = () => { const f = defaultFilters(); setFilters(f); setPage(1); load({ filters: f, page: 1 }); };
+  const applySearch = () => { setPage(1); load({ page: 1 }); loadItemCounts({ page: 1 }); };
+  const clearFilters = () => {
+    const f = defaultFilters();
+    setFilters(f); setPage(1);
+    load({ filters: f, page: 1 });
+    loadItemCounts({ filters: f, page: 1 });
+  };
+  const switchItemNameTab = (key) => {
+    setItemNameTab(key); setPage(1);
+    load({ itemNameTab: key, page: 1 });
+  };
 
   const toggleSort = (key) => {
     if (!key) return;
@@ -284,6 +338,25 @@ export default function OutboundPOList() {
           <Button variant="ghost" onClick={handleDownload} loading={downloading}><Download size={16} />Download XLSX</Button>
           <Button onClick={() => navigate('/outbound/purchase-orders/new')}><Plus size={16} />Add PO</Button>
         </div>
+      </div>
+
+      {/* Item-name tabs: All + distinct item names, ordered by category then
+          name, 'Others'-category items pinned last (see itemNameTabs above). */}
+      <div className="flex gap-1 mb-4 border-b border-gray-200 overflow-x-auto">
+        {itemNameTabs.map(t => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => switchItemNameTab(t.key)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
+              itemNameTab === t.key
+                ? 'border-[#c1121f] text-[#c1121f]'
+                : 'border-transparent text-gray-500 hover:text-[#003049]'
+            }`}
+          >
+            {t.label} <span className="ml-1 text-gray-400">({itemCounts[t.key] ?? 0})</span>
+          </button>
+        ))}
       </div>
 
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">

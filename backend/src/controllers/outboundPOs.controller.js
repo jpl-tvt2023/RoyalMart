@@ -298,46 +298,62 @@ function withOrderNo(row) {
   return { ...row, order_no: padOrderNo(row.id), flags: pickFlags(row) };
 }
 
-async function list(req, res, next) {
-  try {
-    const { order_no, vendor_id, status, po_date_from, po_date_to, flag } = req.query;
-    const conditions = [];
-    const args = [];
-    if (order_no) {
-      const n = parseInt(String(order_no).replace(/^0+/, ''), 10);
-      if (Number.isInteger(n)) { conditions.push('p.id = ?'); args.push(n); }
-      else { conditions.push('0'); }
-    }
-    if (vendor_id) { conditions.push('p.vendor_id = ?'); args.push(vendor_id); }
-    if (po_date_from) { conditions.push('p.po_date >= ?'); args.push(po_date_from); }
-    if (po_date_to)   { conditions.push('p.po_date <= ?'); args.push(po_date_to); }
-    if (status === 'Deleted') {
-      conditions.push("p.status = 'Deleted'");
-    } else if (status) {
-      const values = String(status).split(',').map(s => s.trim()).filter(s => VALID_STATUSES.includes(s));
-      if (values.length) {
-        conditions.push(`p.status IN (${values.map(() => '?').join(',')})`);
-        args.push(...values);
-      } else {
-        conditions.push("p.status <> 'Deleted'");
-      }
+// Shared by list() and getItemNameCounts() so the two can never disagree
+// about which POs match the active filters. Returns { where, args } with `p`
+// as the outbound_pos alias. Set excludeItemName to omit the item_name
+// condition even if present in query — used by getItemNameCounts so every
+// tab's badge reflects "how many POs would show given today's OTHER filters".
+function buildListWhere(query, { excludeItemName = false } = {}) {
+  const { order_no, vendor_id, status, po_date_from, po_date_to, flag, item_name } = query;
+  const conditions = [];
+  const args = [];
+  if (order_no) {
+    const n = parseInt(String(order_no).replace(/^0+/, ''), 10);
+    if (Number.isInteger(n)) { conditions.push('p.id = ?'); args.push(n); }
+    else { conditions.push('0'); }
+  }
+  if (vendor_id) { conditions.push('p.vendor_id = ?'); args.push(vendor_id); }
+  if (po_date_from) { conditions.push('p.po_date >= ?'); args.push(po_date_from); }
+  if (po_date_to)   { conditions.push('p.po_date <= ?'); args.push(po_date_to); }
+  if (status === 'Deleted') {
+    conditions.push("p.status = 'Deleted'");
+  } else if (status) {
+    const values = String(status).split(',').map(s => s.trim()).filter(s => VALID_STATUSES.includes(s));
+    if (values.length) {
+      conditions.push(`p.status IN (${values.map(() => '?').join(',')})`);
+      args.push(...values);
     } else {
       conditions.push("p.status <> 'Deleted'");
     }
+  } else {
+    conditions.push("p.status <> 'Deleted'");
+  }
 
-    // ?flag=rate_mismatch,missing_incoming_no -- OR-combined, so a PO matches
-    // if it carries ANY of the selected flags. The pseudo-key `none` matches
-    // only clean POs. This goes into the shared `where` below so the page query
-    // and the COUNT query can never disagree about the total.
-    const flagSel = String(flag || '').split(',').map(s => s.trim()).filter(Boolean);
-    const flagClauses = [];
-    if (flagSel.includes('none')) {
-      flagClauses.push(`(${FLAG_KEYS.map(k => `NOT ${poFlagExists(k)}`).join(' AND ')})`);
-    }
-    for (const k of flagSel.filter(k => FLAG_KEYS.includes(k))) flagClauses.push(poFlagExists(k));
-    if (flagClauses.length) conditions.push(`(${flagClauses.join(' OR ')})`);
+  // ?flag=rate_mismatch,missing_incoming_no -- OR-combined, so a PO matches
+  // if it carries ANY of the selected flags. The pseudo-key `none` matches
+  // only clean POs. This goes into the shared `where` below so the page query
+  // and the COUNT query can never disagree about the total.
+  const flagSel = String(flag || '').split(',').map(s => s.trim()).filter(Boolean);
+  const flagClauses = [];
+  if (flagSel.includes('none')) {
+    flagClauses.push(`(${FLAG_KEYS.map(k => `NOT ${poFlagExists(k)}`).join(' AND ')})`);
+  }
+  for (const k of flagSel.filter(k => FLAG_KEYS.includes(k))) flagClauses.push(poFlagExists(k));
+  if (flagClauses.length) conditions.push(`(${flagClauses.join(' OR ')})`);
 
-    const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  // Item-name tab filter: a PO matches if ANY of its (active) lines has this
+  // item_name -- filters which POs appear, not which lines render within them.
+  if (item_name && !excludeItemName) {
+    conditions.push('EXISTS (SELECT 1 FROM outbound_po_lines l WHERE l.po_id = p.id AND l.deleted_at IS NULL AND l.item_name = ?)');
+    args.push(item_name);
+  }
+
+  return { where: conditions.length ? 'WHERE ' + conditions.join(' AND ') : '', args };
+}
+
+async function list(req, res, next) {
+  try {
+    const { where, args } = buildListWhere(req.query);
 
     const orderBy = buildOrderBy(req.query, SORT_COLUMNS);
     const pag = buildPagination(req.query);
@@ -362,6 +378,36 @@ async function list(req, res, next) {
       rows: rows.map(r => ({ ...withOrderNo(r), lines: linesByPo.get(r.id) || [] })),
       total, page, page_size,
     });
+  } catch (err) { next(err); }
+}
+
+// Per-item-name PO count for the item-name tab badges, scoped by every OTHER
+// active filter (item_name itself excluded, so each tab shows "how many POs
+// would show if I picked this tab"). A PO with two different-item_name lines
+// counts once per matching item_name group, so the 'All' total is computed
+// separately (COUNT DISTINCT with no GROUP BY) rather than summed across
+// groups, which would overcount multi-item POs.
+async function getItemNameCounts(req, res, next) {
+  try {
+    const { where, args } = buildListWhere(req.query, { excludeItemName: true });
+    const [{ rows: groupRows }, { rows: allRows }] = await Promise.all([
+      db.execute({
+        sql: `SELECT l.item_name, COUNT(DISTINCT p.id) AS n
+              FROM outbound_pos p
+              JOIN outbound_po_lines l ON l.po_id = p.id AND l.deleted_at IS NULL
+              ${where}
+              GROUP BY l.item_name`,
+        args,
+      }),
+      db.execute({
+        sql: `SELECT COUNT(DISTINCT p.id) AS n FROM outbound_pos p ${where}`,
+        args,
+      }),
+    ]);
+    const counts = {};
+    for (const r of groupRows) counts[r.item_name] = Number(r.n) || 0;
+    counts.All = Number(allRows[0]?.n) || 0;
+    res.json({ counts });
   } catch (err) { next(err); }
 }
 
@@ -939,6 +985,6 @@ async function restoreReceipt(req, res, next) {
 }
 
 module.exports = {
-  list, getOne, create, update, remove, restore,
+  list, getItemNameCounts, getOne, create, update, remove, restore,
   updateLineShort, createReceipt, updateReceipt, deleteReceipt, restoreReceipt,
 };
