@@ -12,28 +12,30 @@ function normText(v) {
   return s === '' ? null : s;
 }
 
-// Validate + normalise a requirements array of { raw_product_id, qty }.
-// Returns { ok: [{raw_product_id, qty}], error } — error set when invalid.
-function normaliseRequirements(input, rawIdSet) {
+// Validate + normalise a requirements array of { [idField]: id, qty }.
+// Shared by all three requirement sections (raw product, packaging, barcode) —
+// idSet decides which ids are legal, idField/label decide the id key and the
+// wording of any error. Returns { ok: [{[idField]: id, qty}], error }.
+function normaliseRequirementRows(input, idSet, idField, label) {
   if (!Array.isArray(input) || input.length === 0) {
-    return { error: 'At least one requirement (raw product + qty) is required' };
+    return { error: `At least one ${label} requirement (${label} + qty) is required` };
   }
   const seen = new Set();
   const ok = [];
   for (const r of input) {
-    const rawId = Number(r?.raw_product_id);
+    const id = Number(r?.[idField]);
     const qty = Number(r?.qty);
-    if (!Number.isInteger(rawId) || !rawIdSet.has(rawId)) {
-      return { error: `Unknown raw product (id ${r?.raw_product_id})` };
+    if (!Number.isInteger(id) || !idSet.has(id)) {
+      return { error: `Unknown ${label} (id ${r?.[idField]})` };
     }
     if (!Number.isInteger(qty) || qty <= 0) {
-      return { error: 'Each requirement qty must be a positive integer' };
+      return { error: `Each ${label} requirement qty must be a positive integer` };
     }
-    if (seen.has(rawId)) {
-      return { error: 'A raw product appears more than once in requirements' };
+    if (seen.has(id)) {
+      return { error: `A ${label} appears more than once in requirements` };
     }
-    seen.add(rawId);
-    ok.push({ raw_product_id: rawId, qty });
+    seen.add(id);
+    ok.push({ [idField]: id, qty });
   }
   return { ok };
 }
@@ -41,6 +43,24 @@ function normaliseRequirements(input, rawIdSet) {
 async function loadRawIdSet() {
   const { rows } = await db.execute('SELECT id FROM raw_products');
   return new Set(rows.map(r => Number(r.id)));
+}
+
+// Packaging Product requirements may only reference catalog articles under
+// category = 'Packaging'; Barcode requirements only under category = 'Barcode'.
+// Handing normaliseRequirementRows the right set is what keeps a Barcode
+// article from being saved as a Packaging requirement (or vice versa).
+async function loadPackagingArticleIdSets() {
+  const { rows } = await db.execute(
+    "SELECT id, category FROM packaging_raw_materials WHERE category IN ('Packaging','Barcode') COLLATE NOCASE"
+  );
+  const packagingIds = new Set();
+  const barcodeIds = new Set();
+  for (const r of rows) {
+    const cat = String(r.category).toLowerCase();
+    if (cat === 'packaging') packagingIds.add(Number(r.id));
+    else if (cat === 'barcode') barcodeIds.add(Number(r.id));
+  }
+  return { packagingIds, barcodeIds };
 }
 
 async function fetchRequirementsByProduct(productIds) {
@@ -62,6 +82,35 @@ async function fetchRequirementsByProduct(productIds) {
   return byProduct;
 }
 
+// Packaging/Barcode requirement fetch, generalised over which join table to
+// read. tableName is always one of two hardcoded literals passed by this file
+// (never request input), so string interpolation into the SQL is safe.
+async function fetchArticleRequirementsByProduct(productIds, tableName) {
+  if (!productIds.length) return new Map();
+  const placeholders = productIds.map(() => '?').join(',');
+  const { rows } = await db.execute({
+    sql: `SELECT t.product_id, t.packaging_raw_material_id, t.qty, prm.category, prm.item_name, prm.variant, prm.unit_metric
+          FROM ${tableName} t
+          JOIN packaging_raw_materials prm ON prm.id = t.packaging_raw_material_id
+          WHERE t.product_id IN (${placeholders})
+          ORDER BY prm.item_name COLLATE NOCASE, prm.variant COLLATE NOCASE`,
+    args: productIds,
+  });
+  const byProduct = new Map();
+  for (const r of rows) {
+    if (!byProduct.has(r.product_id)) byProduct.set(r.product_id, []);
+    byProduct.get(r.product_id).push({
+      packaging_raw_material_id: r.packaging_raw_material_id,
+      category: r.category,
+      item_name: r.item_name,
+      variant: r.variant || null,
+      unit_metric: r.unit_metric,
+      qty: r.qty,
+    });
+  }
+  return byProduct;
+}
+
 // ── handlers ─────────────────────────────────────────────────────────────────
 
 async function list(req, res, next) {
@@ -73,8 +122,17 @@ async function list(req, res, next) {
        LEFT JOIN users u ON u.id = p.updated_by
        ORDER BY p.created_at DESC`
     );
-    const reqs = await fetchRequirementsByProduct(rows.map(r => r.id));
-    for (const r of rows) r.requirements = reqs.get(r.id) || [];
+    const ids = rows.map(r => r.id);
+    const [reqs, packagingReqs, barcodeReqs] = await Promise.all([
+      fetchRequirementsByProduct(ids),
+      fetchArticleRequirementsByProduct(ids, 'product_packaging_requirements'),
+      fetchArticleRequirementsByProduct(ids, 'product_barcode_requirements'),
+    ]);
+    for (const r of rows) {
+      r.requirements = reqs.get(r.id) || [];
+      r.packaging_requirements = packagingReqs.get(r.id) || [];
+      r.barcode_requirements = barcodeReqs.get(r.id) || [];
+    }
     res.json(rows);
   } catch (err) { next(err); }
 }
@@ -84,9 +142,19 @@ async function create(req, res, next) {
     const sku_code = normText(req.body.sku_code);
     if (!sku_code) return res.status(400).json({ message: 'sku_code is required' });
 
-    const rawIdSet = await loadRawIdSet();
-    const { ok: requirements, error } = normaliseRequirements(req.body.requirements, rawIdSet);
-    if (error) return res.status(400).json({ message: error });
+    const [rawIdSet, { packagingIds, barcodeIds }] = await Promise.all([
+      loadRawIdSet(),
+      loadPackagingArticleIdSets(),
+    ]);
+    const { ok: requirements, error: reqError } =
+      normaliseRequirementRows(req.body.requirements, rawIdSet, 'raw_product_id', 'raw product');
+    if (reqError) return res.status(400).json({ message: reqError });
+    const { ok: packagingRequirements, error: pkgError } =
+      normaliseRequirementRows(req.body.packaging_requirements, packagingIds, 'packaging_raw_material_id', 'packaging product');
+    if (pkgError) return res.status(400).json({ message: pkgError });
+    const { ok: barcodeRequirements, error: bcError } =
+      normaliseRequirementRows(req.body.barcode_requirements, barcodeIds, 'packaging_raw_material_id', 'barcode');
+    if (bcError) return res.status(400).json({ message: bcError });
 
     const description = normText(req.body.description);
     const hsn_code = normText(req.body.hsn_code);
@@ -106,11 +174,23 @@ async function create(req, res, next) {
           args: [product.id, r.raw_product_id, r.qty],
         });
       }
+      for (const r of packagingRequirements) {
+        await tx.execute({
+          sql: 'INSERT INTO product_packaging_requirements (product_id, packaging_raw_material_id, qty) VALUES (?, ?, ?)',
+          args: [product.id, r.packaging_raw_material_id, r.qty],
+        });
+      }
+      for (const r of barcodeRequirements) {
+        await tx.execute({
+          sql: 'INSERT INTO product_barcode_requirements (product_id, packaging_raw_material_id, qty) VALUES (?, ?, ?)',
+          args: [product.id, r.packaging_raw_material_id, r.qty],
+        });
+      }
       await logAction({
         client: tx,
         userId: req.user.id,
         actionType: 'PRODUCT_CREATE',
-        description: `Created SKU ${sku_code} (${requirements.length} requirement${requirements.length !== 1 ? 's' : ''})`,
+        description: `Created SKU ${sku_code} (${requirements.length} raw, ${packagingRequirements.length} packaging, ${barcodeRequirements.length} barcode requirement${(requirements.length + packagingRequirements.length + barcodeRequirements.length) !== 1 ? 's' : ''})`,
         entityType: 'product',
         entityId: product.id,
       });
@@ -138,9 +218,19 @@ async function update(req, res, next) {
     const sku_code = normText(req.body.sku_code) ?? current.sku_code;
     if (!sku_code) return res.status(400).json({ message: 'sku_code is required' });
 
-    const rawIdSet = await loadRawIdSet();
-    const { ok: requirements, error } = normaliseRequirements(req.body.requirements, rawIdSet);
-    if (error) return res.status(400).json({ message: error });
+    const [rawIdSet, { packagingIds, barcodeIds }] = await Promise.all([
+      loadRawIdSet(),
+      loadPackagingArticleIdSets(),
+    ]);
+    const { ok: requirements, error: reqError } =
+      normaliseRequirementRows(req.body.requirements, rawIdSet, 'raw_product_id', 'raw product');
+    if (reqError) return res.status(400).json({ message: reqError });
+    const { ok: packagingRequirements, error: pkgError } =
+      normaliseRequirementRows(req.body.packaging_requirements, packagingIds, 'packaging_raw_material_id', 'packaging product');
+    if (pkgError) return res.status(400).json({ message: pkgError });
+    const { ok: barcodeRequirements, error: bcError } =
+      normaliseRequirementRows(req.body.barcode_requirements, barcodeIds, 'packaging_raw_material_id', 'barcode');
+    if (bcError) return res.status(400).json({ message: bcError });
 
     const description = normText(req.body.description);
     const hsn_code = normText(req.body.hsn_code);
@@ -160,6 +250,20 @@ async function update(req, res, next) {
         await tx.execute({
           sql: 'INSERT INTO product_requirements (product_id, raw_product_id, qty) VALUES (?, ?, ?)',
           args: [id, r.raw_product_id, r.qty],
+        });
+      }
+      await tx.execute({ sql: 'DELETE FROM product_packaging_requirements WHERE product_id = ?', args: [id] });
+      for (const r of packagingRequirements) {
+        await tx.execute({
+          sql: 'INSERT INTO product_packaging_requirements (product_id, packaging_raw_material_id, qty) VALUES (?, ?, ?)',
+          args: [id, r.packaging_raw_material_id, r.qty],
+        });
+      }
+      await tx.execute({ sql: 'DELETE FROM product_barcode_requirements WHERE product_id = ?', args: [id] });
+      for (const r of barcodeRequirements) {
+        await tx.execute({
+          sql: 'INSERT INTO product_barcode_requirements (product_id, packaging_raw_material_id, qty) VALUES (?, ?, ?)',
+          args: [id, r.packaging_raw_material_id, r.qty],
         });
       }
       const changes = diffFields(current, rows[0], PRODUCT_FIELDS);
@@ -196,7 +300,8 @@ async function remove(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// Note: deleting a product cascade-deletes its product_requirements and product_vendor_codes.
+// Note: deleting a product cascade-deletes its product_requirements,
+// product_packaging_requirements, product_barcode_requirements and product_vendor_codes.
 async function bulkDelete(req, res, next) {
   try {
     const { ids } = req.body || {};
@@ -248,6 +353,68 @@ function parseRequirementsCell(cell) {
   return { out, errors };
 }
 
+// Parse a packaging/barcode requirements cell like
+// "Corrugated Box|5 Ply:2; EAN Barcode:1" into [{ item_name, variant, qty }].
+// Splits entries on ';'; within an entry, the LAST ':' separates qty (same
+// rule as parseRequirementsCell), and the FIRST '|' before that separates an
+// optional variant (omitted entirely for no-variant items). '|' is this
+// codebase's existing convention for category/item/variant lookup keys
+// (packagingRawMaterials.controller.js, OutboundVendorsPage.jsx) and is very
+// unlikely to collide with a real item name.
+function parseArticleRequirementsCell(cell) {
+  const out = [];
+  const errors = [];
+  const items = String(cell || '').split(';').map(s => s.trim()).filter(Boolean);
+  for (const item of items) {
+    const colonIdx = item.lastIndexOf(':');
+    if (colonIdx === -1) { errors.push(`"${item}" is missing ":qty"`); continue; }
+    const namePart = item.slice(0, colonIdx).trim();
+    const qty = Number(item.slice(colonIdx + 1).trim());
+    if (!Number.isInteger(qty) || qty <= 0) { errors.push(`"${item}" has an invalid qty`); continue; }
+    const pipeIdx = namePart.indexOf('|');
+    const item_name = (pipeIdx === -1 ? namePart : namePart.slice(0, pipeIdx)).trim();
+    const variant = pipeIdx === -1 ? '' : namePart.slice(pipeIdx + 1).trim();
+    if (!item_name) { errors.push(`"${item}" has no item name`); continue; }
+    out.push({ item_name, variant, qty });
+  }
+  return { out, errors };
+}
+
+// item_name+variant (case-insensitive) -> packaging_raw_materials.id, scoped
+// to one category. Used to resolve bulk-upload cells for the Packaging and
+// Barcode columns without letting either reference the other's articles.
+async function loadPackagingArticlesByCategory(category) {
+  const { rows } = await db.execute({
+    sql: 'SELECT id, item_name, variant FROM packaging_raw_materials WHERE category = ? COLLATE NOCASE',
+    args: [category],
+  });
+  const map = new Map();
+  for (const r of rows) {
+    const key = `${String(r.item_name).trim().toLowerCase()}|${String(r.variant || '').trim().toLowerCase()}`;
+    map.set(key, r.id);
+  }
+  return map;
+}
+
+// Resolve parsed { item_name, variant, qty } entries against a
+// key -> packaging_raw_material_id map. Returns { requirements, unknown }
+// where `unknown` (a display string) is set on the first unresolved/duplicate
+// entry, matching the raw-product bulk-resolve loop's short-circuit style.
+function resolveArticleRequirements(parsed, articlesByKey) {
+  const requirements = [];
+  const seen = new Set();
+  for (const p of parsed) {
+    const key = `${p.item_name.toLowerCase()}|${p.variant.toLowerCase()}`;
+    const id = articlesByKey.get(key);
+    const display = `${p.item_name}${p.variant ? ` (${p.variant})` : ''}`;
+    if (!id) return { requirements, unknown: display };
+    if (seen.has(id)) return { requirements, unknown: `${display} (duplicated)` };
+    seen.add(id);
+    requirements.push({ packaging_raw_material_id: id, qty: p.qty });
+  }
+  return { requirements, unknown: null };
+}
+
 async function bulkUpsert(req, res, next) {
   try {
     const { rows: input } = req.body || {};
@@ -258,10 +425,13 @@ async function bulkUpsert(req, res, next) {
       return res.status(400).json({ message: `Too many rows; max ${BULK_LIMIT}` });
     }
 
-    const { rows: rawRows } = await db.execute('SELECT id, name FROM raw_products');
+    const [{ rows: rawRows }, { rows: existing }, packagingByKey, barcodeByKey] = await Promise.all([
+      db.execute('SELECT id, name FROM raw_products'),
+      db.execute('SELECT sku_code FROM products'),
+      loadPackagingArticlesByCategory('Packaging'),
+      loadPackagingArticlesByCategory('Barcode'),
+    ]);
     const rawByName = new Map(rawRows.map(r => [String(r.name).trim().toLowerCase(), r.id]));
-
-    const { rows: existing } = await db.execute('SELECT sku_code FROM products');
     const existingCodes = new Set(existing.map(e => String(e.sku_code).trim().toLowerCase()));
 
     const skipped = [];
@@ -273,14 +443,22 @@ async function bulkUpsert(req, res, next) {
       const sku_code = normText(r.sku_code);
       if (!sku_code) { skipped.push({ row: i + 2, reason: 'Missing sku_code' }); continue; }
 
-      const { out: parsed, errors } = parseRequirementsCell(r.requirements);
-      if (errors.length) { skipped.push({ row: i + 2, reason: errors.join('; ') }); continue; }
-      if (!parsed.length) { skipped.push({ row: i + 2, reason: 'No requirements provided' }); continue; }
+      const { out: parsedRaw, errors: rawErrors } = parseRequirementsCell(r.requirements);
+      if (rawErrors.length) { skipped.push({ row: i + 2, reason: rawErrors.join('; ') }); continue; }
+      if (!parsedRaw.length) { skipped.push({ row: i + 2, reason: 'No requirements provided' }); continue; }
+
+      const { out: parsedPkg, errors: pkgErrors } = parseArticleRequirementsCell(r.packaging_requirements);
+      if (pkgErrors.length) { skipped.push({ row: i + 2, reason: pkgErrors.join('; ') }); continue; }
+      if (!parsedPkg.length) { skipped.push({ row: i + 2, reason: 'No packaging requirements provided' }); continue; }
+
+      const { out: parsedBc, errors: bcErrors } = parseArticleRequirementsCell(r.barcode_requirements);
+      if (bcErrors.length) { skipped.push({ row: i + 2, reason: bcErrors.join('; ') }); continue; }
+      if (!parsedBc.length) { skipped.push({ row: i + 2, reason: 'No barcode requirements provided' }); continue; }
 
       const requirements = [];
       let unknown = null;
       const seen = new Set();
-      for (const p of parsed) {
+      for (const p of parsedRaw) {
         const rawId = rawByName.get(p.name.toLowerCase());
         if (!rawId) { unknown = p.name; break; }
         if (seen.has(rawId)) { unknown = `${p.name} (duplicated)`; break; }
@@ -288,6 +466,12 @@ async function bulkUpsert(req, res, next) {
         requirements.push({ raw_product_id: rawId, qty: p.qty });
       }
       if (unknown) { skipped.push({ row: i + 2, reason: `Unknown raw product "${unknown}"` }); continue; }
+
+      const { requirements: packagingRequirements, unknown: unknownPkg } = resolveArticleRequirements(parsedPkg, packagingByKey);
+      if (unknownPkg) { skipped.push({ row: i + 2, reason: `Unknown packaging product "${unknownPkg}"` }); continue; }
+
+      const { requirements: barcodeRequirements, unknown: unknownBc } = resolveArticleRequirements(parsedBc, barcodeByKey);
+      if (unknownBc) { skipped.push({ row: i + 2, reason: `Unknown barcode "${unknownBc}"` }); continue; }
 
       const isUpdate = existingCodes.has(sku_code.toLowerCase());
       const tx = await db.transaction('write');
@@ -310,6 +494,20 @@ async function bulkUpsert(req, res, next) {
           await tx.execute({
             sql: 'INSERT INTO product_requirements (product_id, raw_product_id, qty) VALUES (?, ?, ?)',
             args: [productId, req2.raw_product_id, req2.qty],
+          });
+        }
+        await tx.execute({ sql: 'DELETE FROM product_packaging_requirements WHERE product_id = ?', args: [productId] });
+        for (const req2 of packagingRequirements) {
+          await tx.execute({
+            sql: 'INSERT INTO product_packaging_requirements (product_id, packaging_raw_material_id, qty) VALUES (?, ?, ?)',
+            args: [productId, req2.packaging_raw_material_id, req2.qty],
+          });
+        }
+        await tx.execute({ sql: 'DELETE FROM product_barcode_requirements WHERE product_id = ?', args: [productId] });
+        for (const req2 of barcodeRequirements) {
+          await tx.execute({
+            sql: 'INSERT INTO product_barcode_requirements (product_id, packaging_raw_material_id, qty) VALUES (?, ?, ?)',
+            args: [productId, req2.packaging_raw_material_id, req2.qty],
           });
         }
         await tx.commit();

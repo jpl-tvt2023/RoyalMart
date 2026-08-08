@@ -29,3 +29,30 @@ export async function undoBatch(id) {
   const { data } = await api.delete(`/procurement/batches/${id}`);
   return data;
 }
+
+// ── Outbound (packaging/barcode demand) ─────────────────────────────────────
+
+export async function getOutboundDefaults() {
+  const { data } = await api.get('/procurement/outbound/defaults');
+  return data;
+}
+
+export async function getOutboundRequirements(params = {}) {
+  const { data } = await api.get('/procurement/outbound/requirements', { params });
+  return data;
+}
+
+export async function markPackagingOrdered(payload) {
+  const { data } = await api.post('/procurement/outbound/mark-ordered', payload);
+  return data;
+}
+
+export async function listPackagingBatches() {
+  const { data } = await api.get('/procurement/outbound/batches');
+  return data;
+}
+
+export async function undoPackagingBatch(id) {
+  const { data } = await api.delete(`/procurement/outbound/batches/${id}`);
+  return data;
+}

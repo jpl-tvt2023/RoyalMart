@@ -7,6 +7,7 @@ import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import { getVendorCodes, createVendorCode, updateVendorCode, deleteVendorCode, bulkUpsertVendorCodes, bulkDeleteVendorCodes } from '../../api/productVendorCodes.api';
 import { getProducts, createProduct, updateProduct, deleteProduct, bulkUpsertProducts, bulkDeleteProducts } from '../../api/products.api';
 import { getRawProducts, createRawProduct, updateRawProduct, deleteRawProduct, bulkUpsertRawProducts, bulkDeleteRawProducts } from '../../api/rawProducts.api';
+import { getPackagingRawMaterials } from '../../api/packagingRawMaterials.api';
 import { listVendors } from '../../api/vendors.api';
 import { listCategories } from '../../api/categories.api';
 import { sortByText } from '../../utils/sort';
@@ -82,10 +83,10 @@ const mappingsUploadConfig = {
 const skuUploadConfig = {
   title: 'Bulk Upload SKUs',
   templateFileName: 'skus-template.xlsx',
-  headers: ['sku_code', 'description', 'hsn_code', 'category', 'requirements'],
-  sampleRow: ['TSHIRT-RED-M', 'Red Tee M', '6109', 'Apparel', 'Cotton Fabric Roll:2; Thread Spool:1'],
-  requiredKeys: ['sku_code', 'requirements'],
-  instructions: 'sku_code and requirements are required. The requirements column lists one or more "Raw Product Name:qty" entries separated by semicolons (e.g. "Cotton Fabric Roll:2; Thread Spool:1") — the raw products must already exist (Raw Products tab). Rows whose SKU Code matches an existing SKU update it (and replace its requirements); new SKU codes are added.',
+  headers: ['sku_code', 'description', 'hsn_code', 'category', 'requirements', 'packaging_requirements', 'barcode_requirements'],
+  sampleRow: ['TSHIRT-RED-M', 'Red Tee M', '6109', 'Apparel', 'Cotton Fabric Roll:2; Thread Spool:1', 'Corrugated Box|5 Ply:2', 'EAN Barcode:1'],
+  requiredKeys: ['sku_code', 'requirements', 'packaging_requirements', 'barcode_requirements'],
+  instructions: 'sku_code, requirements, packaging_requirements and barcode_requirements are all required. requirements lists "Raw Product Name:qty" entries separated by semicolons (raw products must already exist on the Raw Products tab). packaging_requirements and barcode_requirements use "Item Name|Variant:qty" entries the same way — omit "|Variant" for items with no variant (e.g. "EAN Barcode:1") — items must already exist under the matching category on the Packaging Products page (Packaging tab / Barcode tab). Rows whose SKU Code matches an existing SKU update it (and replace all three requirement sections); new SKU codes are added.',
   submit: (rows) => bulkUpsertProducts(rows),
 };
 
@@ -427,9 +428,35 @@ function VendorMappingsTab() {
 
 // ───────────────────────────────── SKUs tab ─────────────────────────────────
 
-const EMPTY_SKU = { sku_code: '', description: '', hsn_code: '', category: '', requirements: [{ raw_product_id: '', qty: '' }] };
+const EMPTY_SKU = {
+  sku_code: '', description: '', hsn_code: '', category: '',
+  requirements: [{ raw_product_id: '', qty: '' }],
+  packaging_requirements: [{ packaging_raw_material_id: '', item_name: '', qty: '' }],
+  barcode_requirements: [{ packaging_raw_material_id: '', item_name: '', qty: '' }],
+};
 
 const reqSummary = (reqs) => (reqs || []).map(r => `${r.name} ×${r.qty}`).join(', ');
+const articleReqSummary = (reqs) => (reqs || []).map(r => `${r.item_name}${r.variant ? ` (${r.variant})` : ''} ×${r.qty}`).join(', ');
+
+// Shared client-side mirror of the server's normaliseRequirementRows: strips
+// blank rows, then requires >=1 row, positive-int qtys, and no duplicate ids.
+// Reused for all three requirement sections (raw product / packaging / barcode).
+function cleanRequirementRows(rows, idField, label) {
+  const cleaned = (rows || [])
+    .filter(r => r[idField] !== '' && String(r.qty).trim() !== '')
+    .map(r => ({ [idField]: Number(r[idField]), qty: parseInt(r.qty, 10) }));
+  if (cleaned.length === 0) {
+    return { error: `Add at least one ${label} requirement (${label} + qty)` };
+  }
+  if (cleaned.some(r => !Number.isInteger(r.qty) || r.qty <= 0)) {
+    return { error: `Each ${label} requirement qty must be a positive whole number` };
+  }
+  const ids = cleaned.map(r => r[idField]);
+  if (new Set(ids).size !== ids.length) {
+    return { error: `A ${label} is listed more than once in requirements` };
+  }
+  return { ok: cleaned };
+}
 
 function SKUsTab() {
   const { canEdit: canWrite } = useRBAC();
@@ -437,6 +464,7 @@ function SKUsTab() {
   const [skus, setSkus] = useState([]);
   const [categories, setCategories] = useState([]);
   const [rawProducts, setRawProducts] = useState([]);
+  const [packagingCatalog, setPackagingCatalog] = useState([]);
   const [search, setSearch] = useSessionState('products.skus.search', '');
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
@@ -464,7 +492,31 @@ function SKUsTab() {
     getRawProducts()
       .then(r => setRawProducts(sortByText(r.data || [], rp => rp.name)))
       .catch(() => {});
+    getPackagingRawMaterials()
+      .then(r => setPackagingCatalog(r.data || []))
+      .catch(() => {});
   }, []);
+
+  // Packaging Product requirements may only reference the catalog's
+  // 'Packaging' category, Barcode requirements only 'Barcode' — the source
+  // pages named in the SKU requirements spec (Packaging Items → Packaging tab
+  // / Barcode tab). Item Name -> [articles] drives the cascading Item -> Variant
+  // selectors, mirroring OutboundVendorsPage's catalog derivation but scoped to
+  // one fixed category per section (no Category picker needed here).
+  const packagingArticles = useMemo(() => packagingCatalog.filter(r => (r.category || '').toLowerCase() === 'packaging'), [packagingCatalog]);
+  const barcodeArticles = useMemo(() => packagingCatalog.filter(r => (r.category || '').toLowerCase() === 'barcode'), [packagingCatalog]);
+  const packagingItemNames = useMemo(() => sortByText(Array.from(new Set(packagingArticles.map(a => a.item_name)))), [packagingArticles]);
+  const barcodeItemNames = useMemo(() => sortByText(Array.from(new Set(barcodeArticles.map(a => a.item_name)))), [barcodeArticles]);
+  const packagingByItemName = useMemo(() => {
+    const map = packagingArticles.reduce((acc, r) => { (acc[r.item_name] ||= []).push(r); return acc; }, {});
+    for (const k of Object.keys(map)) map[k] = sortByText(map[k], a => a.variant || '');
+    return map;
+  }, [packagingArticles]);
+  const barcodeByItemName = useMemo(() => {
+    const map = barcodeArticles.reduce((acc, r) => { (acc[r.item_name] ||= []).push(r); return acc; }, {});
+    for (const k of Object.keys(map)) map[k] = sortByText(map[k], a => a.variant || '');
+    return map;
+  }, [barcodeArticles]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -486,33 +538,36 @@ function SKUsTab() {
       requirements: (s.requirements && s.requirements.length)
         ? s.requirements.map(r => ({ raw_product_id: String(r.raw_product_id), qty: String(r.qty) }))
         : [{ raw_product_id: '', qty: '' }],
+      packaging_requirements: (s.packaging_requirements && s.packaging_requirements.length)
+        ? s.packaging_requirements.map(r => ({ packaging_raw_material_id: String(r.packaging_raw_material_id), item_name: r.item_name, qty: String(r.qty) }))
+        : [{ packaging_raw_material_id: '', item_name: '', qty: '' }],
+      barcode_requirements: (s.barcode_requirements && s.barcode_requirements.length)
+        ? s.barcode_requirements.map(r => ({ packaging_raw_material_id: String(r.packaging_raw_material_id), item_name: r.item_name, qty: String(r.qty) }))
+        : [{ packaging_raw_material_id: '', item_name: '', qty: '' }],
     });
     setModal({ type: 'edit', id: s.id });
   };
 
-  // Requirements row editing
-  const setReq = (idx, patch) => setForm(f => ({ ...f, requirements: f.requirements.map((r, i) => i === idx ? { ...r, ...patch } : r) }));
-  const addReq = () => setForm(f => ({ ...f, requirements: [...f.requirements, { raw_product_id: '', qty: '' }] }));
-  const removeReq = (idx) => setForm(f => ({ ...f, requirements: f.requirements.filter((_, i) => i !== idx) }));
+  // Requirement row editing, generalised over the three sections (raw
+  // product / packaging / barcode) — each just picks its field name and the
+  // empty-row template to append.
+  const makeRowHelpers = (field, emptyRow) => ({
+    set: (idx, patch) => setForm(f => ({ ...f, [field]: f[field].map((r, i) => i === idx ? { ...r, ...patch } : r) })),
+    add: () => setForm(f => ({ ...f, [field]: [...f[field], emptyRow] })),
+    remove: (idx) => setForm(f => ({ ...f, [field]: f[field].filter((_, i) => i !== idx) })),
+  });
+  const rawReq = makeRowHelpers('requirements', { raw_product_id: '', qty: '' });
+  const pkgReq = makeRowHelpers('packaging_requirements', { packaging_raw_material_id: '', item_name: '', qty: '' });
+  const bcReq = makeRowHelpers('barcode_requirements', { packaging_raw_material_id: '', item_name: '', qty: '' });
 
   const handleSave = async (e) => {
     e.preventDefault();
-    const cleaned = form.requirements
-      .filter(r => r.raw_product_id !== '' && String(r.qty).trim() !== '')
-      .map(r => ({ raw_product_id: Number(r.raw_product_id), qty: parseInt(r.qty) }));
-    if (cleaned.length === 0) {
-      toast.error('Add at least one requirement (raw product + qty)');
-      return;
-    }
-    if (cleaned.some(r => !Number.isInteger(r.qty) || r.qty <= 0)) {
-      toast.error('Each requirement qty must be a positive whole number');
-      return;
-    }
-    const ids = cleaned.map(r => r.raw_product_id);
-    if (new Set(ids).size !== ids.length) {
-      toast.error('A raw product is listed more than once in requirements');
-      return;
-    }
+    const raw = cleanRequirementRows(form.requirements, 'raw_product_id', 'raw product');
+    if (raw.error) { toast.error(raw.error); return; }
+    const pkg = cleanRequirementRows(form.packaging_requirements, 'packaging_raw_material_id', 'packaging product');
+    if (pkg.error) { toast.error(pkg.error); return; }
+    const bc = cleanRequirementRows(form.barcode_requirements, 'packaging_raw_material_id', 'barcode');
+    if (bc.error) { toast.error(bc.error); return; }
     setSaving(true);
     try {
       const payload = {
@@ -520,7 +575,9 @@ function SKUsTab() {
         description: form.description.trim() || null,
         hsn_code: form.hsn_code.trim() || null,
         category: form.category || null,
-        requirements: cleaned,
+        requirements: raw.ok,
+        packaging_requirements: pkg.ok,
+        barcode_requirements: bc.ok,
       };
       if (modal === 'add') {
         await createProduct(payload);
@@ -563,7 +620,7 @@ function SKUsTab() {
 
   const fieldBase = 'px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
   const inputCls = `w-full ${fieldBase}`;
-  const colSpan = 5 + (canWrite ? 2 : 0);
+  const colSpan = 7 + (canWrite ? 2 : 0);
 
   const downloadXlsx = () => downloadRows('skus', [
     { key: 'sku_code', header: 'sku_code' },
@@ -571,9 +628,15 @@ function SKUsTab() {
     { key: 'hsn_code', header: 'hsn_code' },
     { key: 'category', header: 'category' },
     { key: 'requirements', header: 'requirements' },
-  ], skus, (r, key) => key === 'requirements'
-    ? (r.requirements || []).map(req => `${req.name}:${req.qty}`).join('; ')
-    : r[key]);
+    { key: 'packaging_requirements', header: 'packaging_requirements' },
+    { key: 'barcode_requirements', header: 'barcode_requirements' },
+  ], skus, (r, key) => {
+    if (key === 'requirements') return (r.requirements || []).map(req => `${req.name}:${req.qty}`).join('; ');
+    if (key === 'packaging_requirements' || key === 'barcode_requirements') {
+      return (r[key] || []).map(req => `${req.item_name}${req.variant ? `|${req.variant}` : ''}:${req.qty}`).join('; ');
+    }
+    return r[key];
+  });
 
   return (
     <>
@@ -602,7 +665,7 @@ function SKUsTab() {
                     <input type="checkbox" checked={sel.allSelected} onChange={sel.toggleAll} aria-label="Select all" />
                   </th>
                 )}
-                {['SKU Code', 'Description', 'HSN', 'Category', 'Requirements', canWrite ? 'Actions' : ''].filter(Boolean).map(h => (
+                {['SKU Code', 'Description', 'HSN', 'Category', 'Raw Product', 'Packaging', 'Barcode', canWrite ? 'Actions' : ''].filter(Boolean).map(h => (
                   <th key={h} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -624,6 +687,8 @@ function SKUsTab() {
                   <td className="px-4 py-3 text-gray-500">{s.hsn_code || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{s.category || '—'}</td>
                   <td className="px-4 py-3 text-gray-700">{reqSummary(s.requirements) || '—'}</td>
+                  <td className="px-4 py-3 text-gray-700">{articleReqSummary(s.packaging_requirements) || '—'}</td>
+                  <td className="px-4 py-3 text-gray-700">{articleReqSummary(s.barcode_requirements) || '—'}</td>
                   {canWrite && (
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1">
@@ -672,8 +737,8 @@ function SKUsTab() {
 
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-sm font-medium text-gray-700">Requirements <span className="text-red-500">*</span></label>
-              <button type="button" onClick={addReq} className="inline-flex items-center gap-1 text-sm text-[#c1121f] hover:underline"><Plus size={14} />Add requirement</button>
+              <label className="block text-sm font-medium text-gray-700">Raw Product <span className="text-red-500">*</span></label>
+              <button type="button" onClick={rawReq.add} className="inline-flex items-center gap-1 text-sm text-[#c1121f] hover:underline"><Plus size={14} />Add requirement</button>
             </div>
             <p className="text-xs text-gray-500 mb-2">The raw products and quantities consumed to make one unit of this SKU.</p>
             {rawProducts.length === 0 && (
@@ -684,7 +749,7 @@ function SKUsTab() {
                 <div key={idx} className="flex items-center gap-2">
                   <select
                     value={r.raw_product_id}
-                    onChange={e => setReq(idx, { raw_product_id: e.target.value })}
+                    onChange={e => rawReq.set(idx, { raw_product_id: e.target.value })}
                     className={`${fieldBase} flex-1 min-w-0`}
                   >
                     <option value="">— Select raw product —</option>
@@ -694,13 +759,13 @@ function SKUsTab() {
                     type="number"
                     min={1}
                     value={r.qty}
-                    onChange={e => setReq(idx, { qty: e.target.value })}
+                    onChange={e => rawReq.set(idx, { qty: e.target.value })}
                     placeholder="Qty"
                     className={`${fieldBase} w-24 shrink-0`}
                   />
                   <button
                     type="button"
-                    onClick={() => removeReq(idx)}
+                    onClick={() => rawReq.remove(idx)}
                     disabled={form.requirements.length === 1}
                     title="Remove"
                     className="p-1.5 rounded text-red-500 hover:bg-red-50 disabled:opacity-30"
@@ -709,6 +774,114 @@ function SKUsTab() {
                   </button>
                 </div>
               ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-sm font-medium text-gray-700">Packaging Product <span className="text-red-500">*</span></label>
+              <button type="button" onClick={pkgReq.add} className="inline-flex items-center gap-1 text-sm text-[#c1121f] hover:underline"><Plus size={14} />Add requirement</button>
+            </div>
+            <p className="text-xs text-gray-500 mb-2">The packaging products and quantities consumed to make one unit of this SKU.</p>
+            {packagingItemNames.length === 0 && (
+              <p className="text-xs text-amber-600 mb-2">No packaging products exist yet — add them on the Packaging Products page (Packaging tab) first.</p>
+            )}
+            <div className="space-y-2">
+              {form.packaging_requirements.map((r, idx) => {
+                const variantOptions = packagingByItemName[r.item_name] || [];
+                return (
+                  <div key={idx} className="flex items-center gap-2">
+                    <select
+                      value={r.item_name}
+                      onChange={e => pkgReq.set(idx, { item_name: e.target.value, packaging_raw_material_id: '' })}
+                      className={`${fieldBase} flex-1 min-w-0`}
+                    >
+                      <option value="">— Select item —</option>
+                      {packagingItemNames.map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                    <select
+                      value={r.packaging_raw_material_id}
+                      onChange={e => pkgReq.set(idx, { packaging_raw_material_id: e.target.value })}
+                      disabled={!r.item_name}
+                      className={`${fieldBase} flex-1 min-w-0`}
+                    >
+                      <option value="">— Select variant —</option>
+                      {variantOptions.map(a => <option key={a.id} value={a.id}>{a.variant || '— none —'}</option>)}
+                    </select>
+                    <input
+                      type="number"
+                      min={1}
+                      value={r.qty}
+                      onChange={e => pkgReq.set(idx, { qty: e.target.value })}
+                      placeholder="Qty"
+                      className={`${fieldBase} w-24 shrink-0`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => pkgReq.remove(idx)}
+                      disabled={form.packaging_requirements.length === 1}
+                      title="Remove"
+                      className="p-1.5 rounded text-red-500 hover:bg-red-50 disabled:opacity-30"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-sm font-medium text-gray-700">Barcode <span className="text-red-500">*</span></label>
+              <button type="button" onClick={bcReq.add} className="inline-flex items-center gap-1 text-sm text-[#c1121f] hover:underline"><Plus size={14} />Add requirement</button>
+            </div>
+            <p className="text-xs text-gray-500 mb-2">The barcode(s) and quantities consumed to make one unit of this SKU.</p>
+            {barcodeItemNames.length === 0 && (
+              <p className="text-xs text-amber-600 mb-2">No barcodes exist yet — add them on the Packaging Products page (Barcode tab) first.</p>
+            )}
+            <div className="space-y-2">
+              {form.barcode_requirements.map((r, idx) => {
+                const variantOptions = barcodeByItemName[r.item_name] || [];
+                return (
+                  <div key={idx} className="flex items-center gap-2">
+                    <select
+                      value={r.item_name}
+                      onChange={e => bcReq.set(idx, { item_name: e.target.value, packaging_raw_material_id: '' })}
+                      className={`${fieldBase} flex-1 min-w-0`}
+                    >
+                      <option value="">— Select item —</option>
+                      {barcodeItemNames.map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                    <select
+                      value={r.packaging_raw_material_id}
+                      onChange={e => bcReq.set(idx, { packaging_raw_material_id: e.target.value })}
+                      disabled={!r.item_name}
+                      className={`${fieldBase} flex-1 min-w-0`}
+                    >
+                      <option value="">— Select variant —</option>
+                      {variantOptions.map(a => <option key={a.id} value={a.id}>{a.variant || '— none —'}</option>)}
+                    </select>
+                    <input
+                      type="number"
+                      min={1}
+                      value={r.qty}
+                      onChange={e => bcReq.set(idx, { qty: e.target.value })}
+                      placeholder="Qty"
+                      className={`${fieldBase} w-24 shrink-0`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => bcReq.remove(idx)}
+                      disabled={form.barcode_requirements.length === 1}
+                      title="Remove"
+                      className="p-1.5 rounded text-red-500 hover:bg-red-50 disabled:opacity-30"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
