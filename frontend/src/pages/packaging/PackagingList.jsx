@@ -99,6 +99,7 @@ function PackagingCatalogTab() {
   const [rows, setRows] = useState([]);
   const [masterRows, setMasterRows] = useState([]);
   const [search, setSearch] = useSessionState('packaging.catalog.search', '');
+  const [activeCategory, setActiveCategory] = useSessionState('packaging.catalog.category', '');
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState(EMPTY_RAW_MATERIAL);
@@ -106,8 +107,6 @@ function PackagingCatalogTab() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [confirmBulk, setConfirmBulk] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
-
-  const sel = useRowSelection(rows);
 
   const load = () => {
     setLoading(true);
@@ -127,7 +126,7 @@ function PackagingCatalogTab() {
       .catch(() => toast.error('Failed to load the outbound product list'));
   }, []);
 
-  const filtered = useMemo(() => {
+  const searchMatched = useMemo(() => {
     const q = search.toLowerCase();
     if (!q) return rows;
     return rows.filter(r =>
@@ -137,6 +136,60 @@ function PackagingCatalogTab() {
       (r.unit_metric || '').toLowerCase().includes(q)
     );
   }, [search, rows]);
+
+  // One tab per category actually present in the catalog — never a hardcoded
+  // list, so a category added to the Outbound Product List gets a tab the
+  // moment its first product is onboarded. Derived from all rows rather than
+  // the search results, so tabs don't appear and vanish while typing.
+  const categoryTabs = useMemo(() => {
+    const counts = rows.reduce((acc, r) => {
+      if (r.category) acc[r.category] = (acc[r.category] || 0) + 1;
+      return acc;
+    }, {});
+    return Object.entries(counts)
+      .map(([category, count]) => ({ category, count }))
+      .sort((a, b) => {
+        // Others is pinned last whatever its size; the rest are largest first,
+        // ties broken alphabetically so the order stays stable.
+        const aOther = a.category.toLowerCase() === 'others';
+        const bOther = b.category.toLowerCase() === 'others';
+        if (aOther !== bOther) return aOther ? 1 : -1;
+        return b.count - a.count || a.category.localeCompare(b.category);
+      });
+  }, [rows]);
+
+  // Match counts per tab, so a search shows at a glance which tab the hits are
+  // in instead of the current tab just looking empty.
+  const matchesByCategory = useMemo(() => searchMatched.reduce((acc, r) => {
+    acc[r.category] = (acc[r.category] || 0) + 1;
+    return acc;
+  }, {}), [searchMatched]);
+
+  // Fall back to the first tab whenever the remembered category no longer
+  // exists — first load, or its last product deleted/recategorised.
+  useEffect(() => {
+    if (!categoryTabs.length) return;
+    if (!categoryTabs.some(t => t.category === activeCategory)) {
+      setActiveCategory(categoryTabs[0].category);
+    }
+  }, [categoryTabs, activeCategory, setActiveCategory]);
+
+  const visible = useMemo(
+    () => searchMatched.filter(r => r.category === activeCategory),
+    [searchMatched, activeCategory],
+  );
+
+  const categoryTotal = categoryTabs.find(t => t.category === activeCategory)?.count || 0;
+
+  // Selection is scoped to what is on screen, so "select all" means "all
+  // visible" and a bulk delete can never reach rows in another tab.
+  const sel = useRowSelection(visible);
+
+  const switchCategory = (category) => {
+    if (category === activeCategory) return;
+    sel.clear();
+    setActiveCategory(category);
+  };
 
   // Category / Item Name / Unit Metric all come from the Outbound Product List
   // rather than being typed here, which is what stops "Packaging" fragmenting
@@ -165,7 +218,13 @@ function PackagingCatalogTab() {
   const orphanCategory = !!form.category && !masterCategories.includes(form.category);
   const orphanItemName = !!form.item_name && !(itemNamesByCategory[form.category] || []).includes(form.item_name);
 
-  const openAdd = () => { setForm(EMPTY_RAW_MATERIAL); setModal('add'); };
+  // Prefill the category from the tab being viewed — that is almost always the
+  // one being added to, and it keeps the new row on screen after saving.
+  const openAdd = () => {
+    const preset = masterCategories.includes(activeCategory) ? activeCategory : '';
+    setForm({ ...EMPTY_RAW_MATERIAL, category: preset });
+    setModal('add');
+  };
   const openEdit = (r) => {
     setForm({ category: r.category, item_name: r.item_name, variant: r.variant || '', unit_metric: r.unit_metric });
     setModal({ type: 'edit', id: r.id });
@@ -188,6 +247,9 @@ function PackagingCatalogTab() {
         await updatePackagingRawMaterial(modal.id, payload);
         toast.success('Packaging product updated');
       }
+      // Follow the saved row if it landed in another category, so it is not
+      // saved "into thin air" from the user's point of view.
+      if (payload.category !== activeCategory) switchCategory(payload.category);
       setModal(null);
       load();
     } catch (err) {
@@ -221,7 +283,7 @@ function PackagingCatalogTab() {
   };
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
-  const colSpan = 5 + (canWrite ? 2 : 0);
+  const colSpan = 4 + (canWrite ? 2 : 0);
 
   const downloadXlsx = () => downloadRows('packaging-products', [
     { key: 'category', header: 'category' },
@@ -234,7 +296,11 @@ function PackagingCatalogTab() {
   return (
     <>
       <div className="mb-4 flex items-start justify-between flex-wrap gap-3">
-        <p className="text-gray-500 text-sm">{filtered.length} of {rows.length} product{rows.length !== 1 ? 's' : ''}</p>
+        <p className="text-gray-500 text-sm">
+          {activeCategory
+            ? <>{visible.length} of {categoryTotal} in {activeCategory} · {rows.length} total</>
+            : <>{rows.length} product{rows.length !== 1 ? 's' : ''}</>}
+        </p>
         <div className="flex gap-3 items-center flex-wrap">
           <div className="relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -260,6 +326,29 @@ function PackagingCatalogTab() {
         </p>
       )}
 
+      {categoryTabs.length > 0 && (
+        <div className="flex gap-1 mb-4 border-b border-gray-200 overflow-x-auto">
+          {categoryTabs.map(t => {
+            const matches = search ? (matchesByCategory[t.category] || 0) : t.count;
+            const dimmed = !!search && matches === 0;
+            return (
+              <button
+                key={t.category}
+                type="button"
+                onClick={() => switchCategory(t.category)}
+                className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
+                  t.category === activeCategory
+                    ? 'border-[#c1121f] text-[#c1121f]'
+                    : `border-transparent hover:text-[#003049] ${dimmed ? 'text-gray-300' : 'text-gray-500'}`
+                }`}
+              >
+                {t.category} ({matches})
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {canWrite && <BulkDeleteBar count={sel.selected.size} onDelete={() => setConfirmBulk(true)} onClear={sel.clear} />}
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -272,7 +361,8 @@ function PackagingCatalogTab() {
                     <input type="checkbox" checked={sel.allSelected} onChange={sel.toggleAll} aria-label="Select all" />
                   </th>
                 )}
-                {['Category', 'Item Name', 'Variant', 'Unit Metric', 'Vendors Mapped', canWrite ? 'Actions' : ''].filter(Boolean).map(h => (
+                {/* No Category column — the active tab already states it. */}
+                {['Item Name', 'Variant', 'Unit Metric', 'Vendors Mapped', canWrite ? 'Actions' : ''].filter(Boolean).map(h => (
                   <th key={h} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -282,14 +372,13 @@ function PackagingCatalogTab() {
                 [...Array(5)].map((_, i) => (
                   <tr key={i}><td colSpan={colSpan} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td></tr>
                 ))
-              ) : filtered.map(r => (
+              ) : visible.map(r => (
                 <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                   {canWrite && (
                     <td className="px-4 py-3">
                       <input type="checkbox" checked={sel.selected.has(r.id)} onChange={() => sel.toggle(r.id)} />
                     </td>
                   )}
-                  <td className="px-4 py-3 text-gray-700">{r.category}</td>
                   <td className="px-4 py-3 font-medium text-gray-900">{r.item_name}</td>
                   <td className="px-4 py-3 text-gray-600">{r.variant || '—'}</td>
                   <td className="px-4 py-3 text-gray-700">{r.unit_metric}</td>
@@ -317,8 +406,14 @@ function PackagingCatalogTab() {
               ))}
             </tbody>
           </table>
-          {!loading && filtered.length === 0 && (
-            <p className="text-center text-gray-400 py-8">{search ? 'No packaging products match your search' : 'No packaging products added yet'}</p>
+          {!loading && visible.length === 0 && (
+            <p className="text-center text-gray-400 py-8">
+              {rows.length === 0
+                ? 'No packaging products added yet'
+                : search
+                  ? `No packaging products in ${activeCategory} match your search`
+                  : `No packaging products in ${activeCategory} yet`}
+            </p>
           )}
         </div>
       </div>
