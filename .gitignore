@@ -1,5 +1,10 @@
 node_modules/
 .env
+# Environment-specific secrets (.env.prod etc). .env.example is the only one
+# safe to commit. Note .env.test was already tracked before this rule existed,
+# so gitignore does not untrack it -- remove it from the index separately.
+.env.*
+!.env.example
 *.db
 reports/
 backups/

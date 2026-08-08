@@ -38,7 +38,7 @@ const uploadConfig = {
   headers: ['vendor_name', 'category', 'item_name', 'variant'],
   sampleRow: ['Om Sai Packaging', 'Packaging', 'Corrugated', '60'],
   requiredKeys: ['vendor_name', 'category', 'item_name'],
-  instructions: 'One row per article mapping. category and item_name must match an existing entry on the Packaging Products → Raw Material page. New vendor names are created automatically; rows matching an existing mapping are skipped — nothing is ever deleted.',
+  instructions: 'One row per article mapping. category, item_name and variant must together match an existing product on the Packaging Products page — leave variant blank for an item that has no variants. New vendor names are created automatically; rows matching an existing mapping are skipped — nothing is ever deleted.',
   submit: (rows) => bulkUpsertOutboundVendors(rows),
 };
 
@@ -66,20 +66,35 @@ export default function OutboundVendorsPage() {
       .catch(() => {});
   }, []);
 
-  // Category/Item Name options for the article-mapping sub-form, sourced
-  // from the Packaging Products → Raw Material master.
+  // Category / Item Name / Variant options for the article-mapping sub-form,
+  // sourced from the Packaging Products master catalog. The catalog carries one
+  // row per variant, so item names have to be de-duplicated here.
   const catalogCategories = useMemo(
     () => sortByText(Array.from(new Set(catalogRows.map(r => r.category)))),
     [catalogRows]
   );
   const itemNamesByCategory = useMemo(() => {
     const map = catalogRows.reduce((acc, r) => {
-      (acc[r.category] ||= []).push(r.item_name);
+      (acc[r.category] ||= new Set()).add(r.item_name);
       return acc;
     }, {});
-    for (const cat of Object.keys(map)) map[cat] = sortByText(map[cat]);
+    for (const cat of Object.keys(map)) map[cat] = sortByText(Array.from(map[cat]));
     return map;
   }, [catalogRows]);
+
+  // Variant is a catalog attribute as of migration 056, not free text — the
+  // picker offers exactly the variants that exist for the chosen item.
+  const variantsByCatItem = useMemo(() => {
+    const map = catalogRows.reduce((acc, r) => {
+      (acc[`${r.category}|${r.item_name}`] ||= new Set()).add(r.variant || '');
+      return acc;
+    }, {});
+    for (const k of Object.keys(map)) map[k] = sortByText(Array.from(map[k]));
+    return map;
+  }, [catalogRows]);
+  const unitMetricFor = (a) => catalogRows.find(r =>
+    r.category === a.category && r.item_name === a.item_name && (r.variant || '') === (a.variant || '')
+  )?.unit_metric || '';
 
   // One export row per mapping, headers matching the upload template.
   const downloadXlsx = () => downloadRows('outbound-vendors', [
@@ -305,7 +320,7 @@ export default function OutboundVendorsPage() {
               <Button type="button" variant="ghost" onClick={addRow}><Plus size={14} />Add Mapping</Button>
             </div>
             {catalogCategories.length === 0 && (
-              <p className="text-xs text-amber-600 mb-2">No packaging raw materials exist yet — add them on the Packaging Products → Raw Material page first.</p>
+              <p className="text-xs text-amber-600 mb-2">No packaging products exist yet — add them on the Packaging Products page first.</p>
             )}
             <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
               <table className="w-full text-sm">
@@ -314,16 +329,23 @@ export default function OutboundVendorsPage() {
                     <th className="px-3 py-2 text-left font-semibold text-gray-600 w-40">Category</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-600">Item Name</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-600">Variant</th>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-20">UM</th>
                     <th className="px-3 py-2 w-12" />
                   </tr>
                 </thead>
                 <tbody>
-                  {form.articles.map((a, idx) => (
+                  {form.articles.map((a, idx) => {
+                    const variantOptions = variantsByCatItem[`${a.category}|${a.item_name}`] || [];
+                    // Defensive: a stored variant that predates the catalog
+                    // (or whose catalog row was deleted) stays selectable so
+                    // editing an unrelated field can't silently drop it.
+                    const orphanVariant = a.variant && !variantOptions.includes(a.variant);
+                    return (
                     <tr key={idx} className="border-b border-gray-100">
                       <td className="px-3 py-2">
                         <select
                           value={a.category}
-                          onChange={e => updateRow(idx, { category: e.target.value, item_name: '' })}
+                          onChange={e => updateRow(idx, { category: e.target.value, item_name: '', variant: '' })}
                           className={cellCls}
                         >
                           <option value="">Select category...</option>
@@ -333,7 +355,7 @@ export default function OutboundVendorsPage() {
                       <td className="px-3 py-2">
                         <select
                           value={a.item_name}
-                          onChange={e => updateRow(idx, { item_name: e.target.value })}
+                          onChange={e => updateRow(idx, { item_name: e.target.value, variant: '' })}
                           disabled={!a.category}
                           className={cellCls}
                         >
@@ -342,13 +364,17 @@ export default function OutboundVendorsPage() {
                         </select>
                       </td>
                       <td className="px-3 py-2">
-                        <input
-                          value={a.variant}
+                        <select
+                          value={a.variant || ''}
                           onChange={e => updateRow(idx, { variant: e.target.value })}
-                          placeholder="optional"
+                          disabled={!a.item_name}
                           className={cellCls}
-                        />
+                        >
+                          {variantOptions.map(v => <option key={v} value={v}>{v || '— none —'}</option>)}
+                          {orphanVariant && <option value={a.variant}>{a.variant} (not in catalog)</option>}
+                        </select>
                       </td>
+                      <td className="px-3 py-2 text-gray-500 text-xs">{unitMetricFor(a) || '—'}</td>
                       <td className="px-3 py-2">
                         <button
                           type="button"
@@ -361,7 +387,8 @@ export default function OutboundVendorsPage() {
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

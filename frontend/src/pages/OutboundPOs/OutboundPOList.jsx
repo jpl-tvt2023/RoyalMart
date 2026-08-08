@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { Plus, Pencil, Trash2, RotateCcw, FileText, Download, Save, ArrowUp, ArrowDown, ArrowUpDown, ChevronDown } from 'lucide-react';
+import { Plus, Pencil, Trash2, RotateCcw, FileText, Download, ArrowUp, ArrowDown, ArrowUpDown, ChevronDown } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
@@ -10,10 +10,9 @@ import Badge from '../../components/ui/Badge';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { useSessionState } from '../../hooks/useSessionState';
-import { listOutboundPOs, deleteOutboundPO, restoreOutboundPO, updateOutboundPO } from '../../api/outboundPOs.api';
+import { listOutboundPOs, deleteOutboundPO, restoreOutboundPO } from '../../api/outboundPOs.api';
 import { listOutboundVendors } from '../../api/outboundVendors.api';
-import { listUsersLite } from '../../api/users.api';
-import { ROLES } from '../../utils/roles';
+import { FLAG_META, FLAG_FILTER_OPTIONS, flagLabel } from '../../utils/outboundPOFlags';
 import { formatDateTime } from '../../utils/formatters';
 
 // One row per PO line, matching the on-screen sub-rows. `columns` is
@@ -35,11 +34,12 @@ const STATUS_MULTI_OPTIONS = ['Open', 'Partially Received', 'Closed'];
 
 const defaultFilters = () => ({
   order_no: '', vendor_id: '', status: ['Open', 'Partially Received'], show_deleted: false,
-  po_date_from: '', po_date_to: '',
+  po_date_from: '', po_date_to: '', flags: [],
 });
 
-// Checkbox dropdown for the Status filter — mirrors GRNList's StatusMultiSelect.
-function StatusMultiSelect({ selected, onChange, disabled }) {
+// Checkbox dropdown used by both the Status and Flags filters — mirrors
+// GRNList's StatusMultiSelect, generalized over its option list.
+function MultiSelect({ options, selected, onChange, disabled, allLabel, labelOf = (v) => v }) {
   const detRef = useRef(null);
   useEffect(() => {
     const handler = (e) => {
@@ -51,8 +51,8 @@ function StatusMultiSelect({ selected, onChange, disabled }) {
   const toggle = (s) => {
     onChange(selected.includes(s) ? selected.filter(x => x !== s) : [...selected, s]);
   };
-  const label = (selected.length === 0 || selected.length === STATUS_MULTI_OPTIONS.length)
-    ? 'All statuses'
+  const label = (selected.length === 0 || selected.length === options.length)
+    ? allLabel
     : `${selected.length} selected`;
   return (
     <details ref={detRef} className={`relative ${disabled ? 'pointer-events-none opacity-50' : ''}`}>
@@ -61,14 +61,33 @@ function StatusMultiSelect({ selected, onChange, disabled }) {
         <ChevronDown size={14} className="text-gray-400 shrink-0" />
       </summary>
       <div className="absolute z-20 mt-1 w-60 bg-white border border-gray-200 rounded-lg shadow-lg p-1 max-h-64 overflow-auto">
-        {STATUS_MULTI_OPTIONS.map(s => (
+        {options.map(s => (
           <label key={s} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer text-sm">
             <input type="checkbox" checked={selected.includes(s)} onChange={() => toggle(s)} />
-            <span className="text-gray-700">{s}</span>
+            <span className="text-gray-700">{labelOf(s)}</span>
           </label>
         ))}
       </div>
     </details>
+  );
+}
+
+// Multiple flags on one PO are common, so cap the badges and put the full
+// breakdown — including which article is at fault — in the hover title.
+function FlagCell({ po }) {
+  const flags = po.flags || [];
+  if (!flags.length) return <span className="text-gray-300">—</span>;
+  const offenders = (po.lines || []).filter(l => (l.flags || []).length);
+  const detail = offenders.slice(0, 8).map(l =>
+    `${l.item_name}${l.variant ? ` · ${l.variant}` : ''} — ${l.flags.map(k => FLAG_META[k]?.label || k).join(', ')}`);
+  if (offenders.length > 8) detail.push(`…and ${offenders.length - 8} more line(s)`);
+  return (
+    <span title={detail.join('\n')} className="inline-flex flex-wrap items-center gap-1 cursor-help">
+      {flags.slice(0, 2).map(k => (
+        <Badge key={k} color={FLAG_META[k]?.color || 'gray'}>{FLAG_META[k]?.short || k}</Badge>
+      ))}
+      {flags.length > 2 && <Badge color="gray">+{flags.length - 2}</Badge>}
+    </span>
   );
 }
 
@@ -78,6 +97,7 @@ const LEFT_COLUMNS = [
   { key: 'id', label: 'Order No' },
   { key: 'vendor_name', label: 'Vendor' },
   { key: 'status', label: 'Status' },
+  { key: 'flags', label: 'Flags' },
 ];
 const RIGHT_COLUMNS = [
   { key: 'po_date', label: 'Order Date' },
@@ -88,20 +108,22 @@ const RIGHT_COLUMNS = [
 // One real <td> per line row — no more chip+text blob. Order info first
 // (Qty, Rate), then fulfillment tracking (Received, Short), then the
 // number derived from those two (Pending) last.
-const ARTICLE_COLUMNS = ['Category', 'Item Name', 'Variant', 'Qty', 'Rate', 'Received', 'Short', 'Pending'];
-const TABLE_COL_COUNT = LEFT_COLUMNS.length + ARTICLE_COLUMNS.length + RIGHT_COLUMNS.length + 1; // + Actions
+const ARTICLE_COLUMNS = ['Category', 'Item Name', 'Variant', 'Qty', 'UM', 'Rate', 'Received', 'Short', 'Pending'];
+const TABLE_COL_COUNT = LEFT_COLUMNS.length + ARTICLE_COLUMNS.length + RIGHT_COLUMNS.length + 2; // + Actions + History
 
 const EXPORT_COLUMNS = [
   { key: 'order_no', header: 'order_no' },
   { key: 'vendor_name', header: 'vendor' },
   { key: 'company_name', header: 'company' },
   { key: 'status', header: 'status' },
+  { key: 'flags', header: 'flags' },
   { key: 'approved_by_name', header: 'approved_by' },
   { key: 'po_date', header: 'order_date' },
   { key: 'category', header: 'category' },
   { key: 'item_name', header: 'item_name' },
   { key: 'variant', header: 'variant' },
   { key: 'qty', header: 'qty' },
+  { key: 'unit_metric', header: 'um' },
   { key: 'rate', header: 'rate' },
   { key: 'received', header: 'received' },
   { key: 'short', header: 'short' },
@@ -111,17 +133,6 @@ const EXPORT_COLUMNS = [
 ];
 
 const pending = (l) => Math.max(0, l.qty - l.received - l.short);
-
-// If a PO's current approver isn't in the live Purchase_Head list (tagged
-// before the role existed, or since untagged), keep them selectable so the
-// dropdown doesn't silently show "Not yet approved" over a real value.
-function approverOptionsFor(po, approvers) {
-  const opts = approvers.map(u => ({ value: u.id, label: u.name }));
-  if (po.approved_by && !opts.some(o => o.value === po.approved_by)) {
-    opts.push({ value: po.approved_by, label: `${po.approved_by_name || 'Unknown'} (not Purchase Head)` });
-  }
-  return opts;
-}
 
 export default function OutboundPOList() {
   const navigate = useNavigate();
@@ -137,10 +148,7 @@ export default function OutboundPOList() {
   const [confirmRestore, setConfirmRestore] = useState(null);
   const [restoring, setRestoring] = useState(false);
   const [vendors, setVendors] = useState([]);
-  const [approvers, setApprovers] = useState([]);
   const [downloading, setDownloading] = useState(false);
-  const [savingIds, setSavingIds] = useState(() => new Set());
-  const [dirtyIds, setDirtyIds] = useState(() => new Set());
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -152,12 +160,14 @@ export default function OutboundPOList() {
           order_no: po.order_no, vendor_name: po.vendor_name, company_name: po.company_name || '',
           status: po.status, approved_by_name: po.approved_by_name || '', po_date: po.po_date || '',
           updated_by_name: po.updated_by_name || '', updated_at: po.updated_at,
+          flags: (po.flags || []).map(flagLabel).join(', '),
         };
-        if (!po.lines.length) return [{ ...base, category: '', item_name: '', variant: '', qty: '', rate: '', received: '', pending: '', short: '' }];
+        if (!po.lines.length) return [{ ...base, category: '', item_name: '', variant: '', qty: '', unit_metric: '', rate: '', received: '', pending: '', short: '' }];
         return po.lines.map(l => ({
           ...base,
           category: l.category, item_name: l.item_name, variant: l.variant || '',
-          qty: l.qty, rate: l.rate, received: l.received, pending: pending(l), short: l.short,
+          qty: l.qty, unit_metric: l.unit_metric || '', rate: l.rate,
+          received: l.received, pending: pending(l), short: l.short,
         }));
       });
       downloadRows('outbound-purchase-orders', EXPORT_COLUMNS, exportRows);
@@ -170,69 +180,7 @@ export default function OutboundPOList() {
     listOutboundVendors()
       .then(rows => setVendors(rows.filter(v => v.is_active)))
       .catch(() => {});
-    listUsersLite({ role: ROLES.PURCHASE_HEAD }).then(setApprovers).catch(() => {});
   }, []);
-
-  // Inline editing: qty/rate and Approved By/Approval Date can all be edited
-  // directly in the table, no need to open the PO. Received/Short live on
-  // the PO detail page's Receiving Details section instead, since Received
-  // is now a sum of individually bill-tracked receipts. Nothing saves as you
-  // type — edits just mark the row dirty; a Save icon appears in Actions and
-  // commits every staged change for that row together in one request. A full
-  // `lines` array is always sent, each with its `id` so the backend updates
-  // existing rows in place instead of replacing them.
-  const markDirty = (poId) => setDirtyIds(prev => new Set(prev).add(poId));
-
-  const setLineField = (poId, lineIdx, field, value) => {
-    setItems(prev => prev.map(po => po.id !== poId ? po : {
-      ...po,
-      lines: po.lines.map((l, i) => i !== lineIdx ? l : { ...l, [field]: value }),
-    }));
-    markDirty(poId);
-  };
-
-  // Changing the approver clears Approval Date so a stale date tied to the
-  // old approver is never silently reused — it must be re-entered.
-  const setApprovedByField = (poId, value) => {
-    setItems(prev => prev.map(po => po.id !== poId ? po : { ...po, approved_by: value ? Number(value) : null, approval_date: '' }));
-    markDirty(poId);
-  };
-
-  const setApprovalDateField = (poId, value) => {
-    setItems(prev => prev.map(po => po.id !== poId ? po : { ...po, approval_date: value }));
-    markDirty(poId);
-  };
-
-  const saveRow = async (po) => {
-    const approverChanged = String(po.approved_by || '') !== String(po._originalApprovedBy || '');
-    if (approverChanged && po.approved_by && !po.approval_date) {
-      toast.error('Approval Date is required when changing the approver');
-      return;
-    }
-    setSavingIds(s => new Set(s).add(po.id));
-    try {
-      const res = await updateOutboundPO(po.id, {
-        approved_by: po.approved_by || null,
-        approval_date: po.approval_date || null,
-        lines: po.lines.map(l => ({
-          id: l.id || undefined,
-          line_no: l.line_no, category: l.category, item_name: l.item_name, variant: l.variant || null,
-          qty: Number(l.qty), rate: Number(l.rate),
-        })),
-      });
-      setItems(prev => prev.map(p => p.id === po.id
-        ? { ...p, ...res, _originalApprovedBy: res.approved_by, approval_date: res.approval_date || '' }
-        : p));
-      setDirtyIds(prev => { const n = new Set(prev); n.delete(po.id); return n; });
-      toast.success(`PO ${po.order_no} updated`);
-    } catch (err) {
-      // Keep the edits in place (don't revert) so the user can fix and retry —
-      // e.g. this fires when Approved By hasn't been set yet.
-      toast.error(err.response?.data?.message || 'Save failed');
-    } finally {
-      setSavingIds(s => { const n = new Set(s); n.delete(po.id); return n; });
-    }
-  };
 
   const buildParams = useCallback((overrides) => {
     const f = overrides?.filters ?? filters;
@@ -249,6 +197,9 @@ export default function OutboundPOList() {
     } else if (Array.isArray(f.status) && f.status.length) {
       params.status = f.status.join(',');
     }
+    // Array.isArray guard: a filter object persisted in sessionStorage before
+    // this key existed would otherwise blow up on .length.
+    if (Array.isArray(f.flags) && f.flags.length) params.flag = f.flags.join(',');
     return params;
   }, [filters, sort, page, pageSize]);
 
@@ -256,7 +207,7 @@ export default function OutboundPOList() {
     setLoading(true);
     listOutboundPOs(buildParams(overrides))
       .then(res => {
-        setItems((res.rows || []).map(po => ({ ...po, _originalApprovedBy: po.approved_by, approval_date: po.approval_date || '' })));
+        setItems(res.rows || []);
         setTotal(res.total || 0);
       })
       .catch(() => toast.error('Failed to load outbound POs'))
@@ -316,7 +267,6 @@ export default function OutboundPOList() {
   };
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30';
-  const cellCls = 'w-16 px-1.5 py-1 border border-gray-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-[#c1121f]/40 focus:border-[#c1121f] disabled:bg-gray-50 disabled:text-gray-400 disabled:border-transparent';
 
   const SortIcon = ({ colKey }) => {
     if (sort.key !== colKey) return <ArrowUpDown size={12} className="text-gray-300" />;
@@ -340,7 +290,23 @@ export default function OutboundPOList() {
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
-            <StatusMultiSelect selected={filters.status} onChange={v => setFilter('status', v)} disabled={filters.show_deleted} />
+            <MultiSelect
+              options={STATUS_MULTI_OPTIONS}
+              selected={filters.status}
+              onChange={v => setFilter('status', v)}
+              disabled={filters.show_deleted}
+              allLabel="All statuses"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Flags</label>
+            <MultiSelect
+              options={FLAG_FILTER_OPTIONS}
+              selected={Array.isArray(filters.flags) ? filters.flags : []}
+              onChange={v => setFilter('flags', v)}
+              allLabel="All POs"
+              labelOf={flagLabel}
+            />
           </div>
           <div className="flex items-end pb-2">
             <label className="flex items-center gap-2 text-sm text-gray-700">
@@ -374,6 +340,9 @@ export default function OutboundPOList() {
         </div>
       </div>
 
+      {/* This grid is read-only by design — every field is edited on the PO
+          detail screen, which is the only place that validates line totals and
+          receipt state. Don't reintroduce inline inputs here. */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -397,6 +366,7 @@ export default function OutboundPOList() {
                   </th>
                 ))}
                 <th rowSpan={2} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50 align-middle border-b border-gray-200">Actions</th>
+                <th rowSpan={2} className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap bg-gray-50 align-middle border-b border-gray-200">History</th>
               </tr>
               <tr>
                 {ARTICLE_COLUMNS.map(c => (
@@ -425,6 +395,7 @@ export default function OutboundPOList() {
                         </td>
                         <td rowSpan={lines.length} className="px-4 py-3 whitespace-nowrap align-middle">{po.vendor_name}</td>
                         <td rowSpan={lines.length} className="px-4 py-3 align-middle"><Badge color={STATUS_COLORS[po.status] || 'gray'}>{po.status}</Badge></td>
+                        <td rowSpan={lines.length} className="px-4 py-3 align-middle"><FlagCell po={po} /></td>
                       </>
                     )}
                     {l ? (
@@ -432,23 +403,9 @@ export default function OutboundPOList() {
                         <td className="px-3 py-2 text-gray-700 whitespace-nowrap">{l.category}</td>
                         <td className="px-3 py-2 text-gray-700 whitespace-nowrap">{l.item_name}</td>
                         <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{l.variant || '—'}</td>
-                        <td className="px-3 py-2">
-                          <input
-                            type="number" min={0.01} step="0.01" value={l.qty} disabled={po.status === 'Deleted'}
-                            onChange={e => setLineField(po.id, idx, 'qty', e.target.value)}
-                            className={cellCls}
-                          />
-                        </td>
-                        <td className="px-3 py-2">
-                          <input
-                            type="number" min={0} step="0.01" value={l.rate} disabled={po.status === 'Deleted'}
-                            onChange={e => setLineField(po.id, idx, 'rate', e.target.value)}
-                            className={cellCls}
-                          />
-                        </td>
-                        {/* Received/Short are edited on the PO detail page's Receiving
-                            Details section (each receipt has its own bill/rate) —
-                            read-only here. */}
+                        <td className="px-3 py-2 text-gray-700">{l.qty}</td>
+                        <td className="px-3 py-2 text-gray-600">{l.unit_metric || '—'}</td>
+                        <td className={`px-3 py-2 ${(l.flags || []).includes('rate_mismatch') ? 'text-red-600 font-medium' : 'text-gray-700'}`}>{l.rate}</td>
                         <td className="px-3 py-2 text-gray-700">{l.received}</td>
                         <td className="px-3 py-2 text-gray-700">{l.short}</td>
                         <td className={`px-3 py-2 font-medium ${pending(l) > 0 ? 'text-amber-700' : 'text-gray-800'}`}>{pending(l)}</td>
@@ -459,50 +416,24 @@ export default function OutboundPOList() {
                     {idx === 0 && (
                       <>
                         <td rowSpan={lines.length} className="px-4 py-3 text-gray-600 whitespace-nowrap align-middle">{po.po_date || '—'}</td>
-                        <td rowSpan={lines.length} className="px-4 py-3 align-middle">
-                          <select
-                            value={po.approved_by || ''}
-                            disabled={po.status === 'Deleted' || savingIds.has(po.id)}
-                            onChange={e => setApprovedByField(po.id, e.target.value)}
-                            className={`${inputCls} py-1.5`}
-                          >
-                            <option value="">Not yet approved</option>
-                            {approverOptionsFor(po, approvers).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                          </select>
-                        </td>
-                        <td rowSpan={lines.length} className="px-4 py-3 align-middle">
-                          <input
-                            type="date"
-                            value={po.approval_date || ''}
-                            disabled={po.status === 'Deleted' || savingIds.has(po.id) || !po.approved_by}
-                            onChange={e => setApprovalDateField(po.id, e.target.value)}
-                            className={`${inputCls} py-1.5`}
-                          />
-                        </td>
+                        <td rowSpan={lines.length} className="px-4 py-3 text-gray-700 whitespace-nowrap align-middle">{po.approved_by_name || 'Not yet approved'}</td>
+                        <td rowSpan={lines.length} className="px-4 py-3 text-gray-600 whitespace-nowrap align-middle">{po.approval_date || '—'}</td>
                         <td rowSpan={lines.length} className="px-4 py-3 whitespace-nowrap align-middle">
                           <div className="text-gray-700">{po.updated_by_name || '—'}</div>
                           <div className="text-xs text-gray-400">{formatDateTime(po.updated_at)}</div>
                         </td>
                         <td rowSpan={lines.length} className="px-4 py-3 align-middle">
                           <div className="flex items-center gap-1">
-                            {dirtyIds.has(po.id) && (
-                              <button
-                                onClick={() => saveRow(po)}
-                                disabled={savingIds.has(po.id)}
-                                title="Save changes"
-                                className="p-1.5 rounded hover:bg-green-50 text-green-600 disabled:opacity-40"
-                              >
-                                <Save size={14} />
-                              </button>
-                            )}
                             <Link to={`/outbound/purchase-orders/${po.id}`} title="View/Edit" className="p-1.5 rounded hover:bg-blue-50 text-blue-500"><Pencil size={14} /></Link>
                             {po.status === 'Deleted' ? (
                               <button onClick={() => setConfirmRestore(po)} title="Restore" className="p-1.5 rounded hover:bg-green-50 text-green-600"><RotateCcw size={14} /></button>
                             ) : (
                               <button onClick={() => setConfirmDelete(po)} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-red-500"><Trash2 size={14} /></button>
                             )}
-                            <HistoryButton entityType="outbound_po" entityId={po.id} title={`PO ${po.order_no} history`} />
                           </div>
+                        </td>
+                        <td rowSpan={lines.length} className="px-4 py-3 align-middle">
+                          <HistoryButton entityType="outbound_po" entityId={po.id} title={`PO ${po.order_no} history`} />
                         </td>
                       </>
                     )}

@@ -108,7 +108,7 @@ export const NAV = [
         label: 'Packaging Items',
         path: '/packaging-items',
         icon: Boxes,
-        description: 'Packaging raw materials & article catalog',
+        description: 'Master packaging article catalog',
         roles: ALL_ROLES,
       },
       {

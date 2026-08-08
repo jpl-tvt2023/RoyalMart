@@ -7,6 +7,9 @@ const FK_FIELDS = {
   marketplace_po: { office_poc: 'users', warehouse_poc: 'users', courier_id: 'couriers' },
   product_vendor_code: { product_id: 'products' },
   outbound_po: { approved_by: 'users', company_id: 'companies' },
+  // Receipt edits are logged against the parent line, so checked_by changes
+  // surface here rather than under a receipt-specific entity type.
+  outbound_po_line: { checked_by: 'users' },
 };
 
 // How to label a row from each source table: which column holds the display value.

@@ -13,21 +13,27 @@ function normalizeArticles(articles) {
   }));
 }
 
-// Category/item_name must match an existing packaging_raw_materials entry —
-// that master list is maintained on the Packaging Products page.
+// The full (category, item_name, variant) triple must match an existing
+// packaging_raw_materials entry — that master catalog is maintained on the
+// Packaging Products page. Variant became part of the catalog's identity in
+// migration 056, so it is validated alongside the other two rather than being
+// free text as it was before.
 async function loadAllowedArticles() {
-  const { rows } = await db.execute('SELECT category, item_name FROM packaging_raw_materials');
+  const { rows } = await db.execute('SELECT category, item_name, variant, unit_metric FROM packaging_raw_materials');
   return rows;
 }
 
+const catalogKey = (c, i, v) => `${normName(c)}|${normName(i)}|${normName(v)}`;
+
 function validateArticles(articles, allowed) {
   if (!articles.length) return 'At least one article mapping is required';
-  const allowedSet = new Set(allowed.map(a => `${a.category}|${a.item_name}`));
+  const allowedSet = new Set(allowed.map(a => catalogKey(a.category, a.item_name, a.variant)));
   for (const a of articles) {
     if (!a.category) return 'Category is required for every mapping';
     if (!a.item_name) return 'Item name is required for every mapping';
-    if (!allowedSet.has(`${a.category}|${a.item_name}`)) {
-      return `"${a.category} / ${a.item_name}" is not a recognized packaging raw material — add it on the Packaging Products page first`;
+    if (!allowedSet.has(catalogKey(a.category, a.item_name, a.variant))) {
+      const label = `${a.category} / ${a.item_name}${a.variant ? ` / ${a.variant}` : ''}`;
+      return `"${label}" is not a recognized packaging raw material — add it on the Packaging Products page first`;
     }
   }
   return null;
@@ -42,8 +48,16 @@ async function list(req, res, next) {
        LEFT JOIN users u ON u.id = v.updated_by
        ORDER BY v.is_active DESC, v.name ASC`
     );
+    // unit_metric comes from the catalog so the PO screens can show the UM that
+    // a future line will inherit. LEFT JOIN so a mapping whose catalog row was
+    // since deleted still lists (with a null UM) instead of vanishing.
     const { rows: articles } = await db.execute(
-      'SELECT id, vendor_id, category, item_name, variant FROM outbound_vendor_articles ORDER BY id ASC'
+      `SELECT a.id, a.vendor_id, a.category, a.item_name, a.variant, prm.unit_metric
+       FROM outbound_vendor_articles a
+       LEFT JOIN packaging_raw_materials prm
+         ON prm.category = a.category AND prm.item_name = a.item_name
+        AND prm.variant = COALESCE(a.variant, '')
+       ORDER BY a.id ASC`
     );
     const byVendor = new Map();
     for (const a of articles) {
@@ -160,7 +174,12 @@ async function update(req, res, next) {
       await tx.commit();
 
       const { rows: articleRows } = await db.execute({
-        sql: 'SELECT id, category, item_name, variant FROM outbound_vendor_articles WHERE vendor_id = ? ORDER BY id ASC',
+        sql: `SELECT a.id, a.category, a.item_name, a.variant, prm.unit_metric
+              FROM outbound_vendor_articles a
+              LEFT JOIN packaging_raw_materials prm
+                ON prm.category = a.category AND prm.item_name = a.item_name
+               AND prm.variant = COALESCE(a.variant, '')
+              WHERE a.vendor_id = ? ORDER BY a.id ASC`,
         args: [id],
       });
       res.json({ ...rows[0], articles: articleRows });
@@ -227,12 +246,18 @@ async function bulkUpsert(req, res, next) {
     const allowed = await loadAllowedArticles();
     const categoryByLower = new Map();
     const itemNamesByCategory = new Map(); // canonical category -> Map(lower item_name -> canonical item_name)
+    const variantsByCatItem = new Map();   // "cat|item" -> Map(lower variant -> canonical variant)
     for (const a of allowed) {
       const catLower = a.category.toLowerCase();
       if (!categoryByLower.has(catLower)) categoryByLower.set(catLower, a.category);
       const canonicalCat = categoryByLower.get(catLower);
       if (!itemNamesByCategory.has(canonicalCat)) itemNamesByCategory.set(canonicalCat, new Map());
       itemNamesByCategory.get(canonicalCat).set(a.item_name.toLowerCase(), a.item_name);
+      // Variant is part of the catalog identity as of migration 056, so it gets
+      // the same case-insensitive canonicalization as category/item_name.
+      const vKey = `${canonicalCat}|${a.item_name}`;
+      if (!variantsByCatItem.has(vKey)) variantsByCatItem.set(vKey, new Map());
+      variantsByCatItem.get(vKey).set(normName(a.variant).toLowerCase(), normName(a.variant));
     }
 
     const skipped = [];
@@ -245,7 +270,6 @@ async function bulkUpsert(req, res, next) {
       const r = input[i] || {};
       const vendorName = normName(r.vendor_name);
       const category = categoryByLower.get(normName(r.category).toLowerCase());
-      const variant = normName(r.variant) || null;
 
       if (!vendorName) {
         skipped.push({ row: i + 2, reason: 'vendor_name is required' });
@@ -261,6 +285,13 @@ async function bulkUpsert(req, res, next) {
         skipped.push({ row: i + 2, reason: `Invalid item_name "${normName(r.item_name)}" for ${category} — add it on the Packaging Products page first` });
         continue;
       }
+      const variantMap = variantsByCatItem.get(`${category}|${itemName}`);
+      const canonicalVariant = variantMap && variantMap.get(normName(r.variant).toLowerCase());
+      if (canonicalVariant === undefined) {
+        skipped.push({ row: i + 2, reason: `Invalid variant "${normName(r.variant)}" for ${category} / ${itemName} — add it on the Packaging Products page first` });
+        continue;
+      }
+      const variant = canonicalVariant || null;
 
       try {
         let vendorId = vendorIdByName.get(vendorName.toLowerCase());

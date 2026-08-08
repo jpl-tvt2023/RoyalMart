@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, RotateCcw, Save, Download, X } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, RotateCcw, Save, Download, X, AlertTriangle } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
@@ -17,6 +17,7 @@ import {
   deleteOutboundPOLineReceipt, restoreOutboundPOLineReceipt,
 } from '../../api/outboundPOs.api';
 import { ROLES } from '../../utils/roles';
+import { FLAG_META } from '../../utils/outboundPOFlags';
 import { formatDateTime } from '../../utils/formatters';
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
@@ -25,9 +26,11 @@ const today = () => new Date().toISOString().slice(0, 10);
 const emptyLine = () => ({
   _key: `new-${Math.random().toString(36).slice(2)}`,
   id: null, mapping: '', category: '', item_name: '', variant: '',
-  qty: 1, rate: 0, short: 0, received: 0, receipts: [],
+  qty: 1, rate: 0, short: 0, received: 0, receipts: [], unit_metric: '', flags: [],
   updated_by_name: '', updated_at: null, deleted_at: null, deleted_by: null,
 });
+
+const EMPTY_RECEIPT = { received_qty: '', received_rate: '', bill_no: '', incoming_no: '', checked_by: '' };
 
 // A mapping option's identity: the article tuple, joined so it can live in a
 // <select> value. Matches are case-insensitive like the backend.
@@ -57,6 +60,8 @@ function toLineState(l) {
     mapping: mapKey(l),
     category: l.category, item_name: l.item_name, variant: l.variant || '',
     qty: l.qty, rate: l.rate, short: l.short, received: l.received,
+    unit_metric: l.unit_metric || '',
+    flags: l.flags || [],
     updated_by_name: l.updated_by_name, updated_at: l.updated_at,
     deleted_at: l.deleted_at, deleted_by: l.deleted_by,
     receipts: l.receipts || [],
@@ -71,6 +76,7 @@ export default function OutboundPODetail() {
   const [vendors, setVendors] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [approvers, setApprovers] = useState([]);
+  const [checkers, setCheckers] = useState([]);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -88,7 +94,7 @@ export default function OutboundPODetail() {
   const [shortDrafts, setShortDrafts] = useState({});
   const [savingShortKey, setSavingShortKey] = useState(null);
   const [addingReceiptFor, setAddingReceiptFor] = useState(null);
-  const [newReceipt, setNewReceipt] = useState({ received_qty: '', received_rate: '', bill_no: '' });
+  const [newReceipt, setNewReceipt] = useState(EMPTY_RECEIPT);
   const [savingNewReceipt, setSavingNewReceipt] = useState(false);
   const [receiptDrafts, setReceiptDrafts] = useState({});
   const [savingReceiptId, setSavingReceiptId] = useState(null);
@@ -100,6 +106,7 @@ export default function OutboundPODetail() {
     listOutboundVendors().then(setVendors).catch(() => toast.error('Failed to load vendors'));
     listCompanies().then(setCompanies).catch(() => {});
     listUsersLite({ role: ROLES.PURCHASE_HEAD }).then(setApprovers).catch(() => {});
+    listUsersLite({ role: ROLES.WAREHOUSE_POC }).then(setCheckers).catch(() => {});
   }, []);
 
   const load = () => {
@@ -146,7 +153,13 @@ export default function OutboundPODetail() {
   const pickMapping = (key, value) => {
     const fromVendor = (vendor?.articles || []).find(a => mapKey(a) === value);
     if (fromVendor) {
-      setLine(key, { mapping: value, category: fromVendor.category, item_name: fromVendor.item_name, variant: fromVendor.variant || '' });
+      // unit_metric is shown immediately for feedback, but is not sent on save —
+      // the server re-derives it from the catalog so a stale client value can
+      // never overwrite the authoritative one.
+      setLine(key, {
+        mapping: value, category: fromVendor.category, item_name: fromVendor.item_name,
+        variant: fromVendor.variant || '', unit_metric: fromVendor.unit_metric || '',
+      });
     } else {
       setLine(key, { mapping: value });
     }
@@ -159,6 +172,24 @@ export default function OutboundPODetail() {
     // Different vendor = different mapping catalogue; reset picked articles.
     setLines(ls => ls.map(l => ({ ...l, mapping: '', category: '', item_name: '', variant: '' })));
   };
+
+  // Counts flagged receipts (not lines) so the banner headline matches what the
+  // user actually has to go and fix.
+  const flagSummary = useMemo(() => {
+    const counts = {};
+    const flagged = new Set();
+    for (const l of activeLines) {
+      for (const r of l.receipts || []) {
+        if (r.deleted_at || !(r.flags || []).length) continue;
+        flagged.add(r.id);
+        for (const k of r.flags) counts[k] = (counts[k] || 0) + 1;
+      }
+    }
+    return {
+      total: flagged.size,
+      parts: Object.entries(counts).map(([k, n]) => `${n} ${FLAG_META[k]?.label || k}`),
+    };
+  }, [activeLines]);
 
   const pendingOf = (l) => Math.max(0, Number(l.qty) - Number(l.received || 0) - Number(l.short || 0));
   const liveStatus = isNew ? 'Open' : (po.status === 'Deleted' ? 'Deleted' : deriveStatus(activeLines));
@@ -174,7 +205,7 @@ export default function OutboundPODetail() {
       const totalQty = activeLines.reduce((s, l) => s + Number(l.qty || 0), 0);
 
       const dataRows = activeLines.map((l, idx) => [
-        idx + 1, l.category, l.item_name, l.variant || '', l.qty, l.rate,
+        idx + 1, l.category, l.item_name, l.variant || '', l.qty, l.unit_metric || '', l.rate,
       ]);
 
       const aoa = [
@@ -183,9 +214,9 @@ export default function OutboundPODetail() {
         ['Vendor Name', vendor?.name || ''],
         ['Company Name', companyName],
         [],
-        ['Sr.no.', 'Category', 'Item name', 'Variant', 'Qty', 'Rate'],
+        ['Sr.no.', 'Category', 'Item name', 'Variant', 'Qty', 'UM', 'Rate'],
         ...dataRows,
-        ['', '', '', 'Total', totalQty, ''],
+        ['', '', '', 'Total', totalQty, '', ''],
       ];
 
       const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -250,21 +281,49 @@ export default function OutboundPODetail() {
     } finally { setSavingShortKey(null); }
   };
 
-  const startAddReceipt = (lineKey) => { setAddingReceiptFor(lineKey); setNewReceipt({ received_qty: '', received_rate: '', bill_no: '' }); };
+  // If a receipt's stored checker isn't in the live Warehouse_POC list (tagged
+  // before the rule existed, or since untagged), keep them selectable so the
+  // dropdown doesn't silently blank out a real recorded value.
+  const checkerOptionsFor = (checkedById, checkedByName) => {
+    const opts = checkers.map(u => ({ value: u.id, label: u.name }));
+    if (checkedById && !opts.some(o => String(o.value) === String(checkedById))) {
+      opts.push({ value: checkedById, label: `${checkedByName || 'Unknown'} (not Warehouse POC)` });
+    }
+    return opts;
+  };
+
+  // Mirrors the server's receipt rules so the user gets the error before a
+  // round trip. Returns an error string, or null when the values are usable.
+  const receiptFieldError = (v) => {
+    if (!v.received_qty || Number(v.received_qty) <= 0) return 'Received Qty is required';
+    if (v.received_rate === '' || v.received_rate == null) return 'Billed Rate is required';
+    if (!Number.isFinite(Number(v.received_rate)) || Number(v.received_rate) < 0) return 'Billed Rate must be a number >= 0';
+    if (!v.checked_by) return 'Checked By is required';
+    if (v.incoming_no !== '' && v.incoming_no != null) {
+      const n = Number(v.incoming_no);
+      if (!Number.isInteger(n) || n <= 0) return 'Incoming No must be a whole number > 0';
+    }
+    return null;
+  };
+
+  const startAddReceipt = (lineKey) => { setAddingReceiptFor(lineKey); setNewReceipt(EMPTY_RECEIPT); };
   const saveNewReceipt = async (l) => {
-    if (!newReceipt.received_qty || Number(newReceipt.received_qty) <= 0) { toast.error('Received Qty is required'); return; }
+    const err = receiptFieldError(newReceipt);
+    if (err) { toast.error(err); return; }
     setSavingNewReceipt(true);
     try {
       await addOutboundPOLineReceipt(id, l.id, {
         received_qty: Number(newReceipt.received_qty),
-        received_rate: newReceipt.received_rate === '' ? null : Number(newReceipt.received_rate),
+        received_rate: Number(newReceipt.received_rate),
         bill_no: newReceipt.bill_no || null,
+        checked_by: Number(newReceipt.checked_by),
+        incoming_no: newReceipt.incoming_no === '' ? null : Number(newReceipt.incoming_no),
       });
       toast.success('Receipt added');
       setAddingReceiptFor(null);
       load();
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to add receipt');
+    } catch (err2) {
+      toast.error(err2.response?.data?.message || 'Failed to add receipt');
     } finally { setSavingNewReceipt(false); }
   };
 
@@ -275,20 +334,27 @@ export default function OutboundPODetail() {
   };
   const setReceiptField = (r, field, value) => setReceiptDrafts(d => ({ ...d, [r.id]: { ...d[r.id], [field]: value } }));
   const saveReceipt = async (l, r) => {
+    const draft = {
+      received_qty: receiptValue(r, 'received_qty'),
+      received_rate: receiptValue(r, 'received_rate'),
+      checked_by: receiptValue(r, 'checked_by'),
+      incoming_no: receiptValue(r, 'incoming_no'),
+    };
+    const err = receiptFieldError(draft);
+    if (err) { toast.error(err); return; }
     setSavingReceiptId(r.id);
     try {
-      const qty = Number(receiptValue(r, 'received_qty'));
-      if (!Number.isFinite(qty) || qty <= 0) { toast.error('Received Qty must be a number > 0'); return; }
-      const rateStr = receiptValue(r, 'received_rate');
       await updateOutboundPOLineReceipt(id, l.id, r.id, {
-        received_qty: qty,
-        received_rate: rateStr === '' ? null : Number(rateStr),
+        received_qty: Number(draft.received_qty),
+        received_rate: Number(draft.received_rate),
         bill_no: receiptValue(r, 'bill_no') || null,
+        checked_by: Number(draft.checked_by),
+        incoming_no: draft.incoming_no === '' ? null : Number(draft.incoming_no),
       });
       setReceiptDrafts(d => { const n = { ...d }; delete n[r.id]; return n; });
       load();
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to update receipt');
+    } catch (err2) {
+      toast.error(err2.response?.data?.message || 'Failed to update receipt');
     } finally { setSavingReceiptId(null); }
   };
   const handleDeleteReceipt = async () => {
@@ -404,6 +470,20 @@ export default function OutboundPODetail() {
           </div>
 
           <div>
+            {flagSummary.total > 0 && (
+              <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm">
+                <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-medium text-amber-900">
+                    {flagSummary.total} receipt{flagSummary.total !== 1 ? 's' : ''} need attention:
+                  </span>{' '}
+                  <span className="text-amber-800">
+                    {flagSummary.parts.join(', ')}
+                  </span>
+                  <div className="text-xs text-amber-700 mt-0.5">Highlighted in the table below.</div>
+                </div>
+              </div>
+            )}
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-sm font-semibold text-[#003049]">Line Items ({activeLines.length})</h3>
               <div className="flex items-center gap-4">
@@ -423,6 +503,7 @@ export default function OutboundPODetail() {
                     <th className="px-3 py-2 text-left font-semibold text-gray-600 w-12">Line</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-600 min-w-[220px]">Article (Category · Item · Variant)</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Qty</th>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-16">UM</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Rate</th>
                     {!readOnly && <th className="px-3 py-2 w-10" />}
                     {!isNew && (
@@ -434,6 +515,8 @@ export default function OutboundPODetail() {
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Received Qty</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Received Rate</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Bill No</th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Incoming No</th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-36">Checked By</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Updated By</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-36">Updated Timestamp</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-20">Actions</th>
@@ -448,7 +531,10 @@ export default function OutboundPODetail() {
                       const displayNo = l.deleted_at ? null : ++activeCounter;
                       const status = l.deleted_at ? null : computeLineStatus(l);
                       const receipts = (l.receipts || []).filter(r => showDeleted || !r.deleted_at);
-                      const canAdd = !!l.id && !readOnly && !l.deleted_at;
+                      // A fully accounted-for line takes no further receipts —
+                      // raise its Qty first if a vendor genuinely over-delivers.
+                      const lineClosed = !l.deleted_at && computeLineStatus(l) === 'Closed';
+                      const canAdd = !!l.id && !readOnly && !l.deleted_at && !lineClosed;
                       const rowCount = Math.max(receipts.length + (canAdd ? 1 : 0), 1);
 
                       return Array.from({ length: rowCount }).map((_, rIdx) => {
@@ -473,6 +559,7 @@ export default function OutboundPODetail() {
                                 <td rowSpan={rowCount} className="px-3 py-2 align-top">
                                   <input type="number" min={0.01} step="0.01" value={l.qty} onChange={e => setLine(l._key, { qty: e.target.value })} disabled={readOnly || !!l.deleted_at} className={cellCls} />
                                 </td>
+                                <td rowSpan={rowCount} className="px-3 py-2 align-top text-gray-600">{l.unit_metric || '—'}</td>
                                 <td rowSpan={rowCount} className="px-3 py-2 align-top">
                                   <input type="number" min={0} step="0.01" value={l.rate} onChange={e => setLine(l._key, { rate: e.target.value })} disabled={readOnly || !!l.deleted_at} className={cellCls} />
                                 </td>
@@ -502,6 +589,13 @@ export default function OutboundPODetail() {
                                     </td>
                                     <td rowSpan={rowCount} className="px-3 py-2 align-top">
                                       {l.deleted_at ? <Badge color="gray">Deleted</Badge> : <Badge color={STATUS_COLORS[status] || 'gray'}>{status}</Badge>}
+                                      {!l.deleted_at && !!(l.flags || []).length && (
+                                        <div className="flex flex-wrap gap-1 mt-1">
+                                          {l.flags.map(k => (
+                                            <Badge key={k} color={FLAG_META[k]?.color || 'gray'}>{FLAG_META[k]?.short || k}</Badge>
+                                          ))}
+                                        </div>
+                                      )}
                                     </td>
                                     <td rowSpan={rowCount} className="px-3 py-2 align-top">
                                       <div className="flex items-center gap-1">
@@ -541,7 +635,8 @@ export default function OutboundPODetail() {
                                         value={receiptValue(receipt, 'received_rate')}
                                         onChange={e => setReceiptField(receipt, 'received_rate', e.target.value)}
                                         disabled={readOnly || !!receipt.deleted_at}
-                                        className={cellCls}
+                                        title={(receipt.flags || []).includes('rate_mismatch') ? `${FLAG_META.rate_mismatch.hint} (agreed ${l.rate})` : undefined}
+                                        className={`${cellCls} ${(receipt.flags || []).includes('rate_mismatch') ? 'ring-1 ring-red-400 border-red-400' : ''}`}
                                       />
                                     </td>
                                     <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
@@ -552,6 +647,29 @@ export default function OutboundPODetail() {
                                         disabled={readOnly || !!receipt.deleted_at}
                                         className={cellCls}
                                       />
+                                    </td>
+                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
+                                      <input
+                                        type="number" min={1} step="1"
+                                        value={receiptValue(receipt, 'incoming_no')}
+                                        onChange={e => setReceiptField(receipt, 'incoming_no', e.target.value)}
+                                        disabled={readOnly || !!receipt.deleted_at}
+                                        title={(receipt.flags || []).includes('missing_incoming_no') ? FLAG_META.missing_incoming_no.hint : undefined}
+                                        className={`${cellCls} ${(receipt.flags || []).includes('missing_incoming_no') ? 'ring-1 ring-amber-400 border-amber-400' : ''}`}
+                                      />
+                                    </td>
+                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
+                                      <select
+                                        value={receiptValue(receipt, 'checked_by') || ''}
+                                        onChange={e => setReceiptField(receipt, 'checked_by', e.target.value)}
+                                        disabled={readOnly || !!receipt.deleted_at}
+                                        className={cellCls}
+                                      >
+                                        <option value="">Select...</option>
+                                        {checkerOptionsFor(receipt.checked_by, receipt.checked_by_name).map(o => (
+                                          <option key={o.value} value={o.value}>{o.label}</option>
+                                        ))}
+                                      </select>
                                     </td>
                                     <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{receipt.updated_by_name || receipt.created_by_name || '—'}</td>
                                     <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{formatDateTime(receipt.updated_at)}</td>
@@ -589,6 +707,15 @@ export default function OutboundPODetail() {
                                       <td className="px-3 py-2">
                                         <input type="text" placeholder="Bill No" value={newReceipt.bill_no} onChange={e => setNewReceipt(r => ({ ...r, bill_no: e.target.value }))} className={cellCls} />
                                       </td>
+                                      <td className="px-3 py-2">
+                                        <input type="number" min={1} step="1" placeholder="Incoming" value={newReceipt.incoming_no} onChange={e => setNewReceipt(r => ({ ...r, incoming_no: e.target.value }))} className={cellCls} />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <select value={newReceipt.checked_by} onChange={e => setNewReceipt(r => ({ ...r, checked_by: e.target.value }))} className={cellCls}>
+                                          <option value="">Checked by...</option>
+                                          {checkerOptionsFor().map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                        </select>
+                                      </td>
                                       <td colSpan={2} className="px-3 py-2 text-xs text-gray-400">New receipt</td>
                                       <td className="px-3 py-2">
                                         <div className="flex items-center gap-1">
@@ -602,15 +729,17 @@ export default function OutboundPODetail() {
                                       </td>
                                     </>
                                   ) : (
-                                    <td colSpan={6} className="px-3 py-2">
+                                    <td colSpan={8} className="px-3 py-2">
                                       <button type="button" onClick={() => startAddReceipt(l._key)} className="inline-flex items-center gap-1 text-xs text-[#c1121f] hover:underline">
                                         <Plus size={12} />Add receipt
                                       </button>
                                     </td>
                                   )
                                 ) : (
-                                  <td colSpan={6} className="px-3 py-2 text-xs text-gray-400">
-                                    {l.id ? 'No receipts yet' : 'Save the PO to add receipts'}
+                                  <td colSpan={8} className="px-3 py-2 text-xs text-gray-400">
+                                    {l.deleted_at ? '—'
+                                      : lineClosed ? 'Line is Closed — increase Qty to receive more'
+                                      : l.id ? 'No receipts yet' : 'Save the PO to add receipts'}
                                   </td>
                                 )}
                               </>
