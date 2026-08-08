@@ -33,8 +33,8 @@ const FLAGS = {
       && Math.abs(Number(r.received_rate) - Number(l.rate)) > RATE_EPSILON,
   },
   missing_incoming_no: {
-    label: 'No Incoming No',
-    short: 'No Inc No',
+    label: 'Missing Incoming No',
+    short: 'Missing Inc No',
     color: 'yellow',
     sql: 'r.incoming_no IS NULL',
     js: (r) => r.incoming_no == null,

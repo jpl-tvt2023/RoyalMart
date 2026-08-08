@@ -11,8 +11,8 @@ export const FLAG_META = {
     hint: 'The rate the vendor billed differs from the rate agreed on the PO line',
   },
   missing_incoming_no: {
-    label: 'No Incoming No',
-    short: 'No Inc No',
+    label: 'Missing Incoming No',
+    short: 'Missing Inc No',
     color: 'yellow',
     hint: 'This receipt was saved without a warehouse incoming number',
   },
