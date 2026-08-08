@@ -44,7 +44,6 @@ app.use('/api/configurations', require('./src/routes/configurations.routes'));
 app.use('/api/outbound-vendors', require('./src/routes/outboundVendors.routes'));
 app.use('/api/outbound-pos', require('./src/routes/outboundPOs.routes'));
 app.use('/api/packaging-raw-materials', require('./src/routes/packagingRawMaterials.routes'));
-app.use('/api/packaging-products', require('./src/routes/packagingProducts.routes'));
 app.use('/api/audit-logs',   require('./src/routes/audit.routes'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));

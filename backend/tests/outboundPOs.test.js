@@ -6,6 +6,7 @@ let token;
 let adminUserId;
 let activeCompanyId;
 let inactiveCompanyId;
+let warehousePocId;
 let uidCounter = 0;
 const uid = () => `${Date.now()}-${uidCounter++}`;
 
@@ -35,6 +36,19 @@ function lineFor(article, overrides = {}) {
     rate: 10,
     ...overrides,
   };
+}
+
+// Billed Rate and Checked By are mandatory on every receipt, so default both in
+// unless a test is specifically exercising their validation.
+function receiptBody(overrides = {}) {
+  return { received_qty: 1, received_rate: 10, checked_by: warehousePocId, ...overrides };
+}
+
+function postReceipt(poId, lineId, body) {
+  return request(app)
+    .post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`)
+    .set('Authorization', `Bearer ${token}`)
+    .send(receiptBody(body));
 }
 
 function createPO(body) {
@@ -81,6 +95,15 @@ beforeAll(async () => {
     .send({ username: 'admin', password: 'RoyalMart#Admin' });
   token = login.body.accessToken;
   adminUserId = login.body.user.id;
+
+  // checked_by must be a user actually TAGGED Warehouse_POC — userHasRole is
+  // strict, so being Admin is not enough. Tag the seeded admin rather than
+  // minting a user, to avoid coupling these tests to the users table schema.
+  await db.execute({
+    sql: "INSERT OR IGNORE INTO user_roles (user_id, role) VALUES (?, 'Warehouse_POC')",
+    args: [adminUserId],
+  });
+  warehousePocId = adminUserId;
 
   const active = await request(app)
     .post('/api/configurations/companies')
@@ -561,10 +584,7 @@ describe('Outbound POs API', () => {
         lines: [lineFor(vendor.body.articles[0], { qty: 2 })],
       });
       const [lineId] = await lineIdsOf(closedPo.body.id);
-      await request(app)
-        .post(`/api/outbound-pos/${closedPo.body.id}/lines/${lineId}/receipts`)
-        .set('Authorization', `Bearer ${token}`)
-        .send({ received_qty: 2 });
+      await postReceipt(closedPo.body.id, lineId, { received_qty: 2 });
       const midway = await request(app).get(`/api/outbound-pos/${closedPo.body.id}`).set('Authorization', `Bearer ${token}`);
       expect(midway.body.status).toBe('Closed');
       await request(app).delete(`/api/outbound-pos/${closedPo.body.id}`).set('Authorization', `Bearer ${token}`);
@@ -636,8 +656,8 @@ describe('Outbound POs API', () => {
 
     test('adding two receipts sums into the line\'s received total and can close the line', async () => {
       const { poId, lineId } = await setupLine(5);
-      await request(app).post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`).set('Authorization', `Bearer ${token}`).send({ received_qty: 2, received_rate: 60, bill_no: 'B-1' });
-      await request(app).post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`).set('Authorization', `Bearer ${token}`).send({ received_qty: 3, received_rate: 65, bill_no: 'B-2' });
+      await postReceipt(poId, lineId, { received_qty: 2, received_rate: 60, bill_no: 'B-1' });
+      await postReceipt(poId, lineId, { received_qty: 3, received_rate: 65, bill_no: 'B-2' });
       const fetched = await request(app).get(`/api/outbound-pos/${poId}`).set('Authorization', `Bearer ${token}`);
       expect(fetched.body.lines[0].received).toBe(5);
       expect(fetched.body.status).toBe('Closed');
@@ -645,13 +665,13 @@ describe('Outbound POs API', () => {
 
     test('rejects a received_qty <= 0', async () => {
       const { poId, lineId } = await setupLine();
-      const res = await request(app).post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`).set('Authorization', `Bearer ${token}`).send({ received_qty: 0 });
+      const res = await postReceipt(poId, lineId, { received_qty: 0 });
       expect(res.status).toBe(400);
     });
 
     test('updating a receipt recomputes the line total', async () => {
       const { poId, lineId } = await setupLine(5);
-      const created = await request(app).post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`).set('Authorization', `Bearer ${token}`).send({ received_qty: 2 });
+      const created = await postReceipt(poId, lineId, { received_qty: 2 });
       await request(app).patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`).set('Authorization', `Bearer ${token}`).send({ received_qty: 4 });
       const fetched = await request(app).get(`/api/outbound-pos/${poId}`).set('Authorization', `Bearer ${token}`);
       expect(fetched.body.lines[0].received).toBe(4);
@@ -659,7 +679,7 @@ describe('Outbound POs API', () => {
 
     test('deleting a receipt excludes it from the sum; restoring brings it back', async () => {
       const { poId, lineId } = await setupLine(5);
-      const created = await request(app).post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`).set('Authorization', `Bearer ${token}`).send({ received_qty: 3 });
+      const created = await postReceipt(poId, lineId, { received_qty: 3 });
 
       let fetched = await request(app).get(`/api/outbound-pos/${poId}`).set('Authorization', `Bearer ${token}`);
       expect(fetched.body.lines[0].received).toBe(3);
@@ -677,7 +697,7 @@ describe('Outbound POs API', () => {
 
     test('line and receipt actions are all logged under entityType outbound_po_line for one unified history', async () => {
       const { poId, lineId } = await setupLine(5);
-      await request(app).post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`).set('Authorization', `Bearer ${token}`).send({ received_qty: 2, bill_no: 'B-99' });
+      await postReceipt(poId, lineId, { received_qty: 2, bill_no: 'B-99' });
       await request(app).patch(`/api/outbound-pos/${poId}/lines/${lineId}`).set('Authorization', `Bearer ${token}`).send({ short: 1 });
       const res = await auditFor('outbound_po_line', lineId);
       const types = res.body.map(e => e.action_type);
@@ -688,11 +708,251 @@ describe('Outbound POs API', () => {
 
     test('a status transition triggered by a receipt is also logged on the PO\'s own audit trail', async () => {
       const { poId, lineId } = await setupLine(2);
-      await request(app).post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`).set('Authorization', `Bearer ${token}`).send({ received_qty: 2 });
+      await postReceipt(poId, lineId, { received_qty: 2 });
       const res = await auditFor('outbound_po', poId);
       const entry = res.body.find(e => e.action_type === 'OUTBOUND_PO_STATUS_UPDATE');
       expect(entry).toBeTruthy();
       expect(entry.changes.find(c => c.field === 'status')).toMatchObject({ old: 'Open', new: 'Closed' });
+    });
+  });
+
+  describe('Receipt field validation', () => {
+    async function setupLine(qty = 5) {
+      const vendor = await createVendor();
+      const created = await createPO({ vendor_id: vendor.body.id, lines: [lineFor(vendor.body.articles[0], { qty })] });
+      const [lineId] = await lineIdsOf(created.body.id);
+      return { poId: created.body.id, lineId };
+    }
+    const rawPost = (poId, lineId, body) => request(app)
+      .post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`)
+      .set('Authorization', `Bearer ${token}`).send(body);
+
+    test.each([
+      ['omitted', {}],
+      ['empty string', { received_rate: '' }],
+      ['null', { received_rate: null }],
+    ])('rejects a receipt whose billed rate is %s', async (_label, patch) => {
+      const { poId, lineId } = await setupLine();
+      const res = await rawPost(poId, lineId, { received_qty: 1, checked_by: warehousePocId, ...patch });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/Billed Rate is required/);
+    });
+
+    test('rejects a negative billed rate', async () => {
+      const { poId, lineId } = await setupLine();
+      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: -1, checked_by: warehousePocId });
+      expect(res.status).toBe(400);
+    });
+
+    test('rejects a receipt with no checked_by', async () => {
+      const { poId, lineId } = await setupLine();
+      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: 10 });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/Checked By is required/);
+    });
+
+    // The highest-value case: Admin/Owner must NOT implicitly qualify. This
+    // pins userHasRole (strict) rather than userQualifiesAs.
+    test('rejects a checked_by that is a real user without the Warehouse_POC tag', async () => {
+      const { poId, lineId } = await setupLine();
+      const { rows } = await db.execute({
+        sql: `INSERT INTO users (name, username, email, password_hash, is_first_login)
+              VALUES (?, ?, ?, 'x', 0) RETURNING id`,
+        args: [`Untagged ${uid()}`, `untagged-${uid()}`, `untagged-${uid()}@x.com`],
+      });
+      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: 10, checked_by: rows[0].id });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/Warehouse_POC/);
+    });
+
+    test('rejects a checked_by that resolves to no user', async () => {
+      const { poId, lineId } = await setupLine();
+      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: 10, checked_by: 99999 });
+      expect(res.status).toBe(400);
+    });
+
+    test('accepts a receipt with no incoming_no — it is optional by design', async () => {
+      const { poId, lineId } = await setupLine();
+      const res = await postReceipt(poId, lineId, { received_qty: 1 });
+      expect(res.status).toBe(201);
+    });
+
+    test.each([[1.5], ['abc'], [0], [-1]])('rejects incoming_no %p', async (value) => {
+      const { poId, lineId } = await setupLine();
+      const res = await postReceipt(poId, lineId, { received_qty: 1, incoming_no: value });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/Incoming No/);
+    });
+
+    test('PATCH cannot clear an existing billed rate', async () => {
+      const { poId, lineId } = await setupLine();
+      const created = await postReceipt(poId, lineId, { received_qty: 1 });
+      const res = await request(app)
+        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
+        .set('Authorization', `Bearer ${token}`).send({ received_rate: null });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/Billed Rate is required/);
+    });
+
+    test('PATCH that touches only bill_no does not force the other fields', async () => {
+      const { poId, lineId } = await setupLine();
+      const created = await postReceipt(poId, lineId, { received_qty: 1 });
+      const res = await request(app)
+        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
+        .set('Authorization', `Bearer ${token}`).send({ bill_no: 'B-EDIT' });
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe('Closed-line receipt gate', () => {
+    async function setupLine(qty = 5) {
+      const vendor = await createVendor();
+      const created = await createPO({ vendor_id: vendor.body.id, lines: [lineFor(vendor.body.articles[0], { qty })] });
+      const [lineId] = await lineIdsOf(created.body.id);
+      return { poId: created.body.id, lineId };
+    }
+
+    test('a line closed by receipts refuses a further receipt', async () => {
+      const { poId, lineId } = await setupLine(5);
+      expect((await postReceipt(poId, lineId, { received_qty: 5 })).status).toBe(201);
+      const res = await postReceipt(poId, lineId, { received_qty: 1 });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/already Closed/);
+    });
+
+    test('a line closed purely by short refuses a receipt', async () => {
+      const { poId, lineId } = await setupLine(5);
+      await request(app).patch(`/api/outbound-pos/${poId}/lines/${lineId}`)
+        .set('Authorization', `Bearer ${token}`).send({ short: 5 });
+      const res = await postReceipt(poId, lineId, { received_qty: 1 });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/already Closed/);
+    });
+
+    test('a partially received line still accepts more receipts', async () => {
+      const { poId, lineId } = await setupLine(5);
+      expect((await postReceipt(poId, lineId, { received_qty: 2 })).status).toBe(201);
+      expect((await postReceipt(poId, lineId, { received_qty: 2 })).status).toBe(201);
+    });
+  });
+
+  describe('Exception flags', () => {
+    async function setupLine({ qty = 5, rate = 10 } = {}) {
+      const vendor = await createVendor();
+      const created = await createPO({ vendor_id: vendor.body.id, lines: [lineFor(vendor.body.articles[0], { qty, rate })] });
+      const [lineId] = await lineIdsOf(created.body.id);
+      return { poId: created.body.id, lineId };
+    }
+    const getPO = (poId) => request(app).get(`/api/outbound-pos/${poId}`).set('Authorization', `Bearer ${token}`);
+    const listPOs = (query) => request(app).get('/api/outbound-pos').query(query).set('Authorization', `Bearer ${token}`);
+
+    test('a billed rate differing from the agreed rate flags the line and the PO', async () => {
+      const { poId, lineId } = await setupLine({ rate: 10 });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 12, incoming_no: 1 });
+      const detail = await getPO(poId);
+      expect(detail.body.lines[0].flags).toContain('rate_mismatch');
+      const list = await listPOs({ order_no: String(poId) });
+      expect(list.body.rows[0].flags).toContain('rate_mismatch');
+    });
+
+    test('a matching billed rate raises no flag', async () => {
+      const { poId, lineId } = await setupLine({ rate: 10 });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10, incoming_no: 1 });
+      const detail = await getPO(poId);
+      expect(detail.body.lines[0].flags).toEqual([]);
+    });
+
+    // Pins "only meaningful when the agreed rate is present" — a blank agreed
+    // rate is stored as 0 and must never raise a mismatch.
+    test('a blank agreed rate never raises a rate mismatch', async () => {
+      const { poId, lineId } = await setupLine({ rate: 0 });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 12, incoming_no: 1 });
+      const detail = await getPO(poId);
+      expect(detail.body.lines[0].flags).not.toContain('rate_mismatch');
+    });
+
+    test('float round-trip noise does not raise a mismatch', async () => {
+      const { poId, lineId } = await setupLine({ rate: 10.1 });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10.1, incoming_no: 1 });
+      const detail = await getPO(poId);
+      expect(detail.body.lines[0].flags).not.toContain('rate_mismatch');
+    });
+
+    test('a receipt with no incoming number flags the line and the PO', async () => {
+      const { poId, lineId } = await setupLine();
+      await postReceipt(poId, lineId, { received_qty: 1 });
+      const detail = await getPO(poId);
+      expect(detail.body.lines[0].flags).toContain('missing_incoming_no');
+      expect(detail.body.lines[0].receipts[0].flags).toContain('missing_incoming_no');
+    });
+
+    // The test that would catch a regression from derived to stored flags.
+    test('soft-deleting a flagged receipt clears the flag; restoring brings it back', async () => {
+      const { poId, lineId } = await setupLine();
+      const created = await postReceipt(poId, lineId, { received_qty: 1 });
+      expect((await getPO(poId)).body.lines[0].flags).toContain('missing_incoming_no');
+
+      await request(app).delete(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect((await getPO(poId)).body.lines[0].flags).toEqual([]);
+
+      await request(app).post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}/restore`)
+        .set('Authorization', `Bearer ${token}`);
+      expect((await getPO(poId)).body.lines[0].flags).toContain('missing_incoming_no');
+    });
+
+    test('filtering by flag returns only matching POs, and ?flag=none only clean ones', async () => {
+      const dirty = await setupLine();
+      await postReceipt(dirty.poId, dirty.lineId, { received_qty: 1 }); // no incoming_no
+      const clean = await setupLine();
+      await postReceipt(clean.poId, clean.lineId, { received_qty: 1, incoming_no: 7 });
+
+      const flagged = await listPOs({ flag: 'missing_incoming_no', page_size: 'all' });
+      const flaggedIds = flagged.body.rows.map(r => r.id);
+      expect(flaggedIds).toContain(dirty.poId);
+      expect(flaggedIds).not.toContain(clean.poId);
+
+      const none = await listPOs({ flag: 'none', page_size: 'all' });
+      const noneIds = none.body.rows.map(r => r.id);
+      expect(noneIds).toContain(clean.poId);
+      expect(noneIds).not.toContain(dirty.poId);
+    });
+
+    test('an empty flag filter behaves as no filter at all', async () => {
+      const { poId, lineId } = await setupLine();
+      await postReceipt(poId, lineId, { received_qty: 1 });
+      const res = await listPOs({ flag: '', page_size: 'all' });
+      expect(res.body.rows.map(r => r.id)).toContain(poId);
+    });
+
+    // Guards the WHERE clause drifting between the page query and the COUNT
+    // query, which would make `total` disagree with the rows returned.
+    test('paginated total matches the number of rows across pages when filtering by flag', async () => {
+      for (let i = 0; i < 3; i++) {
+        const s = await setupLine();
+        await postReceipt(s.poId, s.lineId, { received_qty: 1 });
+      }
+      const paged = await listPOs({ flag: 'missing_incoming_no', page: 1, page_size: 10 });
+      const all = await listPOs({ flag: 'missing_incoming_no', page_size: 'all' });
+      expect(paged.body.total).toBe(all.body.rows.length);
+    });
+  });
+
+  // The SQL predicates and their JS twins in outboundPOFlags.js are duplicated
+  // on purpose; this pins them together so they cannot drift.
+  describe('Flag SQL/JS parity', () => {
+    const { FLAGS, FLAG_KEYS } = require('../src/services/outboundPOFlags');
+
+    test.each([
+      [{ received_rate: 12, incoming_no: 1 }, { rate: 10 }, ['rate_mismatch']],
+      [{ received_rate: 10, incoming_no: 1 }, { rate: 10 }, []],
+      [{ received_rate: 12, incoming_no: 1 }, { rate: 0 }, []],
+      [{ received_rate: 10, incoming_no: null }, { rate: 10 }, ['missing_incoming_no']],
+      [{ received_rate: 12, incoming_no: null }, { rate: 10 }, ['rate_mismatch', 'missing_incoming_no']],
+      [{ received_rate: null, incoming_no: 1 }, { rate: 10 }, []],
+    ])('receipt %j against line %j yields %j', (receipt, line, expected) => {
+      const actual = FLAG_KEYS.filter(k => FLAGS[k].js(receipt, line));
+      expect(actual.sort()).toEqual([...expected].sort());
     });
   });
 

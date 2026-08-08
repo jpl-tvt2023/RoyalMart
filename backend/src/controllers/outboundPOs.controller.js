@@ -1,5 +1,9 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
+const { userHasRole } = require('../services/userRoles.service');
+const {
+  FLAG_KEYS, poFlagExists, lineFlagExists, receiptFlags, pickFlags, flagSelect,
+} = require('../services/outboundPOFlags');
 
 const VALID_STATUSES = ['Open', 'Partially Received', 'Closed'];
 
@@ -17,6 +21,9 @@ const SORT_COLUMNS = {
   updated_by_name: 'ub.name',
   line_count:      "(SELECT COUNT(*) FROM outbound_po_lines WHERE po_id = p.id AND deleted_at IS NULL)",
   total_qty:       "(SELECT COALESCE(SUM(qty),0) FROM outbound_po_lines WHERE po_id = p.id AND deleted_at IS NULL)",
+  // EXISTS yields 0/1, so summing them sorts by how many distinct flag types
+  // a PO carries -- clean POs first ascending, worst offenders first descending.
+  flags:           `(${FLAG_KEYS.map(poFlagExists).join(' + ')})`,
 };
 
 function buildPagination(query) {
@@ -73,7 +80,11 @@ function validateLines(lines, mappingSet, grandfathered = new Set()) {
     if (!category || !itemName) return `Line ${i + 1}: category and item_name are required`;
     const qty = Number(l.qty);
     if (!Number.isFinite(qty) || qty <= 0) return `Line ${i + 1}: qty must be a number > 0`;
-    const rate = Number(l.rate);
+    // The agreed rate may legitimately be blank -- it is what was negotiated
+    // with the vendor and isn't always known when the PO is raised. Blank is
+    // stored as 0 (the column is NOT NULL DEFAULT 0), and the rate-mismatch
+    // flag treats 0 as "nothing to compare against".
+    const rate = l.rate === '' || l.rate == null ? 0 : Number(l.rate);
     if (!Number.isFinite(rate) || rate < 0) return `Line ${i + 1}: rate must be a number >= 0`;
     const key = lineKey(l);
     if (!mappingSet.has(key) && !grandfathered.has(key)) {
@@ -87,7 +98,11 @@ function lineKey(l) {
   return `${String(l.category || '').trim().toLowerCase()}${String(l.item_name || '').trim().toLowerCase()}${String(l.variant || '').trim().toLowerCase()}`;
 }
 
-function normLine(l, idx) {
+function normLine(l, idx, umMap) {
+  const exact = umMap.get(lineKey(l));
+  // Fall back to the item's UM ignoring variant, so a historical line whose
+  // free-text variant never made it into the catalog still shows a unit.
+  const fallback = umMap.get(lineKey({ category: l.category, item_name: l.item_name, variant: '' }));
   return {
     id: l.id ? Number(l.id) : null,
     line_no: Number(l.line_no) || idx + 1,
@@ -95,8 +110,62 @@ function normLine(l, idx) {
     item_name: String(l.item_name).trim(),
     variant: String(l.variant || '').trim() || null,
     qty: Number(l.qty),
-    rate: Number(l.rate) || 0,
+    rate: l.rate === '' || l.rate == null ? 0 : Number(l.rate) || 0,
+    unit_metric: exact ?? fallback ?? null,
   };
+}
+
+// UM is copied onto the line at write time rather than joined at read time, so
+// a later catalog edit can't retroactively change what a past PO recorded.
+async function catalogUnitMetrics() {
+  const { rows } = await db.execute('SELECT category, item_name, variant, unit_metric FROM packaging_raw_materials');
+  const map = new Map();
+  for (const r of rows) {
+    map.set(lineKey(r), r.unit_metric);
+    const bare = lineKey({ category: r.category, item_name: r.item_name, variant: '' });
+    if (!map.has(bare)) map.set(bare, r.unit_metric);
+  }
+  return map;
+}
+
+// Shared receipt-field rules for create and update.
+//
+// Billed Rate (received_rate) is the rate the vendor actually invoiced, as
+// distinct from the line's agreed rate — it is mandatory, because the whole
+// point of the Rate Mismatch flag is to compare the two. Checked By must be a
+// user actually tagged Warehouse_POC: userHasRole is the strict variant, so
+// Admin/Owner do NOT implicitly qualify, matching how POC assignment behaves
+// elsewhere. Incoming No stays optional (a receipt without one is flagged, not
+// blocked) but must be a whole number when supplied.
+//
+// With requireAll, absent fields are errors (create). Without it, only fields
+// actually present in the body are checked (update), so a user fixing a typo in
+// bill_no isn't forced to backfill unrelated values.
+async function validateReceiptFields(body, { requireAll }) {
+  const present = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
+  const blank = (v) => v == null || v === '';
+
+  if (requireAll || present('received_rate')) {
+    if (blank(body?.received_rate)) return 'Billed Rate is required';
+    const rate = Number(body.received_rate);
+    if (!Number.isFinite(rate) || rate < 0) return 'Billed Rate must be a number >= 0';
+  }
+
+  if (requireAll || present('checked_by')) {
+    if (blank(body?.checked_by)) return 'Checked By is required';
+    const [checkedById, err] = await resolveUserRef(body.checked_by, 'Checked By');
+    if (err) return err;
+    if (!(await userHasRole(checkedById, 'Warehouse_POC'))) {
+      return 'Checked By must be a user tagged Warehouse_POC';
+    }
+  }
+
+  if (present('incoming_no') && !blank(body?.incoming_no)) {
+    const n = Number(body.incoming_no);
+    if (!Number.isInteger(n) || n <= 0) return 'Incoming No must be a whole number > 0';
+  }
+
+  return null;
 }
 
 // Validates an optional user-reference field (e.g. approved_by): '' / null
@@ -128,10 +197,12 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
   const deletedClause = includeDeleted ? '' : 'AND l.deleted_at IS NULL';
   const { rows } = await executor.execute({
     sql: `SELECT l.id, l.po_id, l.line_no, l.category, l.item_name, l.variant, l.qty, l.rate, l.short,
+                 l.unit_metric,
                  l.updated_by, l.updated_at, l.deleted_by, l.deleted_at,
                  ub.name AS updated_by_name,
                  COALESCE((SELECT SUM(r.received_qty) FROM outbound_po_line_receipts r
-                           WHERE r.line_id = l.id AND r.deleted_at IS NULL), 0) AS received
+                           WHERE r.line_id = l.id AND r.deleted_at IS NULL), 0) AS received,
+                 ${flagSelect(lineFlagExists)}
           FROM outbound_po_lines l
           LEFT JOIN users ub ON ub.id = l.updated_by
           WHERE l.po_id IN (${placeholders}) ${deletedClause}
@@ -145,11 +216,13 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
     const receiptDeletedClause = includeDeleted ? '' : 'AND r.deleted_at IS NULL';
     const { rows: receipts } = await executor.execute({
       sql: `SELECT r.id, r.line_id, r.received_qty, r.received_rate, r.bill_no,
+                   r.checked_by, r.incoming_no,
                    r.created_by, r.created_at, r.updated_by, r.updated_at, r.deleted_by, r.deleted_at,
-                   cb.name AS created_by_name, ub.name AS updated_by_name
+                   cb.name AS created_by_name, ub.name AS updated_by_name, kb.name AS checked_by_name
             FROM outbound_po_line_receipts r
             LEFT JOIN users cb ON cb.id = r.created_by
             LEFT JOIN users ub ON ub.id = r.updated_by
+            LEFT JOIN users kb ON kb.id = r.checked_by
             WHERE r.line_id IN (${rPlaceholders}) ${receiptDeletedClause}
             ORDER BY r.line_id, r.created_at, r.id`,
       args: lineIds,
@@ -159,11 +232,17 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
       if (!receiptsByLine.has(r.line_id)) receiptsByLine.set(r.line_id, []);
       receiptsByLine.get(r.line_id).push(r);
     }
-    for (const l of rows) l.receipts = receiptsByLine.get(l.id) || [];
+    for (const l of rows) {
+      l.receipts = receiptsByLine.get(l.id) || [];
+      // Per-receipt flags let the detail page point at the exact offending row,
+      // rather than only saying the line as a whole has a problem.
+      for (const r of l.receipts) r.flags = receiptFlags(r, l);
+    }
   }
 
   const byPo = new Map();
   for (const l of rows) {
+    l.flags = pickFlags(l);
     if (!byPo.has(l.po_id)) byPo.set(l.po_id, []);
     byPo.get(l.po_id).push(l);
   }
@@ -205,7 +284,8 @@ const BASE_SELECT = `
          c.name AS company_name,
          ab.name AS approved_by_name,
          cb.name AS created_by_name,
-         COALESCE(ub.name, cb.name) AS updated_by_name
+         COALESCE(ub.name, cb.name) AS updated_by_name,
+         ${flagSelect(poFlagExists)}
   FROM outbound_pos p
   JOIN outbound_vendors v ON v.id = p.vendor_id
   LEFT JOIN companies c ON c.id = p.company_id
@@ -215,12 +295,12 @@ const BASE_SELECT = `
 `;
 
 function withOrderNo(row) {
-  return { ...row, order_no: padOrderNo(row.id) };
+  return { ...row, order_no: padOrderNo(row.id), flags: pickFlags(row) };
 }
 
 async function list(req, res, next) {
   try {
-    const { order_no, vendor_id, status, po_date_from, po_date_to } = req.query;
+    const { order_no, vendor_id, status, po_date_from, po_date_to, flag } = req.query;
     const conditions = [];
     const args = [];
     if (order_no) {
@@ -244,6 +324,19 @@ async function list(req, res, next) {
     } else {
       conditions.push("p.status <> 'Deleted'");
     }
+
+    // ?flag=rate_mismatch,missing_incoming_no -- OR-combined, so a PO matches
+    // if it carries ANY of the selected flags. The pseudo-key `none` matches
+    // only clean POs. This goes into the shared `where` below so the page query
+    // and the COUNT query can never disagree about the total.
+    const flagSel = String(flag || '').split(',').map(s => s.trim()).filter(Boolean);
+    const flagClauses = [];
+    if (flagSel.includes('none')) {
+      flagClauses.push(`(${FLAG_KEYS.map(k => `NOT ${poFlagExists(k)}`).join(' AND ')})`);
+    }
+    for (const k of flagSel.filter(k => FLAG_KEYS.includes(k))) flagClauses.push(poFlagExists(k));
+    if (flagClauses.length) conditions.push(`(${flagClauses.join(' OR ')})`);
+
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
     const orderBy = buildOrderBy(req.query, SORT_COLUMNS);
@@ -312,7 +405,8 @@ async function create(req, res, next) {
     const mappingSet = await vendorMappingSet(vendor_id);
     const linesError = validateLines(lines, mappingSet);
     if (linesError) return res.status(400).json({ message: linesError });
-    const normLines = lines.map(normLine);
+    const umMap = await catalogUnitMetrics();
+    const normLines = lines.map((l, i) => normLine(l, i, umMap));
     // Brand-new lines have no receipts yet, so every line starts at
     // received=0/short=0 for status-derivation purposes.
     const status = deriveStatus(normLines.map(l => ({ ...l, received: 0, short: 0 })));
@@ -327,9 +421,9 @@ async function create(req, res, next) {
       const poId = created[0].id;
       for (const l of normLines) {
         const { rows: insertedLine } = await tx.execute({
-          sql: `INSERT INTO outbound_po_lines (po_id, line_no, category, item_name, variant, qty, rate, updated_by, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) RETURNING id`,
-          args: [poId, l.line_no, l.category, l.item_name, l.variant, l.qty, l.rate, req.user.id],
+          sql: `INSERT INTO outbound_po_lines (po_id, line_no, category, item_name, variant, qty, rate, unit_metric, updated_by, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) RETURNING id`,
+          args: [poId, l.line_no, l.category, l.item_name, l.variant, l.qty, l.rate, l.unit_metric, req.user.id],
         });
         await logAction({
           client: tx,
@@ -415,15 +509,20 @@ async function update(req, res, next) {
     let existingLines = [];
     if (has('lines')) {
       const mappingSet = await vendorMappingSet(current.vendor_id);
+      // unit_metric must be selected here even though nothing edits it
+      // directly: diffFields compares before/after below, and an absent
+      // `before` value would read as undefined vs a real value and emit a
+      // spurious change on every single save.
       const { rows: activeLines } = await db.execute({
-        sql: 'SELECT id, category, item_name, variant, qty, rate FROM outbound_po_lines WHERE po_id = ? AND deleted_at IS NULL',
+        sql: 'SELECT id, line_no, category, item_name, variant, qty, rate, unit_metric FROM outbound_po_lines WHERE po_id = ? AND deleted_at IS NULL',
         args: [id],
       });
       existingLines = activeLines;
       const grandfathered = new Set(existingLines.map(lineKey));
       const linesError = validateLines(req.body.lines, mappingSet, grandfathered);
       if (linesError) return res.status(400).json({ message: linesError });
-      nextLines = req.body.lines.map(normLine);
+      const umMap = await catalogUnitMetrics();
+      nextLines = req.body.lines.map((l, i) => normLine(l, i, umMap));
     }
 
     const tx = await db.transaction('write');
@@ -435,12 +534,12 @@ async function update(req, res, next) {
           if (l.id && byId.has(l.id)) {
             keptIds.add(l.id);
             const before = byId.get(l.id);
-            const lineChanges = diffFields(before, l, ['line_no', 'category', 'item_name', 'variant', 'qty', 'rate']);
+            const lineChanges = diffFields(before, l, ['line_no', 'category', 'item_name', 'variant', 'qty', 'rate', 'unit_metric']);
             if (lineChanges.length) {
               await tx.execute({
-                sql: `UPDATE outbound_po_lines SET line_no=?, category=?, item_name=?, variant=?, qty=?, rate=?,
+                sql: `UPDATE outbound_po_lines SET line_no=?, category=?, item_name=?, variant=?, qty=?, rate=?, unit_metric=?,
                         updated_by=?, updated_at=datetime('now') WHERE id=?`,
-                args: [l.line_no, l.category, l.item_name, l.variant, l.qty, l.rate, req.user.id, l.id],
+                args: [l.line_no, l.category, l.item_name, l.variant, l.qty, l.rate, l.unit_metric, req.user.id, l.id],
               });
               await logAction({
                 client: tx,
@@ -454,9 +553,9 @@ async function update(req, res, next) {
             }
           } else {
             const { rows: insertedLine } = await tx.execute({
-              sql: `INSERT INTO outbound_po_lines (po_id, line_no, category, item_name, variant, qty, rate, updated_by, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) RETURNING id`,
-              args: [id, l.line_no, l.category, l.item_name, l.variant, l.qty, l.rate, req.user.id],
+              sql: `INSERT INTO outbound_po_lines (po_id, line_no, category, item_name, variant, qty, rate, unit_metric, updated_by, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) RETURNING id`,
+              args: [id, l.line_no, l.category, l.item_name, l.variant, l.qty, l.rate, l.unit_metric, req.user.id],
             });
             await logAction({
               client: tx,
@@ -637,36 +736,49 @@ async function createReceipt(req, res, next) {
     if (!poRows.length) return res.status(404).json({ message: 'PO not found' });
     if (poRows[0].status === 'Deleted') return res.status(400).json({ message: 'PO is deleted; restore it first' });
 
+    // qty/short/rate and the received sum come back in one hit so the
+    // closed-line gate below needs no extra round trip.
     const { rows: lineRows } = await db.execute({
-      sql: 'SELECT id, category, item_name, variant FROM outbound_po_lines WHERE id = ? AND po_id = ? AND deleted_at IS NULL',
+      sql: `SELECT l.id, l.category, l.item_name, l.variant, l.qty, l.short, l.rate,
+                   COALESCE((SELECT SUM(r.received_qty) FROM outbound_po_line_receipts r
+                             WHERE r.line_id = l.id AND r.deleted_at IS NULL), 0) AS received
+            FROM outbound_po_lines l
+            WHERE l.id = ? AND l.po_id = ? AND l.deleted_at IS NULL`,
       args: [lineId, id],
     });
     if (!lineRows.length) return res.status(404).json({ message: 'Line not found' });
     const line = lineRows[0];
 
+    // A fully accounted-for line takes no further receipts. If a vendor really
+    // over-delivers, raise the line's qty on the detail page first.
+    if (computeLineStatus(line) === 'Closed') {
+      return res.status(400).json({ message: 'This line is already Closed — no further receipts can be added' });
+    }
+
     const receivedQty = Number(req.body?.received_qty);
     if (!Number.isFinite(receivedQty) || receivedQty <= 0) {
       return res.status(400).json({ message: 'Received Qty must be a number > 0' });
     }
-    const receivedRate = req.body?.received_rate != null && req.body.received_rate !== ''
-      ? Number(req.body.received_rate) : null;
-    if (receivedRate != null && (!Number.isFinite(receivedRate) || receivedRate < 0)) {
-      return res.status(400).json({ message: 'Received Rate must be a number >= 0' });
-    }
+    const validationError = await validateReceiptFields(req.body, { requireAll: true });
+    if (validationError) return res.status(400).json({ message: validationError });
+    const receivedRate = Number(req.body.received_rate);
     const billNo = req.body?.bill_no != null ? (String(req.body.bill_no).trim() || null) : null;
+    const checkedBy = Number(req.body.checked_by);
+    const incomingNo = req.body?.incoming_no == null || req.body.incoming_no === ''
+      ? null : Number(req.body.incoming_no);
 
     const tx = await db.transaction('write');
     try {
       const { rows: inserted } = await tx.execute({
-        sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
-        args: [lineId, receivedQty, receivedRate, billNo, req.user.id, req.user.id],
+        sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, checked_by, incoming_no, created_by, updated_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        args: [lineId, receivedQty, receivedRate, billNo, checkedBy, incomingNo, req.user.id, req.user.id],
       });
       await logAction({
         client: tx,
         userId: req.user.id,
         actionType: 'OUTBOUND_PO_LINE_RECEIPT_CREATE',
-        description: `Added receipt of ${receivedQty} on line "${line.category} - ${line.item_name}${line.variant ? ` - ${line.variant}` : ''}"${billNo ? `, bill #${billNo}` : ''}${receivedRate != null ? ` @ ${receivedRate}` : ''} (PO ${padOrderNo(id)})`,
+        description: `Added receipt of ${receivedQty} on line "${line.category} - ${line.item_name}${line.variant ? ` - ${line.variant}` : ''}"${billNo ? `, bill #${billNo}` : ''} @ ${receivedRate}${incomingNo != null ? `, incoming #${incomingNo}` : ''} (PO ${padOrderNo(id)})`,
         entityType: 'outbound_po_line',
         entityId: Number(lineId),
       });
@@ -686,7 +798,8 @@ async function updateReceipt(req, res, next) {
     if (poRows[0].status === 'Deleted') return res.status(400).json({ message: 'PO is deleted; restore it first' });
 
     const { rows: receiptRows } = await db.execute({
-      sql: `SELECT r.id, r.received_qty, r.received_rate, r.bill_no, l.category, l.item_name, l.variant
+      sql: `SELECT r.id, r.received_qty, r.received_rate, r.bill_no, r.checked_by, r.incoming_no,
+                   l.category, l.item_name, l.variant
             FROM outbound_po_line_receipts r
             JOIN outbound_po_lines l ON l.id = r.line_id
             WHERE r.id = ? AND r.line_id = ? AND l.po_id = ? AND r.deleted_at IS NULL`,
@@ -701,25 +814,34 @@ async function updateReceipt(req, res, next) {
       nextQty = Number(req.body.received_qty);
       if (!Number.isFinite(nextQty) || nextQty <= 0) return res.status(400).json({ message: 'Received Qty must be a number > 0' });
     }
-    let nextRate = receipt.received_rate;
-    if (has('received_rate')) {
-      nextRate = req.body.received_rate != null && req.body.received_rate !== '' ? Number(req.body.received_rate) : null;
-      if (nextRate != null && (!Number.isFinite(nextRate) || nextRate < 0)) return res.status(400).json({ message: 'Received Rate must be a number >= 0' });
-    }
+    const validationError = await validateReceiptFields(req.body, { requireAll: false });
+    if (validationError) return res.status(400).json({ message: validationError });
+
+    const nextRate = has('received_rate') ? Number(req.body.received_rate) : receipt.received_rate;
     let nextBillNo = receipt.bill_no;
     if (has('bill_no')) {
       nextBillNo = req.body.bill_no != null ? (String(req.body.bill_no).trim() || null) : null;
     }
+    const nextCheckedBy = has('checked_by') ? Number(req.body.checked_by) : receipt.checked_by;
+    let nextIncomingNo = receipt.incoming_no;
+    if (has('incoming_no')) {
+      nextIncomingNo = req.body.incoming_no == null || req.body.incoming_no === ''
+        ? null : Number(req.body.incoming_no);
+    }
 
-    const changes = diffFields(receipt, { received_qty: nextQty, received_rate: nextRate, bill_no: nextBillNo }, ['received_qty', 'received_rate', 'bill_no']);
+    const RECEIPT_FIELDS = ['received_qty', 'received_rate', 'bill_no', 'checked_by', 'incoming_no'];
+    const changes = diffFields(receipt, {
+      received_qty: nextQty, received_rate: nextRate, bill_no: nextBillNo,
+      checked_by: nextCheckedBy, incoming_no: nextIncomingNo,
+    }, RECEIPT_FIELDS);
 
     const tx = await db.transaction('write');
     try {
       if (changes.length) {
         await tx.execute({
           sql: `UPDATE outbound_po_line_receipts SET received_qty = ?, received_rate = ?, bill_no = ?,
-                  updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
-          args: [nextQty, nextRate, nextBillNo, req.user.id, receiptId],
+                  checked_by = ?, incoming_no = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
+          args: [nextQty, nextRate, nextBillNo, nextCheckedBy, nextIncomingNo, req.user.id, receiptId],
         });
         await logAction({
           client: tx,
