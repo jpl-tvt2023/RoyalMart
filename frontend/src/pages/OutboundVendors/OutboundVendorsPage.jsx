@@ -60,11 +60,12 @@ export default function OutboundVendorsPage() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [catalogRows, setCatalogRows] = useState([]);
 
-  useEffect(() => {
+  const loadCatalog = () => {
     getPackagingRawMaterials()
       .then(r => setCatalogRows(r.data || []))
       .catch(() => {});
-  }, []);
+  };
+  useEffect(loadCatalog, []);
 
   // Category / Item Name / Variant options for the article-mapping sub-form,
   // sourced from the Packaging Products master catalog. The catalog carries one
@@ -116,8 +117,9 @@ export default function OutboundVendorsPage() {
   };
   useEffect(load, []);
 
-  const openAdd = () => { setForm(emptyForm()); setFormError(''); setModal('add'); };
+  const openAdd = () => { loadCatalog(); setForm(emptyForm()); setFormError(''); setModal('add'); };
   const openEdit = (r) => {
+    loadCatalog();
     setForm({
       name: r.name,
       is_active: !!r.is_active,
