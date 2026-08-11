@@ -120,11 +120,12 @@ function PackagingCatalogTab() {
   // The Outbound Product List drives the Category / Item Name pickers and the
   // unit metric. The endpoint returns deactivated entries too (the config tab
   // shows them); they must not be offered here.
-  useEffect(() => {
+  const loadMasterRows = () => {
     listOutboundProducts()
       .then(r => setMasterRows((r || []).filter(m => m.is_active)))
       .catch(() => toast.error('Failed to load the outbound product list'));
-  }, []);
+  };
+  useEffect(loadMasterRows, []);
 
   const searchMatched = useMemo(() => {
     const q = search.toLowerCase();
@@ -221,11 +222,13 @@ function PackagingCatalogTab() {
   // Prefill the category from the tab being viewed — that is almost always the
   // one being added to, and it keeps the new row on screen after saving.
   const openAdd = () => {
+    loadMasterRows();
     const preset = masterCategories.includes(activeCategory) ? activeCategory : '';
     setForm({ ...EMPTY_RAW_MATERIAL, category: preset });
     setModal('add');
   };
   const openEdit = (r) => {
+    loadMasterRows();
     setForm({ category: r.category, item_name: r.item_name, variant: r.variant || '', unit_metric: r.unit_metric });
     setModal({ type: 'edit', id: r.id });
   };

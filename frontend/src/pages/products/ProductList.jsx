@@ -152,14 +152,19 @@ function VendorMappingsTab() {
 
   const sel = useRowSelection(rows);
 
-  const load = () => {
-    setLoading(true);
-    Promise.all([getVendorCodes(), getProducts(), listVendors().catch(() => [])])
-      .then(([r, s, v]) => {
-        setRows(r.data);
+  const loadCatalog = () => {
+    Promise.all([getProducts(), listVendors().catch(() => [])])
+      .then(([s, v]) => {
         setSkus(sortByText(s.data, x => x.sku_code));
         setVendors(Array.isArray(v) ? v : []);
       })
+      .catch(() => {});
+  };
+  const load = () => {
+    setLoading(true);
+    loadCatalog();
+    getVendorCodes()
+      .then(r => setRows(r.data))
       .catch(() => toast.error('Failed to load mappings'))
       .finally(() => setLoading(false));
   };
@@ -182,8 +187,9 @@ function VendorMappingsTab() {
     );
   }, [rows, search]);
 
-  const openAdd = () => { setForm(EMPTY_MAPPING); setCustomVendor(false); setModal('add'); };
+  const openAdd = () => { loadCatalog(); setForm(EMPTY_MAPPING); setCustomVendor(false); setModal('add'); };
   const openEdit = (r) => {
+    loadCatalog();
     setForm({ product_id: String(r.product_id), vendor: r.vendor, vendor_item_code: r.vendor_item_code, product_description: r.product_description || '' });
     setCustomVendor(!vendorOptions.includes(r.vendor));
     setModal({ type: 'edit', id: r.id });
@@ -485,7 +491,7 @@ function SKUsTab() {
   };
   useEffect(load, []);
 
-  useEffect(() => {
+  const loadCatalog = () => {
     listCategories()
       .then(rows => setCategories(sortByText((rows || []).filter(c => c.is_active), c => c.name)))
       .catch(() => {});
@@ -495,7 +501,8 @@ function SKUsTab() {
     getPackagingRawMaterials()
       .then(r => setPackagingCatalog(r.data || []))
       .catch(() => {});
-  }, []);
+  };
+  useEffect(loadCatalog, []);
 
   // Packaging Product requirements may only reference the catalog's
   // 'Packaging' category, Barcode requirements only 'Barcode' — the source
@@ -528,8 +535,9 @@ function SKUsTab() {
     );
   }, [search, skus]);
 
-  const openAdd = () => { setForm(EMPTY_SKU); setModal('add'); };
+  const openAdd = () => { loadCatalog(); setForm(EMPTY_SKU); setModal('add'); };
   const openEdit = (s) => {
+    loadCatalog();
     setForm({
       sku_code: s.sku_code,
       description: s.description || '',
