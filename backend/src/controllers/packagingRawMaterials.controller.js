@@ -31,6 +31,23 @@ async function loadOutboundProducts() {
 const unlistedMessage = (category, itemName) =>
   `"${category} / ${itemName}" is not in the Outbound Product List — add it under Configurations → Outbound Product List first`;
 
+// Deleting or renaming a catalog row out from under a vendor that still maps
+// to it leaves that vendor permanently unsaveable (validateArticles in
+// outboundVendors.controller.js rejects the whole payload on every future
+// save). Same join shape as list()'s vendorsByTriple, reused here as a guard.
+async function referencingVendorNames(category, itemName, variant) {
+  const { rows } = await db.execute({
+    sql: `SELECT DISTINCT v.name FROM outbound_vendor_articles a
+          JOIN outbound_vendors v ON v.id = a.vendor_id
+          WHERE a.category = ? AND a.item_name = ? AND COALESCE(a.variant, '') = ?`,
+    args: [category, itemName, variant || ''],
+  });
+  return rows.map(r => r.name);
+}
+
+const referencedMessage = (category, itemName, variant, names) =>
+  `Cannot delete "${category} / ${itemName}${variant ? ` / ${variant}` : ''}" — still mapped to vendor(s): ${names.join(', ')}. Remove those mappings first.`;
+
 async function list(req, res, next) {
   try {
     // Two queries plus a JS join rather than GROUP_CONCAT: SQLite forbids a
@@ -123,6 +140,17 @@ async function update(req, res, next) {
     const itemName = listed.item_name;
     const unitMetric = listed.unit_metric;
 
+    // Only a change to the (category, item_name, variant) identity can orphan
+    // a vendor mapping -- a plain unit_metric edit is always safe.
+    const identityChanged = tripleKey(category, itemName, variant) !==
+      tripleKey(existing[0].category, existing[0].item_name, existing[0].variant);
+    if (identityChanged) {
+      const names = await referencingVendorNames(existing[0].category, existing[0].item_name, existing[0].variant);
+      if (names.length) {
+        return res.status(400).json({ message: referencedMessage(existing[0].category, existing[0].item_name, existing[0].variant, names) });
+      }
+    }
+
     const { rows } = await db.execute({
       sql: `UPDATE packaging_raw_materials
             SET category = ?, item_name = ?, variant = ?, unit_metric = ?, updated_by = ?, updated_at = datetime('now')
@@ -150,8 +178,15 @@ async function update(req, res, next) {
 async function remove(req, res, next) {
   try {
     const { id } = req.params;
+    const { rows: existing } = await db.execute({ sql: 'SELECT category, item_name, variant FROM packaging_raw_materials WHERE id = ?', args: [id] });
+    if (!existing.length) return res.status(404).json({ message: 'Packaging product not found' });
+
+    const names = await referencingVendorNames(existing[0].category, existing[0].item_name, existing[0].variant);
+    if (names.length) {
+      return res.status(400).json({ message: referencedMessage(existing[0].category, existing[0].item_name, existing[0].variant, names) });
+    }
+
     const { rows } = await db.execute({ sql: 'DELETE FROM packaging_raw_materials WHERE id = ? RETURNING category, item_name, variant', args: [id] });
-    if (!rows.length) return res.status(404).json({ message: 'Packaging product not found' });
     await logAction({
       userId: req.user.id,
       actionType: 'PACKAGING_RAW_MATERIAL_DELETE',
@@ -173,11 +208,28 @@ async function bulkDelete(req, res, next) {
     if (!cleanIds.length) return res.status(400).json({ message: 'No valid ids provided' });
 
     const placeholders = cleanIds.map(() => '?').join(',');
+    const { rows: candidates } = await db.execute({
+      sql: `SELECT id, category, item_name, variant FROM packaging_raw_materials WHERE id IN (${placeholders})`,
+      args: cleanIds,
+    });
+
+    // Rows still mapped to a vendor are skipped rather than failing the whole
+    // batch, same convention as bulkUpsert's skipped list below.
+    const skipped = [];
+    const deletableIds = [];
+    for (const row of candidates) {
+      const names = await referencingVendorNames(row.category, row.item_name, row.variant);
+      if (names.length) skipped.push({ id: row.id, reason: referencedMessage(row.category, row.item_name, row.variant, names) });
+      else deletableIds.push(row.id);
+    }
+    if (!deletableIds.length) return res.json({ deleted: 0, skipped });
+
+    const delPlaceholders = deletableIds.map(() => '?').join(',');
     const tx = await db.transaction('write');
     try {
       const { rows } = await tx.execute({
-        sql: `DELETE FROM packaging_raw_materials WHERE id IN (${placeholders}) RETURNING id`,
-        args: cleanIds,
+        sql: `DELETE FROM packaging_raw_materials WHERE id IN (${delPlaceholders}) RETURNING id`,
+        args: deletableIds,
       });
       await logAction({
         client: tx,
@@ -188,7 +240,7 @@ async function bulkDelete(req, res, next) {
         entityId: null,
       });
       await tx.commit();
-      res.json({ deleted: rows.length });
+      res.json({ deleted: rows.length, skipped });
     } catch (e) {
       await tx.rollback();
       throw e;
