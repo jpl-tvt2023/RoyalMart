@@ -372,6 +372,13 @@ export default function OutboundVendorsPage() {
                           disabled={!a.item_name}
                           className={cellCls}
                         >
+                          {/* When every catalog row for this item has a real variant (no
+                              blank/"no variant" row), a fresh a.variant of '' matches no
+                              <option>, and the browser silently displays the first real
+                              variant without ever firing onChange -- the form keeps
+                              believing variant is '' while the UI shows one picked. An
+                              explicit placeholder gives '' something to genuinely match. */}
+                          {!variantOptions.includes('') && <option value="">Select variant...</option>}
                           {variantOptions.map(v => <option key={v} value={v}>{v || '— none —'}</option>)}
                           {orphanVariant && <option value={a.variant}>{a.variant} (not in catalog)</option>}
                         </select>
