@@ -18,6 +18,7 @@ import {
 } from '../../api/outboundPOs.api';
 import { ROLES } from '../../utils/roles';
 import { FLAG_META } from '../../utils/outboundPOFlags';
+import { isValidDateString } from '../../utils/dateValidation';
 import { formatDateTime } from '../../utils/formatters';
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
@@ -238,6 +239,8 @@ export default function OutboundPODetail() {
       toast.error('Approval Date is required when setting or changing the approver');
       return;
     }
+    if (po.po_date && !isValidDateString(po.po_date)) { toast.error('PO date has an invalid year'); return; }
+    if (po.approval_date && !isValidDateString(po.approval_date)) { toast.error('Approval date has an invalid year'); return; }
     const payload = {
       company_id: po.company_id || null,
       po_date: po.po_date || null,

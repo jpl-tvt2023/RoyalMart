@@ -106,17 +106,14 @@ async function update(req, res, next) {
     let nextActive = current.is_active;
     if (has('is_active')) nextActive = req.body.is_active ? 1 : 0;
 
-    // Renaming the identity pair would orphan every packaging product onboarded
-    // under it, so it is blocked while any exist. Casing-only corrections are
-    // still allowed -- those keep matching, since the comparison is NOCASE.
+    // Renaming the identity pair is cascaded onto every packaging product
+    // onboarded under it (and, transitively, any vendor mapping onto those),
+    // since both packaging_raw_materials and outbound_vendor_articles match
+    // by this same text pair rather than by id. Casing-only corrections keep
+    // matching either way, since the comparison is NOCASE.
     const counts = await loadUsageCounts();
     const usage = counts.get(pairKey(current.category, current.item_name)) || 0;
     const renamed = pairKey(nextCategory, nextItemName) !== pairKey(current.category, current.item_name);
-    if (renamed && usage > 0) {
-      return res.status(409).json({
-        message: `${usage} packaging product${usage !== 1 ? 's' : ''} already use "${current.category} / ${current.item_name}" — deactivate this entry instead, or rename those products first`,
-      });
-    }
 
     const changes = diffFields(
       current,
@@ -142,12 +139,30 @@ async function update(req, res, next) {
       });
       updated = rows[0];
 
-      if (metricChanged) {
+      if (renamed) {
+        // Cascade into vendor mappings first, while packaging_raw_materials
+        // still holds the old exact-text pair to match against (its own
+        // rename happens below, using the same OLD pair in its WHERE).
+        const { rows: oldPairs } = await tx.execute({
+          sql: `SELECT DISTINCT category, item_name FROM packaging_raw_materials
+                WHERE LOWER(category) = LOWER(?) AND LOWER(item_name) = LOWER(?)`,
+          args: [current.category, current.item_name],
+        });
+        for (const p of oldPairs) {
+          await tx.execute({
+            sql: `UPDATE outbound_vendor_articles SET category = ?, item_name = ?
+                  WHERE category = ? AND item_name = ?`,
+            args: [nextCategory, nextItemName, p.category, p.item_name],
+          });
+        }
+      }
+
+      if (renamed || metricChanged) {
         await tx.execute({
           sql: `UPDATE packaging_raw_materials
-                SET unit_metric = ?, updated_by = ?, updated_at = datetime('now')
+                SET category = ?, item_name = ?, unit_metric = ?, updated_by = ?, updated_at = datetime('now')
                 WHERE LOWER(category) = LOWER(?) AND LOWER(item_name) = LOWER(?)`,
-          args: [nextUnitMetric, req.user.id, nextCategory, nextItemName],
+          args: [nextCategory, nextItemName, nextUnitMetric, req.user.id, current.category, current.item_name],
         });
       }
 
@@ -156,6 +171,7 @@ async function update(req, res, next) {
         userId: req.user.id,
         actionType: 'OUTBOUND_PRODUCT_UPDATE',
         description: `Updated outbound product ${nextCategory} / ${nextItemName}`
+          + (renamed ? ` — renamed from ${current.category} / ${current.item_name}, applied to ${usage} packaging product${usage !== 1 ? 's' : ''}` : '')
           + (metricChanged ? ` — unit metric ${current.unit_metric} → ${nextUnitMetric}, applied to ${usage} packaging product${usage !== 1 ? 's' : ''}` : ''),
         entityType: 'outbound_product',
         entityId: id,

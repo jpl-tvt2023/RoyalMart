@@ -105,18 +105,27 @@ describe('Packaging Raw Materials API — referential integrity guard', () => {
   });
 
   describe('PUT /api/packaging-raw-materials/:id', () => {
-    test('blocks a rename (identity change) while a vendor still maps to the old identity', async () => {
-      const row = await findCatalogRow('Raw Material', 'Caps');
-      await createVendor([{ category: 'Raw Material', item_name: 'Caps' }]);
+    test('cascades a rename (identity change) onto vendor mappings that still map to the old identity', async () => {
+      const disposable = await createDisposableCatalogRow();
+      const vendor = await createVendor([{ category: disposable.category, item_name: disposable.item_name }]);
       const target = await createOutboundProduct();
 
-      const res = await authed(request(app).put(`/api/packaging-raw-materials/${row.id}`))
+      const res = await authed(request(app).put(`/api/packaging-raw-materials/${disposable.id}`))
         .send({ category: target.body.category, item_name: target.body.item_name });
-      expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/still mapped to vendor/);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ category: target.body.category, item_name: target.body.item_name });
 
-      const unchanged = await findCatalogRow('Raw Material', 'Caps');
-      expect(unchanged.id).toBe(row.id);
+      const renamed = await findCatalogRow(target.body.category, target.body.item_name);
+      expect(renamed.id).toBe(disposable.id);
+
+      const vendors = await authed(request(app).get('/api/outbound-vendors'));
+      const savedVendor = vendors.body.find(v => v.id === vendor.body.id);
+      expect(savedVendor.articles).toContainEqual(
+        expect.objectContaining({ category: target.body.category, item_name: target.body.item_name })
+      );
+      expect(savedVendor.articles.some(a => a.category === disposable.category && a.item_name === disposable.item_name)).toBe(false);
+
+      await cleanup(disposable.category);
       await cleanup(target.body.category);
     });
 

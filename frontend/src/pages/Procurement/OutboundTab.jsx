@@ -14,6 +14,7 @@ import {
   markPackagingOrdered, listPackagingBatches, undoPackagingBatch,
 } from '../../api/procurement.api';
 import { listVendors } from '../../api/vendors.api';
+import { isValidDateString } from '../../utils/dateValidation';
 
 const isoLocal = (d) => {
   const y = d.getFullYear();
@@ -116,6 +117,12 @@ export default function OutboundTab() {
   const openHistory = () => { setHistoryOpen(true); loadBatches(); };
 
   const doMark = async () => {
+    if (filters.po_date_from && !isValidDateString(filters.po_date_from)) {
+      return toast.error('From date has an invalid year');
+    }
+    if (filters.po_date_to && !isValidDateString(filters.po_date_to)) {
+      return toast.error('To date has an invalid year');
+    }
     setMarking(true);
     try {
       const r = await markPackagingOrdered({
