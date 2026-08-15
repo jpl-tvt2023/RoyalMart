@@ -15,6 +15,7 @@ import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { sortByText } from '../../utils/sort';
 import { usesPickupDate } from '../../utils/pickupDate';
+import { isValidDateString } from '../../utils/dateValidation';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 
 // Row highlight for rows with edits not yet saved (single source for row + legend).
@@ -472,6 +473,12 @@ export default function GRNList() {
     // but only enforce when this save actually touches an appointment field, so
     // unrelated edits on legacy rows (appointment date but no companion) still save.
     const touchesAppt = 'appointment_date' in e || 'asn' in e || 'appointment_id' in e;
+    if ('appointment_date' in e && nextAppt && !isValidDateString(nextAppt)) {
+      return toast.error('Appointment date has an invalid year');
+    }
+    if ('grn_date' in e && nextGrnDate && !isValidDateString(nextGrnDate)) {
+      return toast.error('GRN date has an invalid year');
+    }
     if (touchesAppt && String(nextAppt || '').trim()) {
       if (ASN_VENDORS.includes(po.vendor) && !String(nextAsn || '').trim()) {
         return toast.error('ASN is required once an appointment date is set');

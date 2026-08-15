@@ -17,6 +17,7 @@ import { listCouriers } from '../../api/couriers.api';
 import { sortByText } from '../../utils/sort';
 import { formatDateTime } from '../../utils/formatters';
 import { usesPickupDate } from '../../utils/pickupDate';
+import { isValidDateString } from '../../utils/dateValidation';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { useRBAC } from '../../hooks/useRBAC';
 
@@ -251,6 +252,9 @@ export default function OrderSummaryList() {
     const nextCourier  = 'courier_id'    in e ? e.courier_id    : po.courier_id;
     const nextTracking = 'tracking_id'   in e ? e.tracking_id   : po.tracking_id;
     const nextBox       = 'box'          in e ? e.box           : po.box;
+    if ('dispatch_date' in e && nextDispatch && !isValidDateString(nextDispatch)) {
+      return toast.error('Dispatch date has an invalid year');
+    }
     if (nextStatus === 'Closed') {
       const missing = [];
       if (!nextDispatch) missing.push('dispatch date');

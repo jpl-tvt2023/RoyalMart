@@ -13,6 +13,7 @@ import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
 import { formatDateTime } from '../../utils/formatters';
+import { isValidDateString } from '../../utils/dateValidation';
 import { sortByText } from '../../utils/sort';
 import { usesPickupDate } from '../../utils/pickupDate';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
@@ -185,6 +186,9 @@ export default function BuiltyList() {
     const billDate = ('bill_date' in e ? e.bill_date : po.bill_date) ?? '';
     if (billNo !== '' && !billDate) {
       return toast.error('Bill date is required when setting a bill no');
+    }
+    if (billDate && !isValidDateString(billDate)) {
+      return toast.error('Bill date has an invalid year');
     }
     setSavingId(po.po_id);
     try {

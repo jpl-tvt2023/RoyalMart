@@ -1,6 +1,7 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
 const { userHasRole } = require('../services/userRoles.service');
+const { isValidDateString } = require('../utils/dateValidation');
 
 const ORDER_SUMMARY_FIELDS = [
   'office_poc', 'warehouse_poc', 'status', 'dispatch_date', 'courier_id', 'tracking_id', 'box',
@@ -224,7 +225,7 @@ async function updateOne(req, res, next) {
     let nextDispatchDate = current.dispatch_date;
     if (has('dispatch_date')) {
       const d = req.body.dispatch_date;
-      if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+      if (d && !isValidDateString(d)) {
         return res.status(400).json({ message: 'Invalid dispatch_date format (expected YYYY-MM-DD)' });
       }
       if (d && d > new Date().toISOString().slice(0, 10)) {
@@ -375,7 +376,7 @@ async function updateOne(req, res, next) {
     const parseDateField = (val, label) => {
       if (val == null || String(val).trim() === '') return null;
       const s = String(val).trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      if (!isValidDateString(s)) {
         const err = new Error(`Invalid ${label} format (expected YYYY-MM-DD)`);
         err.statusCode = 400;
         throw err;

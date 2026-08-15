@@ -102,7 +102,7 @@ describe('Outbound Product List API', () => {
     });
   });
 
-  describe('PATCH — rename guard and unit metric cascade', () => {
+  describe('PATCH — rename cascade and unit metric cascade', () => {
     test('allows a rename while nothing uses the entry', async () => {
       const created = await createProduct();
       const renamed = `Item ${uid()}`;
@@ -113,19 +113,41 @@ describe('Outbound Product List API', () => {
       await cleanup(created.body.category);
     });
 
-    test('rejects a rename once packaging products use the entry, but still allows deactivation', async () => {
+    test('a rename cascades into packaging products and their vendor mappings', async () => {
       const created = await createProduct();
-      await createPackagingProduct({
+      const pkg = await createPackagingProduct({
         category: created.body.category, item_name: created.body.item_name, variant: '',
       });
+      const { rows: vendorRows } = await db.execute({
+        sql: 'INSERT INTO outbound_vendors (name) VALUES (?) RETURNING id',
+        args: [`Rename Cascade Vendor ${uid()}`],
+      });
+      await db.execute({
+        sql: `INSERT INTO outbound_vendor_articles (vendor_id, category, item_name, variant)
+              VALUES (?, ?, ?, '')`,
+        args: [vendorRows[0].id, created.body.category, created.body.item_name],
+      });
 
+      const renamedItem = `Item ${uid()}`;
       const res = await authed(request(app).patch(`/api/configurations/outbound-products/${created.body.id}`))
-        .send({ item_name: `Item ${uid()}` });
-      expect(res.status).toBe(409);
-      expect(res.body.message).toMatch(/deactivate this entry instead/);
+        .send({ item_name: renamedItem });
+      expect(res.status).toBe(200);
+      expect(res.body.item_name).toBe(renamedItem);
 
-      const del = await authed(request(app).delete(`/api/configurations/outbound-products/${created.body.id}`));
-      expect(del.status).toBe(200);
+      const { rows: pkgRows } = await db.execute({
+        sql: 'SELECT category, item_name FROM packaging_raw_materials WHERE id = ?',
+        args: [pkg.body.id],
+      });
+      expect(pkgRows[0]).toMatchObject({ category: created.body.category, item_name: renamedItem });
+
+      const { rows: articleRows } = await db.execute({
+        sql: 'SELECT category, item_name FROM outbound_vendor_articles WHERE vendor_id = ?',
+        args: [vendorRows[0].id],
+      });
+      expect(articleRows[0]).toMatchObject({ category: created.body.category, item_name: renamedItem });
+
+      await db.execute({ sql: 'DELETE FROM outbound_vendor_articles WHERE vendor_id = ?', args: [vendorRows[0].id] });
+      await db.execute({ sql: 'DELETE FROM outbound_vendors WHERE id = ?', args: [vendorRows[0].id] });
       await cleanup(created.body.category);
     });
 

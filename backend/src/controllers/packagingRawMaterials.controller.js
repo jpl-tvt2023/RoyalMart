@@ -141,31 +141,46 @@ async function update(req, res, next) {
     const unitMetric = listed.unit_metric;
 
     // Only a change to the (category, item_name, variant) identity can orphan
-    // a vendor mapping -- a plain unit_metric edit is always safe.
+    // a vendor mapping -- a plain unit_metric edit is always safe. Rather than
+    // blocking the edit, the rename is cascaded onto any vendor mapping still
+    // pointing at the old identity, since outbound_vendor_articles matches by
+    // this same text triple rather than by id.
     const identityChanged = tripleKey(category, itemName, variant) !==
       tripleKey(existing[0].category, existing[0].item_name, existing[0].variant);
-    if (identityChanged) {
-      const names = await referencingVendorNames(existing[0].category, existing[0].item_name, existing[0].variant);
-      if (names.length) {
-        return res.status(400).json({ message: referencedMessage(existing[0].category, existing[0].item_name, existing[0].variant, names) });
-      }
-    }
 
-    const { rows } = await db.execute({
-      sql: `UPDATE packaging_raw_materials
-            SET category = ?, item_name = ?, variant = ?, unit_metric = ?, updated_by = ?, updated_at = datetime('now')
-            WHERE id = ? RETURNING *`,
-      args: [category, itemName, variant, unitMetric, req.user.id, id],
-    });
-    const changes = diffFields(existing[0], rows[0], PACKAGING_RAW_MATERIAL_FIELDS);
-    await logAction({
-      userId: req.user.id,
-      actionType: 'PACKAGING_RAW_MATERIAL_UPDATE',
-      description: `Updated packaging product ${category} / ${itemName}${variant ? ` / ${variant}` : ''}`,
-      entityType: 'packaging_raw_material',
-      entityId: id,
-      changes,
-    });
+    const tx = await db.transaction('write');
+    let rows;
+    try {
+      ({ rows } = await tx.execute({
+        sql: `UPDATE packaging_raw_materials
+              SET category = ?, item_name = ?, variant = ?, unit_metric = ?, updated_by = ?, updated_at = datetime('now')
+              WHERE id = ? RETURNING *`,
+        args: [category, itemName, variant, unitMetric, req.user.id, id],
+      }));
+
+      if (identityChanged) {
+        await tx.execute({
+          sql: `UPDATE outbound_vendor_articles SET category = ?, item_name = ?, variant = ?
+                WHERE category = ? AND item_name = ? AND COALESCE(variant, '') = ?`,
+          args: [category, itemName, variant, existing[0].category, existing[0].item_name, existing[0].variant || ''],
+        });
+      }
+
+      const changes = diffFields(existing[0], rows[0], PACKAGING_RAW_MATERIAL_FIELDS);
+      await logAction({
+        client: tx,
+        userId: req.user.id,
+        actionType: 'PACKAGING_RAW_MATERIAL_UPDATE',
+        description: `Updated packaging product ${category} / ${itemName}${variant ? ` / ${variant}` : ''}`,
+        entityType: 'packaging_raw_material',
+        entityId: id,
+        changes,
+      });
+      await tx.commit();
+    } catch (e) {
+      await tx.rollback();
+      throw e;
+    }
     res.json(outward(rows[0]));
   } catch (err) {
     if (err.message && err.message.includes('UNIQUE constraint failed')) {

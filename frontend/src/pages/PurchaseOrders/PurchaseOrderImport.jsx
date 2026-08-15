@@ -10,6 +10,7 @@ import { parsePreview, commitPO } from '../../api/marketplacePO.api';
 import { listVendors } from '../../api/vendors.api';
 import { sortByText } from '../../utils/sort';
 import { usesPickupDate } from '../../utils/pickupDate';
+import { isValidDateString } from '../../utils/dateValidation';
 
 export default function PurchaseOrderImport() {
   const navigate = useNavigate();
@@ -83,6 +84,12 @@ export default function PurchaseOrderImport() {
     if (!summary.city) return toast.error('City is required');
     if (usesPickupDate(summary.vendor) && !summary.pickup_date) return toast.error(`Pickup date is required for ${summary.vendor} POs`);
     if (!summary.lines?.length) return toast.error('At least one line item is required');
+    for (const [label, value] of [
+      ['PO date', summary.po_date], ['Pickup date', summary.pickup_date],
+      ['PO expiry date', summary.po_expiry_date], ['Appointment date', summary.appointment_date],
+    ]) {
+      if (value && !isValidDateString(value)) return toast.error(`${label} has an invalid year`);
+    }
     setCommitting(true);
     try {
       const res = await commitPO(summary);

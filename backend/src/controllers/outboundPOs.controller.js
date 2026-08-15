@@ -1,6 +1,7 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
 const { userHasRole } = require('../services/userRoles.service');
+const { isValidDateString } = require('../utils/dateValidation');
 const {
   FLAG_KEYS, poFlagExists, lineFlagExists, receiptFlags, pickFlags, flagSelect,
 } = require('../services/outboundPOFlags');
@@ -426,6 +427,13 @@ async function create(req, res, next) {
   try {
     const { vendor_id, company_id, po_date, approved_by, approval_date, lines } = req.body || {};
 
+    if (po_date && !isValidDateString(po_date)) {
+      return res.status(400).json({ message: 'Invalid po_date format (expected YYYY-MM-DD)' });
+    }
+    if (approval_date && !isValidDateString(approval_date)) {
+      return res.status(400).json({ message: 'Invalid approval_date format (expected YYYY-MM-DD)' });
+    }
+
     const { rows: vendor } = await db.execute({
       sql: 'SELECT id, name, is_active FROM outbound_vendors WHERE id = ?',
       args: [vendor_id],
@@ -522,6 +530,9 @@ async function update(req, res, next) {
         if (!company.length) return res.status(400).json({ message: 'Company not found' });
       }
     }
+    if (has('po_date') && req.body.po_date && !isValidDateString(req.body.po_date)) {
+      return res.status(400).json({ message: 'Invalid po_date format (expected YYYY-MM-DD)' });
+    }
     const nextPoDate = has('po_date') ? (req.body.po_date || null) : current.po_date;
 
     let nextApprovedBy = current.approved_by;
@@ -546,8 +557,14 @@ async function update(req, res, next) {
       if (!suppliedDate) {
         return res.status(400).json({ message: 'Approval Date is required when changing the approver' });
       }
+      if (!isValidDateString(suppliedDate)) {
+        return res.status(400).json({ message: 'Invalid approval_date format (expected YYYY-MM-DD)' });
+      }
       nextApprovalDate = suppliedDate;
     } else if (has('approval_date') && req.body.approval_date) {
+      if (!isValidDateString(req.body.approval_date)) {
+        return res.status(400).json({ message: 'Invalid approval_date format (expected YYYY-MM-DD)' });
+      }
       nextApprovalDate = req.body.approval_date;
     }
 

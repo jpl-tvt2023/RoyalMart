@@ -9,6 +9,7 @@ import { getPO, updatePO } from '../../api/marketplacePO.api';
 import { listCities } from '../../api/cities.api';
 import { sortByText } from '../../utils/sort';
 import { usesPickupDate } from '../../utils/pickupDate';
+import { isValidDateString } from '../../utils/dateValidation';
 
 // Line-item columns shared by the on-screen table header and the XLSX export so
 // their labels/order can't drift apart. `width` styles the <th>; `xlsx` derives
@@ -72,6 +73,9 @@ export default function PurchaseOrderDetail() {
     if (!form.city) return toast.error('City is required');
     if (isPickupVendor && !form.pickup_date) return toast.error(`Pickup date is required for ${form.vendor} POs`);
     if (!form.lines?.length) return toast.error('At least one line item is required');
+    for (const [label, value] of [['PO date', form.po_date], ['Pickup date', form.pickup_date], ['PO expiry date', form.po_expiry_date]]) {
+      if (value && !isValidDateString(value)) return toast.error(`${label} has an invalid year`);
+    }
     setSaving(true);
     try {
       await updatePO(poId, {

@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
+const { isValidDateString } = require('../utils/dateValidation');
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -169,8 +170,8 @@ async function getVendorCounts(req, res, next) {
 async function markOrdered(req, res, next) {
   try {
     const { po_date_from, po_date_to, note, vendor, po_ids } = req.body || {};
-    if (po_date_from && !DATE_RE.test(po_date_from)) return res.status(400).json({ message: 'Invalid po_date_from (YYYY-MM-DD)' });
-    if (po_date_to && !DATE_RE.test(po_date_to))     return res.status(400).json({ message: 'Invalid po_date_to (YYYY-MM-DD)' });
+    if (po_date_from && !isValidDateString(po_date_from)) return res.status(400).json({ message: 'Invalid po_date_from (YYYY-MM-DD)' });
+    if (po_date_to && !isValidDateString(po_date_to))     return res.status(400).json({ message: 'Invalid po_date_to (YYYY-MM-DD)' });
     if (!Array.isArray(po_ids) || po_ids.length === 0) {
       return res.status(400).json({ message: 'Select at least one PO to mark as ordered' });
     }
@@ -430,8 +431,8 @@ async function getOutboundRequirements(req, res, next) {
 async function markPackagingOrdered(req, res, next) {
   try {
     const { po_date_from, po_date_to, note, vendor, po_ids } = req.body || {};
-    if (po_date_from && !DATE_RE.test(po_date_from)) return res.status(400).json({ message: 'Invalid po_date_from (YYYY-MM-DD)' });
-    if (po_date_to && !DATE_RE.test(po_date_to))     return res.status(400).json({ message: 'Invalid po_date_to (YYYY-MM-DD)' });
+    if (po_date_from && !isValidDateString(po_date_from)) return res.status(400).json({ message: 'Invalid po_date_from (YYYY-MM-DD)' });
+    if (po_date_to && !isValidDateString(po_date_to))     return res.status(400).json({ message: 'Invalid po_date_to (YYYY-MM-DD)' });
     if (!Array.isArray(po_ids) || po_ids.length === 0) {
       return res.status(400).json({ message: 'Select at least one PO to mark as packaging-ordered' });
     }

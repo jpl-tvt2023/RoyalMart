@@ -1,6 +1,7 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
 const { parse, hasParser } = require('../parsers/marketplacePO');
+const { isValidDateString } = require('../utils/dateValidation');
 
 const VALID_STATUSES = ['Open', 'Closed'];
 
@@ -239,7 +240,7 @@ function validatePayload(body) {
     if (!Number.isFinite(Number(ln.qty)) || Number(ln.qty) <= 0) return 'Each line needs a positive qty';
   }
   for (const d of [po_date, po_expiry_date, pickup_date]) {
-    if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return `Invalid date format: ${d}`;
+    if (d && !isValidDateString(d)) return `Invalid date format: ${d}`;
   }
   return null;
 }
@@ -264,7 +265,7 @@ async function create(req, res, next) {
     let appointment_date = null;
     if (req.body.appointment_date != null && String(req.body.appointment_date).trim() !== '') {
       appointment_date = String(req.body.appointment_date).trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(appointment_date)) {
+      if (!isValidDateString(appointment_date)) {
         return res.status(400).json({ message: 'Invalid appointment_date format (expected YYYY-MM-DD)' });
       }
     }
