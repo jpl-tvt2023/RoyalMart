@@ -305,13 +305,28 @@ function withOrderNo(row) {
 // condition even if present in query — used by getItemNameCounts so every
 // tab's badge reflects "how many POs would show given today's OTHER filters".
 function buildListWhere(query, { excludeItemName = false } = {}) {
-  const { order_no, vendor_id, status, po_date_from, po_date_to, flag, item_name } = query;
+  const { order_no, vendor_id, status, po_date_from, po_date_to, flag, item_name, incoming_no, bill_no } = query;
   const conditions = [];
   const args = [];
   if (order_no) {
     const n = parseInt(String(order_no).replace(/^0+/, ''), 10);
     if (Number.isInteger(n)) { conditions.push('p.id = ?'); args.push(n); }
     else { conditions.push('0'); }
+  }
+  if (incoming_no) {
+    const n = parseInt(String(incoming_no).replace(/^0+/, ''), 10);
+    if (Number.isInteger(n)) {
+      conditions.push(`EXISTS (SELECT 1 FROM outbound_po_lines l JOIN outbound_po_line_receipts r ON r.line_id = l.id
+        WHERE l.po_id = p.id AND l.deleted_at IS NULL AND r.deleted_at IS NULL AND r.incoming_no = ?)`);
+      args.push(n);
+    } else {
+      conditions.push('0');
+    }
+  }
+  if (bill_no) {
+    conditions.push(`EXISTS (SELECT 1 FROM outbound_po_lines l JOIN outbound_po_line_receipts r ON r.line_id = l.id
+      WHERE l.po_id = p.id AND l.deleted_at IS NULL AND r.deleted_at IS NULL AND r.bill_no LIKE ?)`);
+    args.push(`%${bill_no}%`);
   }
   if (vendor_id) { conditions.push('p.vendor_id = ?'); args.push(vendor_id); }
   if (po_date_from) { conditions.push('p.po_date >= ?'); args.push(po_date_from); }
