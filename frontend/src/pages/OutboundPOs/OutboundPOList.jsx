@@ -37,6 +37,7 @@ const STATUS_MULTI_OPTIONS = ['Open', 'Partially Received', 'Closed'];
 const defaultFilters = () => ({
   order_no: '', vendor_id: '', status: ['Open', 'Partially Received'], show_deleted: false,
   po_date_from: '', po_date_to: '', flags: ['rate_mismatch', 'missing_incoming_no'],
+  incoming_no: '', bill_no: '',
 });
 
 // Checkbox dropdown used by both the Status and Flags filters — mirrors
@@ -221,6 +222,8 @@ export default function OutboundPOList() {
     const itn = overrides?.itemNameTab ?? itemNameTab;
     const params = { page: p, page_size: ps, sort_by: s.key, sort_dir: s.dir };
     if (f.order_no) params.order_no = f.order_no;
+    if (f.incoming_no) params.incoming_no = f.incoming_no;
+    if (f.bill_no) params.bill_no = f.bill_no;
     if (f.vendor_id) params.vendor_id = f.vendor_id;
     if (f.po_date_from) params.po_date_from = f.po_date_from;
     if (f.po_date_to) params.po_date_to = f.po_date_to;
@@ -390,6 +393,14 @@ export default function OutboundPOList() {
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Order No</label>
             <input value={filters.order_no} onChange={e => setFilter('order_no', e.target.value)} onKeyDown={onSearchKey} placeholder="e.g. 001" className={inputCls} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Incoming No</label>
+            <input value={filters.incoming_no} onChange={e => setFilter('incoming_no', e.target.value)} onKeyDown={onSearchKey} placeholder="e.g. 1234" className={inputCls} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Bill No</label>
+            <input value={filters.bill_no} onChange={e => setFilter('bill_no', e.target.value)} onKeyDown={onSearchKey} placeholder="Search bill no..." className={inputCls} />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Vendor</label>
