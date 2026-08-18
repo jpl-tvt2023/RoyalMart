@@ -51,18 +51,32 @@ describe('Outbound Product List API', () => {
       expect(res.body.message).toMatch(new RegExp(`${field} is required`));
     });
 
-    test('rejects a duplicate category + item name, case-insensitively', async () => {
+    test('rejects a duplicate category + item name + unit metric, case-insensitively', async () => {
       const category = `Cat ${uid()}`;
       const itemName = `Item ${uid()}`;
-      const first = await createProduct({ category, item_name: itemName });
+      const first = await createProduct({ category, item_name: itemName, unit_metric: 'pcs' });
       expect(first.status).toBe(201);
 
       const second = await createProduct({
         category: category.toUpperCase(),
         item_name: itemName.toUpperCase(),
+        unit_metric: 'PCS',
       });
       expect(second.status).toBe(409);
       expect(second.body.message).toMatch(/already in the Outbound Product List/);
+      await cleanup(category);
+    });
+
+    // The reason unit metric joined the key in migration 064.
+    test('accepts the same category + item name under a different unit metric', async () => {
+      const category = `Cat ${uid()}`;
+      const itemName = `Item ${uid()}`;
+      const pcs = await createProduct({ category, item_name: itemName, unit_metric: 'pcs' });
+      expect(pcs.status).toBe(201);
+
+      const mtr = await createProduct({ category, item_name: itemName, unit_metric: 'mtr' });
+      expect(mtr.status).toBe(201);
+      expect(mtr.body.id).not.toBe(pcs.body.id);
       await cleanup(category);
     });
 

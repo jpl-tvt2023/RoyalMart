@@ -16,6 +16,14 @@ export const FLAG_META = {
     color: 'yellow',
     hint: 'This receipt was saved without a warehouse incoming number',
   },
+  // PO-level rather than receipt-level, so it never appears on a line or
+  // receipt badge — only on the PO row.
+  not_approved: {
+    label: 'Not Approved',
+    short: 'Not Appr',
+    color: 'orange',
+    hint: 'This PO has no Approved By value',
+  },
 };
 
 export const FLAG_KEYS = Object.keys(FLAG_META);

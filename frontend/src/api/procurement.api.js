@@ -30,10 +30,14 @@ export async function undoBatch(id) {
   return data;
 }
 
-// ── Outbound (packaging/barcode demand) ─────────────────────────────────────
+// ── Outbound (packaging / barcode demand) ───────────────────────────────────
+//
+// One set of endpoints serves both the Packaging Material and Barcode tabs,
+// selected by `kind` ('packaging' | 'barcode'). The server defaults to
+// 'packaging' when it is omitted.
 
-export async function getOutboundDefaults() {
-  const { data } = await api.get('/procurement/outbound/defaults');
+export async function getOutboundDefaults(kind) {
+  const { data } = await api.get('/procurement/outbound/defaults', { params: { kind } });
   return data;
 }
 
@@ -52,12 +56,12 @@ export async function markPackagingOrdered(payload) {
   return data;
 }
 
-export async function listPackagingBatches() {
-  const { data } = await api.get('/procurement/outbound/batches');
+export async function listPackagingBatches(kind) {
+  const { data } = await api.get('/procurement/outbound/batches', { params: { kind } });
   return data;
 }
 
-export async function undoPackagingBatch(id) {
-  const { data } = await api.delete(`/procurement/outbound/batches/${id}`);
+export async function undoPackagingBatch(id, kind) {
+  const { data } = await api.delete(`/procurement/outbound/batches/${id}`, { params: { kind } });
   return data;
 }

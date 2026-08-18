@@ -904,9 +904,13 @@ describe('Outbound POs API', () => {
   });
 
   describe('Exception flags', () => {
-    async function setupLine({ qty = 5, rate = 10 } = {}) {
+    // `approved` matters since not_approved became a flag: a PO created without
+    // an approver is never "clean", so any test about clean POs must opt in.
+    async function setupLine({ qty = 5, rate = 10, approved = false } = {}) {
       const vendor = await createVendor();
-      const created = await createPO({ vendor_id: vendor.body.id, lines: [lineFor(vendor.body.articles[0], { qty, rate })] });
+      const body = { vendor_id: vendor.body.id, lines: [lineFor(vendor.body.articles[0], { qty, rate })] };
+      if (approved) { body.approved_by = adminUserId; body.approval_date = '2026-01-01'; }
+      const created = await createPO(body);
       const [lineId] = await lineIdsOf(created.body.id);
       return { poId: created.body.id, lineId };
     }
@@ -971,7 +975,7 @@ describe('Outbound POs API', () => {
     test('filtering by flag returns only matching POs, and ?flag=none only clean ones', async () => {
       const dirty = await setupLine();
       await postReceipt(dirty.poId, dirty.lineId, { received_qty: 1 }); // no incoming_no
-      const clean = await setupLine();
+      const clean = await setupLine({ approved: true });
       await postReceipt(clean.poId, clean.lineId, { received_qty: 1, incoming_no: 7 });
 
       const flagged = await listPOs({ flag: 'missing_incoming_no', page_size: 'all' });
@@ -1003,12 +1007,58 @@ describe('Outbound POs API', () => {
       const all = await listPOs({ flag: 'missing_incoming_no', page_size: 'all' });
       expect(paged.body.total).toBe(all.body.rows.length);
     });
+
+    test('a PO with no approver is flagged Not Approved, one with an approver is not', async () => {
+      const unapproved = await setupLine();
+      const approved = await setupLine({ approved: true });
+      const list = await listPOs({ page_size: 'all' });
+      const rowFor = (id) => list.body.rows.find(r => r.id === id);
+      expect(rowFor(unapproved.poId).flags).toContain('not_approved');
+      expect(rowFor(approved.poId).flags).not.toContain('not_approved');
+    });
+
+    // The reason not_approved is NOT wrapped in the receipt EXISTS: a PO with no
+    // receipts at all would otherwise never flag, which is the exact case an
+    // unapproved PO is most likely to be in.
+    test('a PO with no receipts at all is still flagged Not Approved', async () => {
+      const { poId } = await setupLine();
+      const list = await listPOs({ order_no: String(poId) });
+      expect(list.body.rows[0].flags).toEqual(['not_approved']);
+    });
+
+    test('Not Approved is PO-scoped — it never appears on a line or a receipt', async () => {
+      const { poId, lineId } = await setupLine();
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10, incoming_no: 1 });
+      const detail = await getPO(poId);
+      expect(detail.body.flags).toContain('not_approved');
+      expect(detail.body.lines[0].flags).not.toContain('not_approved');
+      expect(detail.body.lines[0].receipts[0].flags).not.toContain('not_approved');
+    });
+
+    test('?flag=not_approved returns only POs missing an approver', async () => {
+      const unapproved = await setupLine();
+      const approved = await setupLine({ approved: true });
+      const res = await listPOs({ flag: 'not_approved', page_size: 'all' });
+      const ids = res.body.rows.map(r => r.id);
+      expect(ids).toContain(unapproved.poId);
+      expect(ids).not.toContain(approved.poId);
+    });
   });
 
   // The SQL predicates and their JS twins in outboundPOFlags.js are duplicated
-  // on purpose; this pins them together so they cannot drift.
+  // on purpose; this pins them together so they cannot drift. Only receipt-
+  // scoped flags have a JS twin — PO-scoped ones are covered by the
+  // 'Exception flags' cases above instead.
   describe('Flag SQL/JS parity', () => {
-    const { FLAGS, FLAG_KEYS } = require('../src/services/outboundPOFlags');
+    const { FLAGS, RECEIPT_FLAG_KEYS } = require('../src/services/outboundPOFlags');
+
+    test('every receipt-scoped flag has a JS predicate, and no PO-scoped flag does', () => {
+      const { FLAG_KEYS } = require('../src/services/outboundPOFlags');
+      for (const k of FLAG_KEYS) {
+        const hasJs = typeof FLAGS[k].js === 'function';
+        expect(hasJs).toBe(RECEIPT_FLAG_KEYS.includes(k));
+      }
+    });
 
     test.each([
       [{ received_rate: 12, incoming_no: 1 }, { rate: 10 }, ['rate_mismatch']],
@@ -1018,7 +1068,7 @@ describe('Outbound POs API', () => {
       [{ received_rate: 12, incoming_no: null }, { rate: 10 }, ['rate_mismatch', 'missing_incoming_no']],
       [{ received_rate: null, incoming_no: 1 }, { rate: 10 }, []],
     ])('receipt %j against line %j yields %j', (receipt, line, expected) => {
-      const actual = FLAG_KEYS.filter(k => FLAGS[k].js(receipt, line));
+      const actual = RECEIPT_FLAG_KEYS.filter(k => FLAGS[k].js(receipt, line));
       expect(actual.sort()).toEqual([...expected].sort());
     });
   });

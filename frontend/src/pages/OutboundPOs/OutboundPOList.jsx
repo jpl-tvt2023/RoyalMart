@@ -34,9 +34,12 @@ const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'g
 
 const STATUS_MULTI_OPTIONS = ['Open', 'Partially Received', 'Closed'];
 
+// Every flag option selected by default, which is equivalent to no flag filter
+// at all — the list opens showing every PO rather than silently hiding the
+// clean ones. Spreading FLAG_FILTER_OPTIONS keeps that true as flags are added.
 const defaultFilters = () => ({
   order_no: '', vendor_id: '', status: ['Open', 'Partially Received'], show_deleted: false,
-  po_date_from: '', po_date_to: '', flags: ['rate_mismatch', 'missing_incoming_no'],
+  po_date_from: '', po_date_to: '', flags: [...FLAG_FILTER_OPTIONS],
   incoming_no: '', bill_no: '',
 });
 

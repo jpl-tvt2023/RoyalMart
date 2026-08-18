@@ -155,4 +155,54 @@ describe('Packaging Raw Materials API — referential integrity guard', () => {
       await cleanup(target.body.category);
     });
   });
+
+  // Migration 064 let one (category, item_name) pair be listed under several
+  // unit metrics, so the pair alone no longer determines the metric.
+  describe('unit metric resolution against the Outbound Product List', () => {
+    // Two Outbound Product entries sharing a pair but differing in metric.
+    async function createAmbiguousPair() {
+      const pcs = await createOutboundProduct({ unit_metric: 'pcs' });
+      const { category, item_name: itemName } = pcs.body;
+      const mtr = await createOutboundProduct({ category, item_name: itemName, unit_metric: 'mtr' });
+      expect(mtr.status).toBe(201);
+      return { category, itemName };
+    }
+
+    test('an unambiguous pair still ignores the submitted metric entirely', async () => {
+      const product = await createOutboundProduct({ unit_metric: 'roll' });
+      const { category, item_name: itemName } = product.body;
+
+      const res = await createPackagingProduct({ category, item_name: itemName, unit_metric: 'nonsense' });
+      expect(res.status).toBe(201);
+      expect(res.body.unit_metric).toBe('roll');
+      await cleanup(category);
+    });
+
+    test('an ambiguous pair is rejected when no metric is given', async () => {
+      const { category, itemName } = await createAmbiguousPair();
+
+      const res = await createPackagingProduct({ category, item_name: itemName });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/more than one unit metric/);
+      await cleanup(category);
+    });
+
+    test('an ambiguous pair is rejected when the metric is not one of its options', async () => {
+      const { category, itemName } = await createAmbiguousPair();
+
+      const res = await createPackagingProduct({ category, item_name: itemName, unit_metric: 'roll' });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/more than one unit metric/);
+      await cleanup(category);
+    });
+
+    test('an ambiguous pair resolves to whichever metric was chosen', async () => {
+      const { category, itemName } = await createAmbiguousPair();
+
+      const res = await createPackagingProduct({ category, item_name: itemName, variant: 'A', unit_metric: 'mtr' });
+      expect(res.status).toBe(201);
+      expect(res.body.unit_metric).toBe('mtr');
+      await cleanup(category);
+    });
+  });
 });

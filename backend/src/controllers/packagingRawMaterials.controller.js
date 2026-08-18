@@ -21,15 +21,47 @@ const outward = (row) => ({ ...row, variant: row.variant || null });
 // validateArticles in outboundVendors.controller.js, one level up: that file
 // validates vendor mappings against this catalog, this one validates the
 // catalog against the taxonomy above it.
+//
+// Since migration 064 one pair can be listed under several unit metrics, so the
+// index is pair -> [rows] rather than pair -> row.
 async function loadOutboundProducts() {
   const { rows } = await db.execute(
-    'SELECT category, item_name, unit_metric FROM outbound_products WHERE is_active = 1'
+    `SELECT category, item_name, unit_metric FROM outbound_products
+     WHERE is_active = 1
+     ORDER BY unit_metric COLLATE NOCASE`
   );
-  return new Map(rows.map(r => [pairKey(r.category, r.item_name), r]));
+  const map = new Map();
+  for (const r of rows) {
+    const k = pairKey(r.category, r.item_name);
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(r);
+  }
+  return map;
 }
 
 const unlistedMessage = (category, itemName) =>
   `"${category} / ${itemName}" is not in the Outbound Product List — add it under Configurations → Outbound Product List first`;
+
+const ambiguousMetricMessage = (category, itemName, options) =>
+  `"${category} / ${itemName}" is listed under more than one unit metric (${options.map(o => o.unit_metric).join(', ')}) — say which one this product uses`;
+
+// Resolves the Outbound Product entry a submitted row refers to, returning
+// either { listed } or { error }.
+//
+// A pair with exactly one metric ignores the submitted metric entirely: the
+// master stays the single source of truth, every existing caller keeps working,
+// and a spreadsheet carrying a stale unit_metric column is still accepted. Only
+// a genuinely ambiguous pair requires the caller to say which metric it means.
+function resolveListed(master, category, itemName, submittedMetric) {
+  const options = master.get(pairKey(category, itemName));
+  if (!options || !options.length) return { error: unlistedMessage(category, itemName) };
+  if (options.length === 1) return { listed: options[0] };
+
+  const metric = normText(submittedMetric).toLowerCase();
+  const match = metric && options.find(o => normText(o.unit_metric).toLowerCase() === metric);
+  if (!match) return { error: ambiguousMetricMessage(category, itemName, options) };
+  return { listed: match };
+}
 
 // Deleting or renaming a catalog row out from under a vendor that still maps
 // to it leaves that vendor permanently unsaveable (validateArticles in
@@ -92,10 +124,11 @@ async function create(req, res, next) {
     // Category, item name and unit metric all come from the Outbound Product
     // List: the stored values are canonicalised to the master's casing, and the
     // unit metric is taken from it rather than from the request, so the master
-    // stays the single source of truth for it.
+    // stays the single source of truth for it. The request's unit_metric only
+    // ever selects between the master's own options for an ambiguous pair.
     const master = await loadOutboundProducts();
-    const listed = master.get(pairKey(inputCategory, inputItemName));
-    if (!listed) return res.status(400).json({ message: unlistedMessage(inputCategory, inputItemName) });
+    const { listed, error } = resolveListed(master, inputCategory, inputItemName, req.body.unit_metric);
+    if (error) return res.status(400).json({ message: error });
     const category = listed.category;
     const itemName = listed.item_name;
     const unitMetric = listed.unit_metric;
@@ -134,8 +167,10 @@ async function update(req, res, next) {
     if (!inputItemName) return res.status(400).json({ message: 'item_name is required' });
 
     const master = await loadOutboundProducts();
-    const listed = master.get(pairKey(inputCategory, inputItemName));
-    if (!listed) return res.status(400).json({ message: unlistedMessage(inputCategory, inputItemName) });
+    const { listed, error } = resolveListed(
+      master, inputCategory, inputItemName, req.body.unit_metric ?? existing[0].unit_metric
+    );
+    if (error) return res.status(400).json({ message: error });
     const category = listed.category;
     const itemName = listed.item_name;
     const unitMetric = listed.unit_metric;
@@ -291,10 +326,12 @@ async function bulkUpsert(req, res, next) {
       if (!inputCategory) { skipped.push({ row: i + 2, reason: 'Missing category' }); continue; }
       if (!inputItemName) { skipped.push({ row: i + 2, reason: 'Missing item_name' }); continue; }
 
-      // A unit_metric column in the sheet is ignored -- it comes from the
-      // Outbound Product List, as does the canonical casing of the pair.
-      const listed = master.get(pairKey(inputCategory, inputItemName));
-      if (!listed) { skipped.push({ row: i + 2, reason: unlistedMessage(inputCategory, inputItemName) }); continue; }
+      // The sheet's unit_metric column is ignored unless the pair is listed
+      // under several metrics, in which case it selects between them -- the
+      // value still comes from the Outbound Product List either way, as does
+      // the canonical casing of the pair.
+      const { listed, error } = resolveListed(master, inputCategory, inputItemName, r.unit_metric);
+      if (error) { skipped.push({ row: i + 2, reason: error }); continue; }
       const category = listed.category;
       const itemName = listed.item_name;
       const unitMetric = listed.unit_metric;
