@@ -8,7 +8,7 @@ import Login from './pages/Login';
 import ForcePasswordReset from './pages/ForcePasswordReset';
 import Dashboard from './pages/Dashboard';
 import UserManagement from './pages/admin/UserManagement';
-import GlobalConfig from './pages/admin/GlobalConfig';
+import PurchaseConfig from './pages/admin/PurchaseConfig';
 import PurchaseOrdersList from './pages/PurchaseOrders/PurchaseOrdersList';
 import PurchaseOrderImport from './pages/PurchaseOrders/PurchaseOrderImport';
 import PurchaseOrderDetail from './pages/PurchaseOrders/PurchaseOrderDetail';
@@ -21,7 +21,6 @@ import ProcurementPage from './pages/Procurement/ProcurementPage';
 import OutboundVendorsPage from './pages/OutboundVendors/OutboundVendorsPage';
 import OutboundPOList from './pages/OutboundPOs/OutboundPOList';
 import OutboundPODetail from './pages/OutboundPOs/OutboundPODetail';
-import PackagingList from './pages/packaging/PackagingList';
 import { ALL_ROLES, ADMIN_ONLY } from './utils/roles';
 
 export default function App() {
@@ -54,9 +53,13 @@ export default function App() {
             <ProtectedRoute roles={ADMIN_ONLY}><UserManagement /></ProtectedRoute>
           } />
 
-          <Route path="/admin/global-config" element={
-            <ProtectedRoute roles={ADMIN_ONLY}><GlobalConfig /></ProtectedRoute>
+          <Route path="/admin/purchase-config" element={
+            <ProtectedRoute roles={ADMIN_ONLY}><PurchaseConfig /></ProtectedRoute>
           } />
+          {/* Both pages folded into Purchase Config — kept so existing links and
+              bookmarks land somewhere useful instead of 404ing. */}
+          <Route path="/admin/global-config" element={<Navigate to="/admin/purchase-config" replace />} />
+          <Route path="/packaging-items" element={<Navigate to="/admin/purchase-config" replace />} />
 
           <Route path="/products" element={
             <ProtectedRoute roles={ALL_ROLES}><ProductList /></ProtectedRoute>
@@ -92,9 +95,6 @@ export default function App() {
             <ProtectedRoute roles={ALL_ROLES}><ConfigurationsPage /></ProtectedRoute>
           } />
 
-          <Route path="/packaging-items" element={
-            <ProtectedRoute roles={ALL_ROLES}><PackagingList /></ProtectedRoute>
-          } />
           <Route path="/outbound/purchase-orders" element={
             <ProtectedRoute roles={ALL_ROLES}><OutboundPOList /></ProtectedRoute>
           } />

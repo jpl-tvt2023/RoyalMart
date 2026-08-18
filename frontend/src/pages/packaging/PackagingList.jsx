@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
-import AppShell from '../../components/layout/AppShell';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
@@ -62,38 +61,27 @@ function BulkDeleteBar({ count, onDelete, onClear }) {
 // ───────────────────────────── bulk-upload config ─────────────────────────────
 
 // unit_metric stays in the template columns so a downloaded export can be
-// edited and re-uploaded round-trip, but it is no longer required or read — the
-// Outbound Product List owns it.
+// edited and re-uploaded round-trip. The Outbound Product List still owns the
+// value; the column is only read to choose between metrics when an item is
+// listed under more than one.
 const rawMaterialUploadConfig = {
   title: 'Bulk Upload Packaging Products',
   templateFileName: 'packaging-products-template.xlsx',
   headers: ['category', 'item_name', 'variant', 'unit_metric'],
   sampleRow: ['Packaging', 'Corrugated', '5 Ply', 'pcs'],
   requiredKeys: ['category', 'item_name'],
-  instructions: 'Category + Item Name must already exist in Configurations → Outbound Product List; rows that do not match are skipped. Variant is optional — leave it blank for an item that has no variants. The unit metric column is ignored: it is taken from the Outbound Product List. Rows whose Category + Item Name + Variant match an existing product are updated, new combinations are added.',
+  instructions: 'Category + Item Name must already exist in Configurations → Outbound Product List; rows that do not match are skipped. Variant is optional — leave it blank for an item that has no variants. The unit metric is taken from the Outbound Product List, so that column is normally ignored — fill it in only when an item is listed there under more than one metric, to say which one applies. Rows whose Category + Item Name + Variant match an existing product are updated, new combinations are added.',
   submit: (rows) => bulkUpsertPackagingRawMaterials(rows),
 };
 
-export default function PackagingList() {
-  return (
-    <AppShell>
-      <div className="mb-4">
-        <h1 className="text-2xl font-bold text-[#003049]">Packaging Products</h1>
-        <p className="text-gray-500 text-sm">
-          The master article catalog (Category · Item Name · Variant · Unit Metric) that outbound vendors map to and outbound POs draw from
-        </p>
-      </div>
-
-      <PackagingCatalogTab />
-    </AppShell>
-  );
-}
-
 // ───────────────────────── Packaging Products catalog ─────────────────────────
 
+// Rendered as the "Packaging Items" tab of Admin -> Purchase Config, which owns
+// the page shell and heading. Exported as the default so this file stays the
+// single home of the catalog UI.
 const EMPTY_RAW_MATERIAL = { category: '', item_name: '', variant: '', unit_metric: '' };
 
-function PackagingCatalogTab() {
+export default function PackagingCatalogTab() {
   const { canEdit: canWrite } = useRBAC();
 
   const [rows, setRows] = useState([]);
@@ -210,9 +198,24 @@ function PackagingCatalogTab() {
     return map;
   }, [masterRows]);
 
-  const unitMetricFor = (category, itemName) => masterRows.find(
-    m => m.category === category && m.item_name === itemName,
-  )?.unit_metric || '';
+  // Since migration 064 a pair can be listed under several unit metrics (the
+  // "Barcode / Barcode" in pcs and in mtr case), so this returns all of them.
+  // One option means the metric is still decided entirely by the master and the
+  // field stays read-only -- only a genuinely ambiguous pair asks the user.
+  const unitMetricsFor = (category, itemName) => [...new Set(
+    masterRows
+      .filter(m => m.category === category && m.item_name === itemName)
+      .map(m => m.unit_metric)
+      .filter(Boolean),
+  )];
+
+  const unitMetricFor = (category, itemName) => {
+    const options = unitMetricsFor(category, itemName);
+    return options.length === 1 ? options[0] : '';
+  };
+
+  const metricOptions = unitMetricsFor(form.category, form.item_name);
+  const metricIsAmbiguous = metricOptions.length > 1;
 
   // A product onboarded before its entry was deactivated or renamed keeps that
   // value selectable, so the row stays editable instead of silently resetting.
@@ -462,17 +465,37 @@ function PackagingCatalogTab() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Unit Metric</label>
-            {/* Read-only: the metric belongs to the item in the Outbound Product
-                List, and the server takes it from there regardless of what is
-                submitted here. Change it on that tab to change it everywhere. */}
-            <input
-              readOnly
-              value={form.unit_metric}
-              placeholder={form.item_name ? '—' : 'Set by the selected item'}
-              className={`${inputCls} bg-gray-50 text-gray-600`}
-            />
-            <p className="mt-1 text-xs text-gray-400">Set on Configurations → Outbound Product List</p>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Unit Metric {metricIsAmbiguous && <span className="text-red-500">*</span>}
+            </label>
+            {metricIsAmbiguous ? (
+              /* The item is listed under more than one metric, so the master
+                 cannot decide this one -- the user picks between its options. */
+              <select
+                required
+                value={form.unit_metric}
+                onChange={e => setForm(f => ({ ...f, unit_metric: e.target.value }))}
+                className={inputCls}
+              >
+                <option value="">Select unit metric…</option>
+                {metricOptions.map(u => <option key={u} value={u}>{u}</option>)}
+              </select>
+            ) : (
+              /* Read-only: the metric belongs to the item in the Outbound Product
+                 List, and the server takes it from there regardless of what is
+                 submitted here. Change it on that tab to change it everywhere. */
+              <input
+                readOnly
+                value={form.unit_metric}
+                placeholder={form.item_name ? '—' : 'Set by the selected item'}
+                className={`${inputCls} bg-gray-50 text-gray-600`}
+              />
+            )}
+            <p className="mt-1 text-xs text-gray-400">
+              {metricIsAmbiguous
+                ? 'This item is listed under more than one unit metric on Configurations → Outbound Product List'
+                : 'Set on Configurations → Outbound Product List'}
+            </p>
           </div>
           <div className="flex gap-3 justify-end pt-2">
             <Button variant="ghost" type="button" onClick={() => setModal(null)}>Cancel</Button>

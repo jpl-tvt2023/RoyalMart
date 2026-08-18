@@ -12,7 +12,8 @@ import {
 
 // The Outbound Product List: the Category / Item Name / Unit Metric taxonomy
 // that drives the dropdowns when packaging products are onboarded on
-// /packaging-items. MasterTab cannot be reused here -- it is built around a
+// Admin -> Purchase Config -> Packaging Items. MasterTab cannot be reused
+// here -- it is built around a
 // single `name` field -- so this mirrors its layout and behaviour instead.
 
 const EMPTY = { category: '', item_name: '', unit_metric: '', is_active: true };

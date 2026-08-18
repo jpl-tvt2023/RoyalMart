@@ -3,7 +3,7 @@ const { logAction, diffFields } = require('../services/auditLog.service');
 const { userHasRole } = require('../services/userRoles.service');
 const { isValidDateString } = require('../utils/dateValidation');
 const {
-  FLAG_KEYS, poFlagExists, lineFlagExists, receiptFlags, pickFlags, flagSelect,
+  FLAG_KEYS, RECEIPT_FLAG_KEYS, poFlagExists, lineFlagExists, receiptFlags, pickFlags, flagSelect,
 } = require('../services/outboundPOFlags');
 
 const VALID_STATUSES = ['Open', 'Partially Received', 'Closed'];
@@ -203,7 +203,7 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
                  ub.name AS updated_by_name,
                  COALESCE((SELECT SUM(r.received_qty) FROM outbound_po_line_receipts r
                            WHERE r.line_id = l.id AND r.deleted_at IS NULL), 0) AS received,
-                 ${flagSelect(lineFlagExists)}
+                 ${flagSelect(lineFlagExists, RECEIPT_FLAG_KEYS)}
           FROM outbound_po_lines l
           LEFT JOIN users ub ON ub.id = l.updated_by
           WHERE l.po_id IN (${placeholders}) ${deletedClause}

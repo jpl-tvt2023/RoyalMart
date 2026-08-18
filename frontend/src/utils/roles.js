@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, ClipboardList, Package, Truck, ClipboardCheck,
   Tag, Settings, Users, SlidersHorizontal,
-  ShoppingCart, PackageSearch, PackageOpen, Send, Store, Boxes, Building2,
+  ShoppingCart, PackageSearch, PackageOpen, Send, Store, Building2,
 } from 'lucide-react';
 
 export const ROLES = {
@@ -105,13 +105,6 @@ export const NAV = [
         roles: ALL_ROLES,
       },
       {
-        label: 'Packaging Items',
-        path: '/packaging-items',
-        icon: Boxes,
-        description: 'Master packaging article catalog',
-        roles: ALL_ROLES,
-      },
-      {
         label: 'Cities, Vendors & Masters',
         path: '/configurations',
         icon: Store,
@@ -139,10 +132,10 @@ export const NAV = [
         roles: ADMIN_ONLY,
       },
       {
-        label: 'Global Config',
-        path: '/admin/global-config',
+        label: 'Purchase Config',
+        path: '/admin/purchase-config',
         icon: Building2,
-        description: 'Company master data',
+        description: 'Company master data & packaging article catalog',
         roles: ADMIN_ONLY,
       },
     ],

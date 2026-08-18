@@ -26,19 +26,42 @@ const todayISO = () => isoLocal(new Date());
 
 const EMPTY = { pos: [], articles: [], po_count: 0, unmapped_line_count: 0, unmapped_samples: [] };
 
+// Copy that differs between the two kinds this component serves. Everything
+// else — the matrix, the vendor tabs, marking ordered, the history drawer — is
+// identical, which is why Packaging Material and Barcode are one component
+// rendered twice rather than two near-duplicate files.
+const KIND_COPY = {
+  packaging: {
+    noun: 'packaging',
+    articlesLabel: 'packaging products',
+    requirementHint: 'Add the missing vendor mapping, or add Packaging Product requirements to the SKU.',
+    sheetName: 'Packaging Procurement',
+  },
+  barcode: {
+    noun: 'barcode',
+    articlesLabel: 'barcodes',
+    requirementHint: 'Add the missing vendor mapping, or add Barcode requirements to the SKU.',
+    sheetName: 'Barcode Procurement',
+  },
+};
+
 // Same vendor tabs as Inbound — the point of this tab is to check, PO by PO,
-// packaging/barcode status for the same inbound POs Inbound shows.
-export default function OutboundTab() {
+// packaging/barcode status for the same inbound POs the Raw Material tab shows.
+//
+// Session keys are namespaced by `kind` so the two tabs keep independent date
+// filters and vendor selections instead of stomping on each other.
+export default function OutboundTab({ kind = 'packaging' }) {
   const { canEdit } = useRBAC();
+  const copy = KIND_COPY[kind];
 
   const [data, setData] = useState(EMPTY);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useSessionState('procurement.outbound.filters', { po_date_from: '', po_date_to: '' });
-  const seeded = useRef(hasSessionState('procurement.outbound.filters'));
+  const [filters, setFilters] = useSessionState(`procurement.${kind}.filters`, { po_date_from: '', po_date_to: '' });
+  const seeded = useRef(hasSessionState(`procurement.${kind}.filters`));
 
   const ALL_TAB = { key: 'All', label: 'All' };
   const [vendorTabs, setVendorTabs] = useState([ALL_TAB]);
-  const [vendorTab, setVendorTab] = useSessionState('procurement.outbound.vendorTab', 'All');
+  const [vendorTab, setVendorTab] = useSessionState(`procurement.${kind}.vendorTab`, 'All');
   const [vendorCounts, setVendorCounts] = useState({});
   const [confirmMark, setConfirmMark] = useState(false);
   const [marking, setMarking] = useState(false);
@@ -51,7 +74,7 @@ export default function OutboundTab() {
 
   const load = useCallback((f, vendor) => {
     setLoading(true);
-    const params = {};
+    const params = { kind };
     if (f.po_date_from) params.po_date_from = f.po_date_from;
     if (f.po_date_to) params.po_date_to = f.po_date_to;
     if (vendor && vendor !== 'All') params.vendor = vendor;
@@ -60,9 +83,9 @@ export default function OutboundTab() {
         setData(d);
         setSelected(new Set());
       })
-      .catch(() => toast.error('Failed to load packaging requirements'))
+      .catch(() => toast.error(`Failed to load ${copy.noun} requirements`))
       .finally(() => setLoading(false));
-  }, []);
+  }, [kind, copy.noun]);
 
   useEffect(() => {
     listVendors()
@@ -71,13 +94,13 @@ export default function OutboundTab() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadCounts = useCallback((f) => {
-    const params = {};
+    const params = { kind };
     if (f.po_date_from) params.po_date_from = f.po_date_from;
     if (f.po_date_to) params.po_date_to = f.po_date_to;
     return getOutboundVendorCounts(params)
       .then(res => setVendorCounts(res.counts || {}))
       .catch(() => {});
-  }, []);
+  }, [kind]);
 
   useEffect(() => {
     if (seeded.current) {
@@ -85,7 +108,7 @@ export default function OutboundTab() {
       load(filters, vendorTab);
       return;
     }
-    getOutboundDefaults()
+    getOutboundDefaults(kind)
       .then(d => {
         const f = { po_date_from: d.po_date_from || '', po_date_to: todayISO() };
         setFilters(f);
@@ -109,7 +132,7 @@ export default function OutboundTab() {
 
   const loadBatches = () => {
     setBatchesLoading(true);
-    listPackagingBatches()
+    listPackagingBatches(kind)
       .then(setBatches)
       .catch(() => toast.error('Failed to load history'))
       .finally(() => setBatchesLoading(false));
@@ -126,24 +149,25 @@ export default function OutboundTab() {
     setMarking(true);
     try {
       const r = await markPackagingOrdered({
+        kind,
         po_ids: [...selected],
         po_date_from: filters.po_date_from || undefined,
         po_date_to: filters.po_date_to || undefined,
         vendor: vendorTab !== 'All' ? vendorTab : undefined,
       });
-      toast.success(`Marked ${r.po_count} PO${r.po_count !== 1 ? 's' : ''} as packaging-ordered`);
+      toast.success(`Marked ${r.po_count} PO${r.po_count !== 1 ? 's' : ''} as ${copy.noun}-ordered`);
       setConfirmMark(false);
       load(filters, vendorTab);
       loadCounts(filters);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to mark as packaging-ordered');
+      toast.error(err.response?.data?.message || `Failed to mark as ${copy.noun}-ordered`);
     } finally { setMarking(false); }
   };
 
   const doUndo = async (batch) => {
     setUndoingId(batch.id);
     try {
-      const r = await undoPackagingBatch(batch.id);
+      const r = await undoPackagingBatch(batch.id, kind);
       toast.success(`Returned ${r.po_count} PO${r.po_count !== 1 ? 's' : ''} to pending`);
       loadBatches();
       load(filters, vendorTab);
@@ -156,7 +180,7 @@ export default function OutboundTab() {
   const exportXLSX = () => {
     const { pos, articles } = data;
     if (!articles.length) { toast('Nothing to export'); return; }
-    const header = ['Category', 'Item Name', 'Variant', 'Total Required', ...pos.map(p => `${p.po_id} · ${p.po_date || '—'} · ${p.vendor}${p.ordered ? ' (packaging-ordered)' : ''}`)];
+    const header = ['Category', 'Item Name', 'Variant', 'Total Required', ...pos.map(p => `${p.po_id} · ${p.po_date || '—'} · ${p.vendor}${p.ordered ? ` (${copy.noun}-ordered)` : ''}`)];
     const body = articles.map(a => [
       a.category,
       a.item_name,
@@ -166,11 +190,11 @@ export default function OutboundTab() {
     ]);
     const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Outbound Procurement');
+    XLSX.utils.book_append_sheet(wb, ws, copy.sheetName);
     const from = filters.po_date_from || 'all';
     const to = filters.po_date_to || 'all';
     const scope = vendorTab === 'All' ? 'all-vendors' : vendorTab.toLowerCase();
-    XLSX.writeFile(wb, `procurement-outbound-${scope}-${from}_${to}.xlsx`);
+    XLSX.writeFile(wb, `procurement-${kind}-${scope}-${from}_${to}.xlsx`);
   };
 
   const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
@@ -243,7 +267,7 @@ export default function OutboundTab() {
         <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />
           <div>
-            <span className="font-medium">{data.unmapped_line_count} PO line{data.unmapped_line_count !== 1 ? 's' : ''}</span> couldn&apos;t be matched to a SKU with packaging/barcode requirements and {data.unmapped_line_count !== 1 ? 'are' : 'is'} not counted below. Add the missing vendor mapping, or add Packaging Product / Barcode requirements to the SKU.
+            <span className="font-medium">{data.unmapped_line_count} PO line{data.unmapped_line_count !== 1 ? 's' : ''}</span> couldn&apos;t be matched to a SKU with {copy.noun} requirements and {data.unmapped_line_count !== 1 ? 'are' : 'is'} not counted below. {copy.requirementHint}
             {data.unmapped_samples?.length > 0 && (
               <details className="mt-2">
                 <summary className="cursor-pointer text-xs font-medium text-amber-800 hover:underline">Show details</summary>
@@ -357,7 +381,7 @@ export default function OutboundTab() {
             </tbody>
           </table>
           {!loading && articles.length === 0 && (
-            <p className="text-center text-gray-400 py-8">No packaging/barcode products yet — add them on the Packaging Products page.</p>
+            <p className="text-center text-gray-400 py-8">No {copy.articlesLabel} yet — add them under Admin → Purchase Config → Packaging Items.</p>
           )}
           {!loading && articles.length > 0 && pos.length === 0 && (
             <p className="text-center text-gray-400 py-8">No POs in the selected date range.</p>
@@ -369,8 +393,8 @@ export default function OutboundTab() {
         isOpen={confirmMark}
         onClose={() => setConfirmMark(false)}
         onConfirm={doMark}
-        title="Mark POs as packaging-ordered"
-        message={`Mark ${selected.size} selected PO${selected.size !== 1 ? 's' : ''} as packaging-ordered? They'll drop out of the Total (and the default view next time). This is independent of raw-material ordering. You can undo this from Ordered history.`}
+        title={`Mark POs as ${copy.noun}-ordered`}
+        message={`Mark ${selected.size} selected PO${selected.size !== 1 ? 's' : ''} as ${copy.noun}-ordered? They'll drop out of the Total (and the default view next time). This is tracked separately from raw-material and ${kind === 'packaging' ? 'barcode' : 'packaging'} ordering. You can undo this from Ordered history.`}
         confirmLabel="Mark as ordered"
         loading={marking}
       />

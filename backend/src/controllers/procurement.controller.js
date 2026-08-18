@@ -1,6 +1,7 @@
 const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
 const { isValidDateString } = require('../utils/dateValidation');
+const { excludedItemNameSql } = require('../services/packagingExclusions');
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -260,42 +261,93 @@ async function undoBatch(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// ── Outbound (packaging/barcode demand) ─────────────────────────────────────
+// ── Outbound (packaging / barcode demand) ───────────────────────────────────
 //
 // Mirrors the Inbound raw-material flow above, but explodes marketplace PO
-// lines into packaging/barcode article demand (product_packaging_requirements
-// UNION ALL product_barcode_requirements -> packaging_raw_materials) instead
-// of raw-material demand, and tracks "ordered" independently via
-// packaging_procurement_batch_id/packaging_ordered_at so a PO can be
-// raw-ordered and packaging-ordered on separate schedules.
+// lines into packaging or barcode article demand (a requirements table joined
+// to packaging_raw_materials) instead of raw-material demand, and tracks
+// "ordered" independently of raw-material ordering so a PO can be raw-ordered,
+// packaging-ordered and barcode-ordered on three separate schedules.
 //
+// Packaging and Barcode are two front-end tabs over ONE implementation,
+// parameterised by `kind`. They differ only in which requirements table feeds
+// demand, which catalog category forms the roster, and which batch table/column
+// records "ordered". Every identifier below is read from this map -- never from
+// request input -- so interpolating them into SQL is safe. resolveKind() is the
+// only entry point, and it rejects anything not spelled out here.
+const OUTBOUND_KINDS = {
+  packaging: {
+    label: 'packaging',
+    category: 'Packaging',
+    reqTable: 'product_packaging_requirements',
+    batchTable: 'procurement_packaging_batches',
+    batchCol: 'packaging_procurement_batch_id',
+    orderedAtCol: 'packaging_ordered_at',
+    entityType: 'procurement_packaging_batch',
+    markAction: 'PROCUREMENT_PACKAGING_MARK_ORDERED',
+    undoAction: 'PROCUREMENT_PACKAGING_UNDO',
+    // Corrugated lives under category 'Packaging' but is bought outside this
+    // flow, so it is filtered out of both the roster and the demand join.
+    excludeItems: true,
+  },
+  barcode: {
+    label: 'barcode',
+    category: 'Barcode',
+    reqTable: 'product_barcode_requirements',
+    batchTable: 'procurement_barcode_batches',
+    batchCol: 'barcode_procurement_batch_id',
+    orderedAtCol: 'barcode_ordered_at',
+    entityType: 'procurement_barcode_batch',
+    markAction: 'PROCUREMENT_BARCODE_MARK_ORDERED',
+    undoAction: 'PROCUREMENT_BARCODE_UNDO',
+    excludeItems: false,
+  },
+};
+
+// Defaults to packaging so a client that predates the split keeps working.
+function resolveKind(raw) {
+  const key = raw == null || raw === '' ? 'packaging' : String(raw);
+  return OUTBOUND_KINDS[key] || null;
+}
+
+const unknownKind = (res) =>
+  res.status(400).json({ message: `kind must be one of: ${Object.keys(OUTBOUND_KINDS).join(', ')}` });
+
+// The article-exclusion predicate for a kind, as an AND-able SQL fragment.
+const kindItemFilter = (kind, alias) =>
+  (kind.excludeItems ? ` AND ${excludedItemNameSql(alias)}` : '');
+
 // The Outbound UI's tabs are the same vendor tabs as Inbound (All + one per
 // active marketplace vendor) — the whole point is to check, PO by PO, what
 // packaging/barcode status looks like for the same inbound POs you'd see on
-// the Inbound tab. `vendor` narrows the matrix exactly like Inbound's does;
-// the article roster (rows) is always shown in full regardless of vendor tab,
-// same as Inbound always shows the full raw_products roster.
+// the Raw Material tab. `vendor` narrows the matrix exactly like Inbound's
+// does; the article roster (rows) is always shown in full regardless of vendor
+// tab, same as Inbound always shows the full raw_products roster.
 
 async function getOutboundDefaults(req, res, next) {
   try {
+    const kind = resolveKind(req.query.kind);
+    if (!kind) return unknownKind(res);
     const { rows } = await db.execute(
       `SELECT
-         (SELECT date(MAX(po_date), '+1 day') FROM marketplace_pos WHERE packaging_procurement_batch_id IS NOT NULL AND po_date IS NOT NULL AND status <> 'Deleted') AS after_last_ordered,
+         (SELECT date(MAX(po_date), '+1 day') FROM marketplace_pos WHERE ${kind.batchCol} IS NOT NULL AND po_date IS NOT NULL AND status <> 'Deleted') AS after_last_ordered,
          (SELECT MIN(po_date) FROM marketplace_pos WHERE po_date IS NOT NULL AND status <> 'Deleted') AS earliest`
     );
     res.json({ po_date_from: rows[0]?.after_last_ordered || rows[0]?.earliest || null });
   } catch (err) { next(err); }
 }
 
-// Per-vendor count of not-yet-packaging-ordered POs in the date range (drives
-// the Outbound vendor tab badges) — mirrors getVendorCounts, scoped by the
-// packaging batch column instead of the raw-material one.
+// Per-vendor count of not-yet-ordered POs in the date range for this kind
+// (drives the vendor tab badges) — mirrors getVendorCounts, scoped by the
+// kind's batch column instead of the raw-material one.
 async function getOutboundVendorCounts(req, res, next) {
   try {
+    const kind = resolveKind(req.query.kind);
+    if (!kind) return unknownKind(res);
     const { where, args } = scopeWhere({
       po_date_from: req.query.po_date_from,
       po_date_to: req.query.po_date_to,
-    }, 'packaging_procurement_batch_id');
+    }, kind.batchCol);
     const { rows } = await db.execute({
       sql: `SELECT po.vendor AS vendor, COUNT(*) AS n
             FROM marketplace_pos po
@@ -317,43 +369,46 @@ async function getOutboundVendorCounts(req, res, next) {
 
 async function getOutboundRequirements(req, res, next) {
   try {
+    const kind = resolveKind(req.query.kind);
+    if (!kind) return unknownKind(res);
     const { where, args } = rangeWhere(req.query);
 
+    // Excluded articles are filtered out of the demand join as well as the
+    // roster, so a SKU that still requires one cannot reintroduce it as a
+    // phantom row or inflate an unmapped-line count.
+    const demandFilter = kindItemFilter(kind, 'prm');
+
     const [{ rows: posRows }, { rows: cellRows }, { rows: allArticleRows }, { rows: unmappedRows }, { rows: unmappedSamples }] = await Promise.all([
-      // Every PO in the date range, with its packaging-ordered flag.
+      // Every PO in the date range, with its ordered flag for this kind.
       db.execute({
         sql: `SELECT po.po_id, po.po_date, po.vendor,
-                     CASE WHEN po.packaging_procurement_batch_id IS NOT NULL THEN 1 ELSE 0 END AS ordered
+                     CASE WHEN po.${kind.batchCol} IS NOT NULL THEN 1 ELSE 0 END AS ordered
               FROM marketplace_pos po
               WHERE ${where}
               ORDER BY po.po_date, po.po_id`,
         args,
       }),
-      // Per (packaging/barcode article, PO) required qty across the range.
+      // Per (article, PO) required qty across the range.
       db.execute({
         sql: `SELECT prm.id AS packaging_raw_material_id, po.po_id, SUM(l.qty * areq.qty) AS qty
               FROM marketplace_pos po
               JOIN marketplace_po_lines l    ON l.po_id = po.po_id
               JOIN product_vendor_codes pvc  ON pvc.vendor = po.vendor AND pvc.vendor_item_code = l.item_code
               JOIN products p                ON p.id = pvc.product_id
-              JOIN (
-                SELECT product_id, packaging_raw_material_id, qty FROM product_packaging_requirements
-                UNION ALL
-                SELECT product_id, packaging_raw_material_id, qty FROM product_barcode_requirements
-              ) areq ON areq.product_id = p.id
+              JOIN ${kind.reqTable} areq     ON areq.product_id = p.id
               JOIN packaging_raw_materials prm ON prm.id = areq.packaging_raw_material_id
-              WHERE ${where}
+              WHERE ${where}${demandFilter}
               GROUP BY prm.id, po.po_id`,
         args,
       }),
-      // Full packaging+barcode article roster so every article is listed (0 when nothing requires it).
+      // Full article roster for this kind, so every article is listed (0 when nothing requires it).
       db.execute(
         `SELECT id, category, item_name, variant, unit_metric
          FROM packaging_raw_materials
-         WHERE category IN ('Packaging','Barcode') COLLATE NOCASE
+         WHERE category = '${kind.category}' COLLATE NOCASE${kindItemFilter(kind, 'packaging_raw_materials')}
          ORDER BY item_name COLLATE NOCASE, variant COLLATE NOCASE`
       ),
-      // Lines in range that don't expand to any packaging/barcode requirement
+      // Lines in range that don't expand to any requirement of this kind
       // (no vendor mapping, or a SKU without those requirements yet).
       db.execute({
         sql: `SELECT COUNT(*) AS n
@@ -361,9 +416,9 @@ async function getOutboundRequirements(req, res, next) {
               JOIN marketplace_po_lines l ON l.po_id = po.po_id
               LEFT JOIN product_vendor_codes pvc ON pvc.vendor = po.vendor AND pvc.vendor_item_code = l.item_code
               LEFT JOIN (
-                SELECT product_id FROM product_packaging_requirements
-                UNION
-                SELECT product_id FROM product_barcode_requirements
+                SELECT DISTINCT req.product_id FROM ${kind.reqTable} req
+                JOIN packaging_raw_materials prm ON prm.id = req.packaging_raw_material_id
+                WHERE 1 = 1${demandFilter}
               ) areq ON areq.product_id = pvc.product_id
               WHERE ${where} AND areq.product_id IS NULL`,
         args,
@@ -374,9 +429,9 @@ async function getOutboundRequirements(req, res, next) {
               JOIN marketplace_po_lines l ON l.po_id = po.po_id
               LEFT JOIN product_vendor_codes pvc ON pvc.vendor = po.vendor AND pvc.vendor_item_code = l.item_code
               LEFT JOIN (
-                SELECT product_id FROM product_packaging_requirements
-                UNION
-                SELECT product_id FROM product_barcode_requirements
+                SELECT DISTINCT req.product_id FROM ${kind.reqTable} req
+                JOIN packaging_raw_materials prm ON prm.id = req.packaging_raw_material_id
+                WHERE 1 = 1${demandFilter}
               ) areq ON areq.product_id = pvc.product_id
               WHERE ${where} AND areq.product_id IS NULL
               ORDER BY po.po_id, l.item_code
@@ -430,14 +485,16 @@ async function getOutboundRequirements(req, res, next) {
 
 async function markPackagingOrdered(req, res, next) {
   try {
-    const { po_date_from, po_date_to, note, vendor, po_ids } = req.body || {};
+    const { kind: kindKey, po_date_from, po_date_to, note, vendor, po_ids } = req.body || {};
+    const kind = resolveKind(kindKey);
+    if (!kind) return unknownKind(res);
     if (po_date_from && !isValidDateString(po_date_from)) return res.status(400).json({ message: 'Invalid po_date_from (YYYY-MM-DD)' });
     if (po_date_to && !isValidDateString(po_date_to))     return res.status(400).json({ message: 'Invalid po_date_to (YYYY-MM-DD)' });
     if (!Array.isArray(po_ids) || po_ids.length === 0) {
-      return res.status(400).json({ message: 'Select at least one PO to mark as packaging-ordered' });
+      return res.status(400).json({ message: `Select at least one PO to mark as ${kind.label}-ordered` });
     }
 
-    const { where, args } = scopeWhere({ po_date_from, po_date_to, vendor, po_ids }, 'packaging_procurement_batch_id');
+    const { where, args } = scopeWhere({ po_date_from, po_date_to, vendor, po_ids }, kind.batchCol);
     const { rows: targets } = await db.execute({
       sql: `SELECT po.po_id FROM marketplace_pos po WHERE ${where}`,
       args,
@@ -448,7 +505,7 @@ async function markPackagingOrdered(req, res, next) {
     const tx = await db.transaction('write');
     try {
       const { rows: batchRows } = await tx.execute({
-        sql: `INSERT INTO procurement_packaging_batches (po_date_from, po_date_to, po_count, note, created_by)
+        sql: `INSERT INTO ${kind.batchTable} (po_date_from, po_date_to, po_count, note, created_by)
               VALUES (?, ?, ?, ?, ?) RETURNING id`,
         args: [po_date_from || null, po_date_to || null, poIds.length, (note && String(note).trim()) || null, req.user.id],
       });
@@ -456,16 +513,16 @@ async function markPackagingOrdered(req, res, next) {
       const placeholders = poIds.map(() => '?').join(',');
       await tx.execute({
         sql: `UPDATE marketplace_pos
-              SET packaging_procurement_batch_id = ?, packaging_ordered_at = datetime('now')
+              SET ${kind.batchCol} = ?, ${kind.orderedAtCol} = datetime('now')
               WHERE po_id IN (${placeholders})`,
         args: [batchId, ...poIds],
       });
       await logAction({
         client: tx,
         userId: req.user.id,
-        actionType: 'PROCUREMENT_PACKAGING_MARK_ORDERED',
-        description: `Marked ${poIds.length} PO(s) as packaging-ordered${po_date_from || po_date_to ? ` (${po_date_from || '…'} – ${po_date_to || '…'})` : ''}`,
-        entityType: 'procurement_packaging_batch',
+        actionType: kind.markAction,
+        description: `Marked ${poIds.length} PO(s) as ${kind.label}-ordered${po_date_from || po_date_to ? ` (${po_date_from || '…'} – ${po_date_to || '…'})` : ''}`,
+        entityType: kind.entityType,
         entityId: batchId,
       });
       await tx.commit();
@@ -479,10 +536,12 @@ async function markPackagingOrdered(req, res, next) {
 
 async function listPackagingBatches(req, res, next) {
   try {
+    const kind = resolveKind(req.query.kind);
+    if (!kind) return unknownKind(res);
     const { rows } = await db.execute(
       `SELECT b.id, b.po_date_from, b.po_date_to, b.po_count, b.note, b.created_at,
               u.name AS created_by_name
-       FROM procurement_packaging_batches b
+       FROM ${kind.batchTable} b
        LEFT JOIN users u ON u.id = b.created_by
        ORDER BY b.created_at DESC
        LIMIT 50`
@@ -493,23 +552,25 @@ async function listPackagingBatches(req, res, next) {
 
 async function undoPackagingBatch(req, res, next) {
   try {
+    const kind = resolveKind(req.query.kind);
+    if (!kind) return unknownKind(res);
     const { id } = req.params;
-    const { rows: existing } = await db.execute({ sql: 'SELECT id, po_count FROM procurement_packaging_batches WHERE id = ?', args: [id] });
+    const { rows: existing } = await db.execute({ sql: `SELECT id, po_count FROM ${kind.batchTable} WHERE id = ?`, args: [id] });
     if (!existing.length) return res.status(404).json({ message: 'Batch not found' });
 
     const tx = await db.transaction('write');
     try {
       await tx.execute({
-        sql: `UPDATE marketplace_pos SET packaging_procurement_batch_id = NULL, packaging_ordered_at = NULL WHERE packaging_procurement_batch_id = ?`,
+        sql: `UPDATE marketplace_pos SET ${kind.batchCol} = NULL, ${kind.orderedAtCol} = NULL WHERE ${kind.batchCol} = ?`,
         args: [id],
       });
-      await tx.execute({ sql: 'DELETE FROM procurement_packaging_batches WHERE id = ?', args: [id] });
+      await tx.execute({ sql: `DELETE FROM ${kind.batchTable} WHERE id = ?`, args: [id] });
       await logAction({
         client: tx,
         userId: req.user.id,
-        actionType: 'PROCUREMENT_PACKAGING_UNDO',
-        description: `Undid packaging procurement batch #${id} (${existing[0].po_count} PO(s) returned to pending)`,
-        entityType: 'procurement_packaging_batch',
+        actionType: kind.undoAction,
+        description: `Undid ${kind.label} procurement batch #${id} (${existing[0].po_count} PO(s) returned to pending)`,
+        entityType: kind.entityType,
         entityId: id,
       });
       await tx.commit();

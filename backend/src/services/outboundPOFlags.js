@@ -8,10 +8,18 @@
 // silent drift on a production ERP. There is direct precedent: a line's
 // `received` total is already a correlated subquery for the same reason.
 //
-// Each flag exposes BOTH a SQL predicate and an equivalent JS predicate. The
-// SQL drives list filtering/sorting, the JS labels individual receipts on the
-// detail page. They are deliberately duplicated, so a parity test pins them
-// together.
+// Each RECEIPT-scoped flag exposes BOTH a SQL predicate and an equivalent JS
+// predicate. The SQL drives list filtering/sorting, the JS labels individual
+// receipts on the detail page. They are deliberately duplicated, so a parity
+// test pins them together.
+//
+// `scope` distinguishes the two kinds of predicate:
+//   'receipt' (default) -- reads the receipt alias `r` (and the line alias `l`).
+//       Rolled up to line level and PO level by the EXISTS wrappers below.
+//   'po'                -- reads the outbound_pos alias `p` directly. There is
+//       no per-line or per-receipt equivalent (approval is a property of the PO
+//       header), so these flags carry no `js` predicate and are excluded from
+//       the line/receipt flag lists rather than being wrapped in EXISTS.
 
 // Half a paisa. Rates round-trip through SQLite REAL, so an exact !== would
 // flag pairs that are equal for every practical purpose.
@@ -39,31 +47,50 @@ const FLAGS = {
     sql: 'r.incoming_no IS NULL',
     js: (r) => r.incoming_no == null,
   },
+  not_approved: {
+    label: 'Not Approved',
+    short: 'Not Appr',
+    color: 'orange',
+    scope: 'po',
+    // approved_by is optional at creation but mandatory on every later edit, so
+    // in practice this surfaces POs created and never touched again, plus rows
+    // that predate the mandatory-approver rule.
+    sql: 'p.approved_by IS NULL',
+  },
 };
 
 const FLAG_KEYS = Object.keys(FLAGS);
 
-// Correlates on the OUTER alias `p` (outbound_pos), for the list query.
-const poFlagExists = (k) => `EXISTS (
+// Flags that describe a receipt. Everything the line- and receipt-level views
+// can meaningfully label, and the only ones with a `js` predicate to pair
+// against the SQL.
+const RECEIPT_FLAG_KEYS = FLAG_KEYS.filter(k => (FLAGS[k].scope || 'receipt') === 'receipt');
+
+// Correlates on the OUTER alias `p` (outbound_pos), for the list query. A
+// PO-scoped predicate already reads `p`, so it is used as-is -- wrapping it in
+// the receipt EXISTS would make it silently false for any PO with no receipts.
+const poFlagExists = (k) => (FLAGS[k].scope === 'po' ? `(${FLAGS[k].sql})` : `EXISTS (
   SELECT 1 FROM outbound_po_lines l
   JOIN outbound_po_line_receipts r ON r.line_id = l.id
   WHERE l.po_id = p.id AND l.deleted_at IS NULL AND r.deleted_at IS NULL
-    AND (${FLAGS[k].sql}))`;
+    AND (${FLAGS[k].sql}))`);
 
 // Correlates on the OUTER alias `l` (outbound_po_lines), so l.rate resolves to
-// the outer line -- which is exactly what rate_mismatch needs.
+// the outer line -- which is exactly what rate_mismatch needs. Only ever called
+// with RECEIPT_FLAG_KEYS.
 const lineFlagExists = (k) => `EXISTS (
   SELECT 1 FROM outbound_po_line_receipts r
   WHERE r.line_id = l.id AND r.deleted_at IS NULL AND (${FLAGS[k].sql}))`;
 
-const receiptFlags = (receipt, line) => FLAG_KEYS.filter(k => FLAGS[k].js(receipt, line));
+const receiptFlags = (receipt, line) => RECEIPT_FLAG_KEYS.filter(k => FLAGS[k].js(receipt, line));
 
-// The EXISTS columns come back as 0/1 -- collapse them into a key array.
+// The EXISTS columns come back as 0/1 -- collapse them into a key array. Safe
+// for line rows too: they simply carry no flag_ column for the PO-scoped keys.
 const pickFlags = (row) => FLAG_KEYS.filter(k => row[`flag_${k}`]);
 
-const flagSelect = (fn) => FLAG_KEYS.map(k => `${fn(k)} AS flag_${k}`).join(',\n');
+const flagSelect = (fn, keys = FLAG_KEYS) => keys.map(k => `${fn(k)} AS flag_${k}`).join(',\n');
 
 module.exports = {
-  FLAGS, FLAG_KEYS, RATE_EPSILON,
+  FLAGS, FLAG_KEYS, RECEIPT_FLAG_KEYS, RATE_EPSILON,
   poFlagExists, lineFlagExists, receiptFlags, pickFlags, flagSelect,
 };

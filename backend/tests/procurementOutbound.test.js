@@ -16,10 +16,16 @@ beforeAll(async () => {
   token = res.body.accessToken;
   const { rows } = await db.execute('SELECT id FROM users ORDER BY id LIMIT 1');
   adminId = rows[0].id;
+
+  // A test that fails mid-way skips its own cleanupPO, and the leftover PO then
+  // skews the po_count assertions of every later run against this shared DB.
+  // Sweep the namespace up front so one failure can't cascade into the next run.
+  await db.execute("DELETE FROM marketplace_po_lines WHERE po_id LIKE 'TESTPO-%'");
+  await db.execute("DELETE FROM marketplace_pos WHERE po_id LIKE 'TESTPO-%'");
 });
 
-async function createArticle(category, variant = '') {
-  const item_name = `Item ${uid()}`;
+async function createArticle(category, variant = '', itemNamePrefix = 'Item') {
+  const item_name = `${itemNamePrefix} ${uid()}`;
   const taxonomy = await authed(request(app).post('/api/configurations/outbound-products')).send({
     category, item_name, unit_metric: 'pcs',
   });
@@ -79,11 +85,11 @@ async function cleanupPO(poId) {
 }
 
 describe('Outbound (packaging/barcode) procurement', () => {
-  test('computes packaging + barcode demand from SKU requirements and marketplace PO lines', async () => {
+  test('computes packaging demand from SKU requirements and marketplace PO lines', async () => {
     const { poId, poDate, sku, packaging, barcode } = await seedDemand({ packagingQty: 2, barcodeQty: 1, lineQty: 5 });
 
     const res = await authed(request(app).get('/api/procurement/outbound/requirements'))
-      .query({ po_date_from: poDate, po_date_to: poDate });
+      .query({ kind: 'packaging', po_date_from: poDate, po_date_to: poDate });
     expect(res.status).toBe(200);
 
     expect(res.body.pos.some(p => p.po_id === poId && p.ordered === false)).toBe(true);
@@ -94,10 +100,122 @@ describe('Outbound (packaging/barcode) procurement', () => {
     expect(pkgArticle.quantities[poId]).toBe(10); // 5 (line qty) * 2 (requirement qty)
     expect(pkgArticle.total_required_qty).toBe(10);
 
+    // Barcode is its own tab now — it must not leak into the packaging roster.
+    expect(res.body.articles.some(a => a.packaging_raw_material_id === barcode.id)).toBe(false);
+    expect(res.body.articles.every(a => a.category === 'Packaging')).toBe(true);
+
+    await cleanupPO(poId);
+    await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [sku.body.id] });
+  });
+
+  test('computes barcode demand under kind=barcode, without packaging articles', async () => {
+    const { poId, poDate, sku, packaging, barcode } = await seedDemand({
+      packagingQty: 2, barcodeQty: 1, lineQty: 5, poDate: '2026-08-04',
+    });
+
+    const res = await authed(request(app).get('/api/procurement/outbound/requirements'))
+      .query({ kind: 'barcode', po_date_from: poDate, po_date_to: poDate });
+    expect(res.status).toBe(200);
+
     const bcArticle = res.body.articles.find(a => a.packaging_raw_material_id === barcode.id);
     expect(bcArticle).toBeDefined();
     expect(bcArticle.category).toBe('Barcode');
     expect(bcArticle.quantities[poId]).toBe(5); // 5 (line qty) * 1 (requirement qty)
+
+    expect(res.body.articles.some(a => a.packaging_raw_material_id === packaging.id)).toBe(false);
+    expect(res.body.articles.every(a => a.category === 'Barcode')).toBe(true);
+
+    await cleanupPO(poId);
+    await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [sku.body.id] });
+  }, 15000);
+
+  test('omitting kind defaults to packaging', async () => {
+    const res = await authed(request(app).get('/api/procurement/outbound/requirements'))
+      .query({ po_date_from: '2026-08-01', po_date_to: '2026-08-01' });
+    expect(res.status).toBe(200);
+    expect(res.body.articles.every(a => a.category === 'Packaging')).toBe(true);
+  });
+
+  test('an unknown kind is rejected', async () => {
+    const res = await authed(request(app).get('/api/procurement/outbound/requirements'))
+      .query({ kind: 'bogus' });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/kind must be one of/);
+  });
+
+  // Corrugated is bought outside this flow. It is an item_name under category
+  // 'Packaging', so the exclusion is by name rather than by category.
+  test('Corrugated packaging articles are excluded from the packaging roster', async () => {
+    const corrugated = await createArticle('Packaging', '5 Ply', 'Corrugated');
+
+    const res = await authed(request(app).get('/api/procurement/outbound/requirements'))
+      .query({ kind: 'packaging', po_date_from: '2026-08-01', po_date_to: '2026-08-01' });
+    expect(res.status).toBe(200);
+    expect(res.body.articles.some(a => a.packaging_raw_material_id === corrugated.id)).toBe(false);
+    expect(res.body.articles.some(a => /^corrugated/i.test(a.item_name))).toBe(false);
+
+    await db.execute({ sql: 'DELETE FROM packaging_raw_materials WHERE id = ?', args: [corrugated.id] });
+    await db.execute({ sql: 'DELETE FROM outbound_products WHERE item_name = ?', args: [corrugated.item_name] });
+  });
+
+  test('marking one kind ordered leaves the other kind pending', async () => {
+    const { poId, poDate, sku } = await seedDemand({ lineQty: 4, poDate: '2026-08-05' });
+
+    const mark = await authed(request(app).post('/api/procurement/outbound/mark-ordered'))
+      .send({ kind: 'packaging', po_ids: [poId], po_date_from: poDate, po_date_to: poDate });
+    expect(mark.status).toBe(201);
+
+    const pkg = await authed(request(app).get('/api/procurement/outbound/requirements'))
+      .query({ kind: 'packaging', po_date_from: poDate, po_date_to: poDate });
+    expect(pkg.body.pos.find(p => p.po_id === poId).ordered).toBe(true);
+
+    const bc = await authed(request(app).get('/api/procurement/outbound/requirements'))
+      .query({ kind: 'barcode', po_date_from: poDate, po_date_to: poDate });
+    expect(bc.body.pos.find(p => p.po_id === poId).ordered).toBe(false);
+
+    const { rows } = await db.execute({
+      sql: `SELECT packaging_procurement_batch_id, barcode_procurement_batch_id
+            FROM marketplace_pos WHERE po_id = ?`,
+      args: [poId],
+    });
+    expect(rows[0].packaging_procurement_batch_id).not.toBeNull();
+    expect(rows[0].barcode_procurement_batch_id).toBeNull();
+
+    await cleanupPO(poId);
+    await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [sku.body.id] });
+  });
+
+  test('barcode batches are listed and undone separately from packaging ones', async () => {
+    const { poId, poDate, sku } = await seedDemand({ lineQty: 2, poDate: '2026-08-06' });
+
+    // The two batch tables have independent AUTOINCREMENT sequences, so ids
+    // collide across kinds and prove nothing on their own — compare the
+    // packaging list before and after instead.
+    const listBatches = (kind) =>
+      authed(request(app).get('/api/procurement/outbound/batches')).query({ kind });
+    const pkgBefore = (await listBatches('packaging')).body.map(b => b.id);
+
+    const mark = await authed(request(app).post('/api/procurement/outbound/mark-ordered'))
+      .send({ kind: 'barcode', po_ids: [poId], po_date_from: poDate, po_date_to: poDate });
+    expect(mark.status).toBe(201);
+    const batchId = mark.body.batch_id;
+
+    const bcBatches = await listBatches('barcode');
+    expect(bcBatches.body.some(b => b.id === batchId && b.po_count === 1)).toBe(true);
+
+    const pkgAfter = (await listBatches('packaging')).body.map(b => b.id);
+    expect(pkgAfter).toEqual(pkgBefore);
+
+    const undo = await authed(request(app).delete(`/api/procurement/outbound/batches/${batchId}`))
+      .query({ kind: 'barcode' });
+    expect(undo.status).toBe(200);
+
+    const { rows } = await db.execute({
+      sql: 'SELECT barcode_procurement_batch_id, barcode_ordered_at FROM marketplace_pos WHERE po_id = ?',
+      args: [poId],
+    });
+    expect(rows[0].barcode_procurement_batch_id).toBeNull();
+    expect(rows[0].barcode_ordered_at).toBeNull();
 
     await cleanupPO(poId);
     await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [sku.body.id] });

@@ -15,6 +15,7 @@ import { Plus, Pencil, Trash2, Search, Upload, Download } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useRBAC } from '../../hooks/useRBAC';
 import { useSessionState } from '../../hooks/useSessionState';
+import { isExcludedPackagingItem } from '../../utils/packagingExclusions';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import BulkUploadModal from './BulkUploadModal';
 
@@ -513,6 +514,15 @@ function SKUsTab() {
   const packagingArticles = useMemo(() => packagingCatalog.filter(r => (r.category || '').toLowerCase() === 'packaging'), [packagingCatalog]);
   const barcodeArticles = useMemo(() => packagingCatalog.filter(r => (r.category || '').toLowerCase() === 'barcode'), [packagingCatalog]);
   const packagingItemNames = useMemo(() => sortByText(Array.from(new Set(packagingArticles.map(a => a.item_name)))), [packagingArticles]);
+  // Corrugated is excluded from NEW selections only. packagingArticles above
+  // stays unfiltered on purpose, so a SKU that already requires an excluded item
+  // still resolves its variants and round-trips on save — filtering it out of
+  // the article list too would blank both selects and silently drop the row on
+  // the next save (the bug fixed in 6a6a86c, in a different guise).
+  const selectablePackagingItemNames = useMemo(
+    () => packagingItemNames.filter(n => !isExcludedPackagingItem(n)),
+    [packagingItemNames]
+  );
   const barcodeItemNames = useMemo(() => sortByText(Array.from(new Set(barcodeArticles.map(a => a.item_name)))), [barcodeArticles]);
   const packagingByItemName = useMemo(() => {
     const map = packagingArticles.reduce((acc, r) => { (acc[r.item_name] ||= []).push(r); return acc; }, {});
@@ -783,12 +793,13 @@ function SKUsTab() {
               <button type="button" onClick={pkgReq.add} className="inline-flex items-center gap-1 text-sm text-[#c1121f] hover:underline"><Plus size={14} />Add requirement</button>
             </div>
             <p className="text-xs text-gray-500 mb-2">The packaging products and quantities consumed to make one unit of this SKU.</p>
-            {packagingItemNames.length === 0 && (
-              <p className="text-xs text-amber-600 mb-2">No packaging products exist yet — add them on the Packaging Products page (Packaging tab) first.</p>
+            {selectablePackagingItemNames.length === 0 && (
+              <p className="text-xs text-amber-600 mb-2">No packaging products exist yet — add them under Admin → Purchase Config → Packaging Items (Packaging tab) first.</p>
             )}
             <div className="space-y-2">
               {form.packaging_requirements.map((r, idx) => {
                 const variantOptions = packagingByItemName[r.item_name] || [];
+                const excludedButSaved = r.item_name && isExcludedPackagingItem(r.item_name);
                 return (
                   <div key={idx} className="flex items-center gap-2">
                     <select
@@ -797,7 +808,10 @@ function SKUsTab() {
                       className={`${fieldBase} flex-1 min-w-0`}
                     >
                       <option value="">— Select item —</option>
-                      {packagingItemNames.map(n => <option key={n} value={n}>{n}</option>)}
+                      {/* Already saved against an item that is no longer offered:
+                          keep it selectable so editing the SKU does not drop it. */}
+                      {excludedButSaved && <option value={r.item_name}>{r.item_name} (no longer offered)</option>}
+                      {selectablePackagingItemNames.map(n => <option key={n} value={n}>{n}</option>)}
                     </select>
                     <select
                       value={r.packaging_raw_material_id}
@@ -838,7 +852,7 @@ function SKUsTab() {
             </div>
             <p className="text-xs text-gray-500 mb-2">The barcode(s) and quantities consumed to make one unit of this SKU.</p>
             {barcodeItemNames.length === 0 && (
-              <p className="text-xs text-amber-600 mb-2">No barcodes exist yet — add them on the Packaging Products page (Barcode tab) first.</p>
+              <p className="text-xs text-amber-600 mb-2">No barcodes exist yet — add them under Admin → Purchase Config → Packaging Items (Barcode tab) first.</p>
             )}
             <div className="space-y-2">
               {form.barcode_requirements.map((r, idx) => {

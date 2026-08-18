@@ -68,7 +68,7 @@ async function create(req, res, next) {
     res.status(201).json({ ...rows[0], products_using: 0 });
   } catch (err) {
     if (err.message && err.message.includes('UNIQUE constraint failed')) {
-      return res.status(409).json({ message: 'This category + item name is already in the Outbound Product List' });
+      return res.status(409).json({ message: 'This category + item name + unit metric is already in the Outbound Product List' });
     }
     next(err);
   }
@@ -186,7 +186,7 @@ async function update(req, res, next) {
     res.json({ ...updated, products_using: usage });
   } catch (err) {
     if (err.message && err.message.includes('UNIQUE constraint failed')) {
-      return res.status(409).json({ message: 'This category + item name is already in the Outbound Product List' });
+      return res.status(409).json({ message: 'This category + item name + unit metric is already in the Outbound Product List' });
     }
     next(err);
   }
