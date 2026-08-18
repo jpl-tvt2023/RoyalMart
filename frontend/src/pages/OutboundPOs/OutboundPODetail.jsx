@@ -295,13 +295,20 @@ export default function OutboundPODetail() {
     return opts;
   };
 
-  // Mirrors the server's receipt rules so the user gets the error before a
-  // round trip. Returns an error string, or null when the values are usable.
-  const receiptFieldError = (v) => {
+  // Mirrors the server's receipt rules — including their ORDER, so the message
+  // shown here is the one the server would have returned — so the user gets the
+  // error before a round trip. Returns an error string, or null when usable.
+  //
+  // requireBillNo is false only when editing a receipt that has never had one
+  // (migration 053 synthesized those from the legacy flat `received` value, with
+  // no bill to record). Those stay editable for unrelated fixes rather than
+  // demanding a bill number nobody has — matching what the server enforces.
+  const receiptFieldError = (v, { requireBillNo = true } = {}) => {
     if (!v.received_qty || Number(v.received_qty) <= 0) return 'Received Qty is required';
     if (v.received_rate === '' || v.received_rate == null) return 'Billed Rate is required';
     if (!Number.isFinite(Number(v.received_rate)) || Number(v.received_rate) < 0) return 'Billed Rate must be a number >= 0';
     if (!v.checked_by) return 'Checked By is required';
+    if (requireBillNo && !String(v.bill_no ?? '').trim()) return 'Bill No is required';
     if (v.incoming_no !== '' && v.incoming_no != null) {
       const n = Number(v.incoming_no);
       if (!Number.isInteger(n) || n <= 0) return 'Incoming No must be a whole number > 0';
@@ -342,18 +349,28 @@ export default function OutboundPODetail() {
       received_rate: receiptValue(r, 'received_rate'),
       checked_by: receiptValue(r, 'checked_by'),
       incoming_no: receiptValue(r, 'incoming_no'),
+      bill_no: receiptValue(r, 'bill_no'),
     };
-    const err = receiptFieldError(draft);
+    // A receipt that already has a bill number must keep one — but one that
+    // never had it can still be edited without inventing it.
+    const hadBillNo = !!String(r.bill_no ?? '').trim();
+    const err = receiptFieldError(draft, { requireBillNo: hadBillNo });
     if (err) { toast.error(err); return; }
     setSavingReceiptId(r.id);
     try {
-      await updateOutboundPOLineReceipt(id, l.id, r.id, {
+      const billNo = String(draft.bill_no ?? '').trim();
+      const payload = {
         received_qty: Number(draft.received_qty),
         received_rate: Number(draft.received_rate),
-        bill_no: receiptValue(r, 'bill_no') || null,
         checked_by: Number(draft.checked_by),
         incoming_no: draft.incoming_no === '' ? null : Number(draft.incoming_no),
-      });
+      };
+      // Omit bill_no entirely for a receipt that never had one, rather than
+      // sending an explicit null. The server validates only the fields actually
+      // present, so sending null would count as touching it and fail the
+      // mandatory rule on an edit that has nothing to do with the bill number.
+      if (billNo || hadBillNo) payload.bill_no = billNo || null;
+      await updateOutboundPOLineReceipt(id, l.id, r.id, payload);
       setReceiptDrafts(d => { const n = { ...d }; delete n[r.id]; return n; });
       load();
     } catch (err2) {
@@ -515,11 +532,14 @@ export default function OutboundPODetail() {
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-32">Status</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-20">Short</th>
                         <th className="px-3 py-2 w-10">History</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Received Qty</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Received Rate</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Bill No</th>
+                        {/* Asterisks mark the fields a receipt cannot be saved
+                            without. Received Rate and Checked By were already
+                            mandatory server-side but carried no marker. */}
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Received Qty <span className="text-red-500">*</span></th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Received Rate <span className="text-red-500">*</span></th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Bill No <span className="text-red-500">*</span></th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Incoming No</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-36">Checked By</th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-36">Checked By <span className="text-red-500">*</span></th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Updated By</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-36">Updated Timestamp</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-20">Actions</th>

@@ -38,10 +38,10 @@ function lineFor(article, overrides = {}) {
   };
 }
 
-// Billed Rate and Checked By are mandatory on every receipt, so default both in
-// unless a test is specifically exercising their validation.
+// Billed Rate, Checked By and Bill No are mandatory on every receipt, so default
+// them all in unless a test is specifically exercising their validation.
 function receiptBody(overrides = {}) {
-  return { received_qty: 1, received_rate: 10, checked_by: warehousePocId, ...overrides };
+  return { received_qty: 1, received_rate: 10, checked_by: warehousePocId, bill_no: 'B-DEF', ...overrides };
 }
 
 function postReceipt(poId, lineId, body) {
@@ -321,6 +321,32 @@ describe('Outbound POs API', () => {
       const ids = res.body.rows.map(r => r.id);
       expect(ids).toContain(deleted.body.id);
       expect(ids).not.toContain(kept.body.id);
+    });
+
+    // Deleted used to be an exact whole-string mode, so mixing it with a live
+    // status silently dropped it and returned only the live rows.
+    test('status can mix Deleted with live statuses', async () => {
+      const { po: open } = await createVendorAndPO();
+      const { po: deleted } = await createVendorAndPO();
+      await request(app).delete(`/api/outbound-pos/${deleted.body.id}`).set('Authorization', `Bearer ${token}`);
+
+      const res = await request(app).get('/api/outbound-pos')
+        .query({ status: 'Open,Deleted', page_size: 'all' }).set('Authorization', `Bearer ${token}`);
+      const ids = res.body.rows.map(r => r.id);
+      expect(ids).toContain(open.body.id);
+      expect(ids).toContain(deleted.body.id);
+    });
+
+    test('an unrecognised status falls back to every live PO', async () => {
+      const { po: kept } = await createVendorAndPO();
+      const { po: deleted } = await createVendorAndPO();
+      await request(app).delete(`/api/outbound-pos/${deleted.body.id}`).set('Authorization', `Bearer ${token}`);
+
+      const res = await request(app).get('/api/outbound-pos')
+        .query({ status: 'Bogus', page_size: 'all' }).set('Authorization', `Bearer ${token}`);
+      const ids = res.body.rows.map(r => r.id);
+      expect(ids).toContain(kept.body.id);
+      expect(ids).not.toContain(deleted.body.id);
     });
 
     test('order_no filter strips leading zeros and matches by id', async () => {
@@ -868,6 +894,57 @@ describe('Outbound POs API', () => {
         .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
         .set('Authorization', `Bearer ${token}`).send({ bill_no: 'B-EDIT' });
       expect(res.status).toBe(200);
+    });
+
+    test.each([
+      ['omitted', {}],
+      ['empty string', { bill_no: '' }],
+      ['null', { bill_no: null }],
+      ['whitespace only', { bill_no: '   ' }],
+    ])('rejects a receipt whose bill no is %s', async (_label, patch) => {
+      const { poId, lineId } = await setupLine();
+      const res = await rawPost(poId, lineId, {
+        received_qty: 1, received_rate: 10, checked_by: warehousePocId, ...patch,
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/Bill No is required/);
+    });
+
+    test('PATCH cannot clear a bill no the receipt already has', async () => {
+      const { poId, lineId } = await setupLine();
+      const created = await postReceipt(poId, lineId, { received_qty: 1, bill_no: 'B-KEEP' });
+      const res = await request(app)
+        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
+        .set('Authorization', `Bearer ${token}`).send({ bill_no: '' });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/Bill No is required/);
+    });
+
+    // The legacy-editability guarantee. Migration 053 synthesized one receipt
+    // per pre-existing line with bill_no NULL, because no bill was ever
+    // recorded for them — 20 such rows exist in production. Making Bill No
+    // mandatory must not strand them: an edit that doesn't mention bill_no has
+    // to keep working, or fixing an unrelated typo becomes impossible without
+    // inventing a bill number.
+    test('PATCH on a receipt with no bill no succeeds when it does not touch bill_no', async () => {
+      const { poId, lineId } = await setupLine();
+      const created = await postReceipt(poId, lineId, { received_qty: 1 });
+      await db.execute({
+        sql: 'UPDATE outbound_po_line_receipts SET bill_no = NULL WHERE id = ?',
+        args: [created.body.id],
+      });
+
+      const res = await request(app)
+        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
+        .set('Authorization', `Bearer ${token}`).send({ incoming_no: 77 });
+      expect(res.status).toBe(200);
+
+      const { rows } = await db.execute({
+        sql: 'SELECT bill_no, incoming_no FROM outbound_po_line_receipts WHERE id = ?',
+        args: [created.body.id],
+      });
+      expect(rows[0].incoming_no).toBe(77);
+      expect(rows[0].bill_no).toBeNull();
     });
   });
 
