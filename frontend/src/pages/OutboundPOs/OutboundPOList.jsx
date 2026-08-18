@@ -32,19 +32,33 @@ function downloadRows(filename, columns, rows) {
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
 
-const STATUS_MULTI_OPTIONS = ['Open', 'Partially Received', 'Closed'];
+// Deleted is a status like any other (the DB CHECK on outbound_pos allows all
+// four), so it belongs in this list rather than behind a separate checkbox.
+const STATUS_MULTI_OPTIONS = ['Open', 'Partially Received', 'Closed', 'Deleted'];
 
-// Every flag option selected by default, which is equivalent to no flag filter
-// at all — the list opens showing every PO rather than silently hiding the
-// clean ones. Spreading FLAG_FILTER_OPTIONS keeps that true as flags are added.
+// Sentinel for the "All" row in a MultiSelect: mutually exclusive with the real
+// options, and the canonical way to say "don't constrain this dimension".
+const ALL = '__all__';
+
+// Flags default to All — the list opens showing every PO rather than silently
+// hiding the clean ones. Status deliberately does NOT: Closed and Deleted POs
+// stay out of the everyday view until asked for.
 const defaultFilters = () => ({
-  order_no: '', vendor_id: '', status: ['Open', 'Partially Received'], show_deleted: false,
-  po_date_from: '', po_date_to: '', flags: [...FLAG_FILTER_OPTIONS],
+  order_no: '', vendor_id: '', status: ['Open', 'Partially Received'],
+  po_date_from: '', po_date_to: '', flags: [ALL],
   incoming_no: '', bill_no: '',
 });
 
 // Checkbox dropdown used by both the Status and Flags filters — mirrors
 // GRNList's StatusMultiSelect, generalized over its option list.
+//
+// The ALL row is mutually exclusive with the real options, so the selection has
+// exactly one "everything" representation ([ALL]) instead of two that mean the
+// same thing. The real options still RENDER as checked while ALL is on, so the
+// control looks the way a user expects "all selected" to look, and nothing
+// visibly jumps when a selection that covers every option collapses to [ALL].
+// The selection is never allowed to go empty — unticking the last option falls
+// back to ALL rather than leaving a filter that matches nothing.
 function MultiSelect({ options, selected, onChange, disabled, allLabel, labelOf = (v) => v }) {
   const detRef = useRef(null);
   useEffect(() => {
@@ -54,12 +68,19 @@ function MultiSelect({ options, selected, onChange, disabled, allLabel, labelOf 
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
+
+  const isAll = selected.includes(ALL);
+  // Collapse a selection that covers everything back to the canonical [ALL].
+  const commit = (next) => onChange(
+    (next.length === 0 || next.length === options.length) ? [ALL] : next
+  );
   const toggle = (s) => {
-    onChange(selected.includes(s) ? selected.filter(x => x !== s) : [...selected, s]);
+    if (s === ALL) { if (!isAll) onChange([ALL]); return; }
+    if (isAll) { commit(options.filter(o => o !== s)); return; }
+    commit(selected.includes(s) ? selected.filter(x => x !== s) : [...selected, s]);
   };
-  const label = (selected.length === 0 || selected.length === options.length)
-    ? allLabel
-    : `${selected.length} selected`;
+
+  const label = isAll ? allLabel : `${selected.length} selected`;
   return (
     <details ref={detRef} className={`relative ${disabled ? 'pointer-events-none opacity-50' : ''}`}>
       <summary className="list-none cursor-pointer flex items-center justify-between w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30">
@@ -67,9 +88,13 @@ function MultiSelect({ options, selected, onChange, disabled, allLabel, labelOf 
         <ChevronDown size={14} className="text-gray-400 shrink-0" />
       </summary>
       <div className="absolute z-20 mt-1 w-60 bg-white border border-gray-200 rounded-lg shadow-lg p-1 max-h-64 overflow-auto">
+        <label className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer text-sm border-b border-gray-100 mb-1">
+          <input type="checkbox" checked={isAll} onChange={() => toggle(ALL)} />
+          <span className="font-medium text-gray-700">{allLabel}</span>
+        </label>
         {options.map(s => (
           <label key={s} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer text-sm">
-            <input type="checkbox" checked={selected.includes(s)} onChange={() => toggle(s)} />
+            <input type="checkbox" checked={isAll || selected.includes(s)} onChange={() => toggle(s)} />
             <span className="text-gray-700">{labelOf(s)}</span>
           </label>
         ))}
@@ -145,7 +170,10 @@ export default function OutboundPOList() {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useSessionState('outboundPOs.filters', defaultFilters);
+  // Key bumped to .v2: the filter shape changed (show_deleted removed, ALL
+  // sentinel added), so a persisted v1 object would carry a dead show_deleted
+  // flag and a status list that predates Deleted being an option.
+  const [filters, setFilters] = useSessionState('outboundPOs.filters.v2', defaultFilters);
   const [sort, setSort] = useSessionState('outboundPOs.sort', { key: 'updated_at', dir: 'desc' });
   const [page, setPage] = useSessionState('outboundPOs.page', 1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('outboundPOs', 25));
@@ -230,14 +258,18 @@ export default function OutboundPOList() {
     if (f.vendor_id) params.vendor_id = f.vendor_id;
     if (f.po_date_from) params.po_date_from = f.po_date_from;
     if (f.po_date_to) params.po_date_to = f.po_date_to;
-    if (f.show_deleted) {
-      params.status = 'Deleted';
-    } else if (Array.isArray(f.status) && f.status.length) {
-      params.status = f.status.join(',');
+    // ALL means "don't constrain this dimension". For flags that is simply
+    // omitting the param. For status it has to be spelled out, because sending
+    // no status is NOT unconstrained server-side — it means "every status
+    // except Deleted". Array.isArray guards a filter object persisted in
+    // sessionStorage before a key existed, which would blow up on .length.
+    const statuses = Array.isArray(f.status)
+      ? (f.status.includes(ALL) ? STATUS_MULTI_OPTIONS : f.status)
+      : [];
+    if (statuses.length) params.status = statuses.join(',');
+    if (Array.isArray(f.flags) && f.flags.length && !f.flags.includes(ALL)) {
+      params.flag = f.flags.join(',');
     }
-    // Array.isArray guard: a filter object persisted in sessionStorage before
-    // this key existed would otherwise blow up on .length.
-    if (Array.isArray(f.flags) && f.flags.length) params.flag = f.flags.join(',');
     if (itn && itn !== 'All') params.item_name = itn;
     return params;
   }, [filters, sort, page, pageSize, itemNameTab]);
@@ -371,10 +403,9 @@ export default function OutboundPOList() {
             <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
             <MultiSelect
               options={STATUS_MULTI_OPTIONS}
-              selected={filters.status}
+              selected={Array.isArray(filters.status) ? filters.status : []}
               onChange={v => setFilter('status', v)}
-              disabled={filters.show_deleted}
-              allLabel="All statuses"
+              allLabel="All"
             />
           </div>
           <div>
@@ -383,15 +414,9 @@ export default function OutboundPOList() {
               options={FLAG_FILTER_OPTIONS}
               selected={Array.isArray(filters.flags) ? filters.flags : []}
               onChange={v => setFilter('flags', v)}
-              allLabel="All POs"
+              allLabel="All"
               labelOf={flagLabel}
             />
-          </div>
-          <div className="flex items-end pb-2">
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input type="checkbox" checked={filters.show_deleted} onChange={e => setFilter('show_deleted', e.target.checked)} />
-              Show deleted
-            </label>
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Order No</label>

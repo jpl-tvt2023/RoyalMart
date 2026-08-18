@@ -8,6 +8,12 @@ const {
 
 const VALID_STATUSES = ['Open', 'Partially Received', 'Closed'];
 
+// Deleted is a real member of the status enum (see the CHECK in migration 044),
+// it is just never one deriveStatus can produce -- a PO only reaches it by being
+// soft-deleted. So it is filterable like any other status, but stays out of
+// VALID_STATUSES, which is the vocabulary of statuses the system derives.
+const FILTERABLE_STATUSES = [...VALID_STATUSES, 'Deleted'];
+
 const padOrderNo = (id) => String(id).padStart(3, '0');
 
 const SORT_COLUMNS = {
@@ -136,15 +142,23 @@ async function catalogUnitMetrics() {
 // point of the Rate Mismatch flag is to compare the two. Checked By must be a
 // user actually tagged Warehouse_POC: userHasRole is the strict variant, so
 // Admin/Owner do NOT implicitly qualify, matching how POC assignment behaves
-// elsewhere. Incoming No stays optional (a receipt without one is flagged, not
-// blocked) but must be a whole number when supplied.
+// elsewhere. Bill No is mandatory too — a receipt records a delivery against a
+// vendor's bill, so it has one by definition. Incoming No stays optional (a
+// receipt without one is flagged, not blocked) but must be a whole number when
+// supplied.
 //
 // With requireAll, absent fields are errors (create). Without it, only fields
 // actually present in the body are checked (update), so a user fixing a typo in
-// bill_no isn't forced to backfill unrelated values.
+// incoming_no isn't forced to backfill unrelated values. That is what keeps the
+// receipts migration 053 synthesized (bill_no NULL, no bill was ever recorded)
+// editable: the client omits bill_no entirely for those rather than sending an
+// explicit null, which would count as present and trip the rule.
 async function validateReceiptFields(body, { requireAll }) {
   const present = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
   const blank = (v) => v == null || v === '';
+  // bill_no is stored trimmed-or-NULL, so a whitespace-only value would slip
+  // past blank() and then persist as NULL. Test it post-trim.
+  const blankText = (v) => v == null || String(v).trim() === '';
 
   if (requireAll || present('received_rate')) {
     if (blank(body?.received_rate)) return 'Billed Rate is required';
@@ -159,6 +173,12 @@ async function validateReceiptFields(body, { requireAll }) {
     if (!(await userHasRole(checkedById, 'Warehouse_POC'))) {
       return 'Checked By must be a user tagged Warehouse_POC';
     }
+  }
+
+  // Deliberately after checked_by: several tests assert on the FIRST error a
+  // body with multiple omissions produces, and that ordering is the contract.
+  if (requireAll || present('bill_no')) {
+    if (blankText(body?.bill_no)) return 'Bill No is required';
   }
 
   if (present('incoming_no') && !blank(body?.incoming_no)) {
@@ -331,16 +351,15 @@ function buildListWhere(query, { excludeItemName = false } = {}) {
   if (vendor_id) { conditions.push('p.vendor_id = ?'); args.push(vendor_id); }
   if (po_date_from) { conditions.push('p.po_date >= ?'); args.push(po_date_from); }
   if (po_date_to)   { conditions.push('p.po_date <= ?'); args.push(po_date_to); }
-  if (status === 'Deleted') {
-    conditions.push("p.status = 'Deleted'");
-  } else if (status) {
-    const values = String(status).split(',').map(s => s.trim()).filter(s => VALID_STATUSES.includes(s));
-    if (values.length) {
-      conditions.push(`p.status IN (${values.map(() => '?').join(',')})`);
-      args.push(...values);
-    } else {
-      conditions.push("p.status <> 'Deleted'");
-    }
+  // ?status=Open,Partially Received,Deleted -- Deleted filters like any other
+  // value rather than being a special whole-string mode, so it can be combined
+  // with live statuses. Absent or unrecognised input still means "every live
+  // PO", which is the sane default for a caller that says nothing.
+  const statusValues = String(status || '').split(',').map(s => s.trim())
+    .filter(s => FILTERABLE_STATUSES.includes(s));
+  if (statusValues.length) {
+    conditions.push(`p.status IN (${statusValues.map(() => '?').join(',')})`);
+    args.push(...statusValues);
   } else {
     conditions.push("p.status <> 'Deleted'");
   }
