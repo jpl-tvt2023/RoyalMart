@@ -349,6 +349,41 @@ describe('Outbound POs API', () => {
       expect(ids).not.toContain(deleted.body.id);
     });
 
+    // Unticking every option of a filter is a deliberate "nothing qualifies",
+    // which has to be distinguishable from an absent param (= unconstrained).
+    test.each([
+      ['status', { status: '__none_selected__' }],
+      ['flag', { flag: '__none_selected__' }],
+    ])('an emptied %s selection matches no POs at all', async (_label, query) => {
+      await createVendorAndPO();
+
+      const res = await request(app).get('/api/outbound-pos')
+        .query({ ...query, page_size: 'all' }).set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body.rows).toEqual([]);
+      expect(res.body.total ?? 0).toBe(0);
+    });
+
+    test('an emptied selection is distinct from an absent param', async () => {
+      const { po } = await createVendorAndPO();
+
+      const absent = await request(app).get('/api/outbound-pos')
+        .query({ page_size: 'all' }).set('Authorization', `Bearer ${token}`);
+      expect(absent.body.rows.map(r => r.id)).toContain(po.body.id);
+
+      const emptied = await request(app).get('/api/outbound-pos')
+        .query({ status: '__none_selected__', page_size: 'all' }).set('Authorization', `Bearer ${token}`);
+      expect(emptied.body.rows).toEqual([]);
+    });
+
+    test('an emptied selection zeroes the item-name tab counts', async () => {
+      await createVendorAndPO();
+      const res = await request(app).get('/api/outbound-pos/item-name-counts')
+        .query({ status: '__none_selected__' }).set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(Object.values(res.body.counts || {}).every(n => Number(n) === 0)).toBe(true);
+    });
+
     test('order_no filter strips leading zeros and matches by id', async () => {
       const { po } = await createVendorAndPO();
       const res = await request(app)

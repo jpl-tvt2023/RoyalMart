@@ -14,6 +14,13 @@ const VALID_STATUSES = ['Open', 'Partially Received', 'Closed'];
 // VALID_STATUSES, which is the vocabulary of statuses the system derives.
 const FILTERABLE_STATUSES = [...VALID_STATUSES, 'Deleted'];
 
+// Sent by a multi-select filter whose options have all been unticked. An absent
+// param already means "unconstrained", so a deliberate empty selection needs a
+// marker of its own to be distinguishable from it. Deliberately NOT spelled
+// 'none' -- that is a live flag key meaning "clean POs only". Twin constant in
+// frontend/src/pages/OutboundPOs/OutboundPOList.jsx, keep the two in step.
+const NONE_SELECTED = '__none_selected__';
+
 const padOrderNo = (id) => String(id).padStart(3, '0');
 
 const SORT_COLUMNS = {
@@ -354,27 +361,36 @@ function buildListWhere(query, { excludeItemName = false } = {}) {
   // ?status=Open,Partially Received,Deleted -- Deleted filters like any other
   // value rather than being a special whole-string mode, so it can be combined
   // with live statuses. Absent or unrecognised input still means "every live
-  // PO", which is the sane default for a caller that says nothing.
-  const statusValues = String(status || '').split(',').map(s => s.trim())
-    .filter(s => FILTERABLE_STATUSES.includes(s));
-  if (statusValues.length) {
-    conditions.push(`p.status IN (${statusValues.map(() => '?').join(',')})`);
-    args.push(...statusValues);
+  // PO", which is the sane default for a caller that says nothing -- whereas an
+  // explicitly emptied selection means no PO qualifies.
+  if (status === NONE_SELECTED) {
+    conditions.push('0');
   } else {
-    conditions.push("p.status <> 'Deleted'");
+    const statusValues = String(status || '').split(',').map(s => s.trim())
+      .filter(s => FILTERABLE_STATUSES.includes(s));
+    if (statusValues.length) {
+      conditions.push(`p.status IN (${statusValues.map(() => '?').join(',')})`);
+      args.push(...statusValues);
+    } else {
+      conditions.push("p.status <> 'Deleted'");
+    }
   }
 
   // ?flag=rate_mismatch,missing_incoming_no -- OR-combined, so a PO matches
   // if it carries ANY of the selected flags. The pseudo-key `none` matches
   // only clean POs. This goes into the shared `where` below so the page query
   // and the COUNT query can never disagree about the total.
-  const flagSel = String(flag || '').split(',').map(s => s.trim()).filter(Boolean);
-  const flagClauses = [];
-  if (flagSel.includes('none')) {
-    flagClauses.push(`(${FLAG_KEYS.map(k => `NOT ${poFlagExists(k)}`).join(' AND ')})`);
+  if (flag === NONE_SELECTED) {
+    conditions.push('0');
+  } else {
+    const flagSel = String(flag || '').split(',').map(s => s.trim()).filter(Boolean);
+    const flagClauses = [];
+    if (flagSel.includes('none')) {
+      flagClauses.push(`(${FLAG_KEYS.map(k => `NOT ${poFlagExists(k)}`).join(' AND ')})`);
+    }
+    for (const k of flagSel.filter(k => FLAG_KEYS.includes(k))) flagClauses.push(poFlagExists(k));
+    if (flagClauses.length) conditions.push(`(${flagClauses.join(' OR ')})`);
   }
-  for (const k of flagSel.filter(k => FLAG_KEYS.includes(k))) flagClauses.push(poFlagExists(k));
-  if (flagClauses.length) conditions.push(`(${flagClauses.join(' OR ')})`);
 
   // Item-name tab filter: a PO matches if ANY of its (active) lines has this
   // item_name -- filters which POs appear, not which lines render within them.

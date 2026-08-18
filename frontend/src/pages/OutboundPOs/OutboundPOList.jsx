@@ -36,29 +36,30 @@ const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'g
 // four), so it belongs in this list rather than behind a separate checkbox.
 const STATUS_MULTI_OPTIONS = ['Open', 'Partially Received', 'Closed', 'Deleted'];
 
-// Sentinel for the "All" row in a MultiSelect: mutually exclusive with the real
-// options, and the canonical way to say "don't constrain this dimension".
-const ALL = '__all__';
+// Sent when every option of a multi-select has been unticked. An absent param
+// already means "unconstrained" server-side, so a deliberate empty selection
+// needs its own marker to be told apart from it. Deliberately NOT spelled
+// 'none' -- that is a live flag key meaning "clean POs only". Twin constant in
+// backend/src/controllers/outboundPOs.controller.js, keep the two in step.
+const NONE_SELECTED = '__none_selected__';
 
-// Flags default to All — the list opens showing every PO rather than silently
-// hiding the clean ones. Status deliberately does NOT: Closed and Deleted POs
-// stay out of the everyday view until asked for.
+// Flags start with every option ticked, i.e. "All" — the list opens showing
+// every PO rather than silently hiding the clean ones. Status deliberately does
+// NOT: Closed and Deleted POs stay out of the everyday view until asked for.
 const defaultFilters = () => ({
   order_no: '', vendor_id: '', status: ['Open', 'Partially Received'],
-  po_date_from: '', po_date_to: '', flags: [ALL],
+  po_date_from: '', po_date_to: '', flags: [...FLAG_FILTER_OPTIONS],
   incoming_no: '', bill_no: '',
 });
 
 // Checkbox dropdown used by both the Status and Flags filters — mirrors
 // GRNList's StatusMultiSelect, generalized over its option list.
 //
-// The ALL row is mutually exclusive with the real options, so the selection has
-// exactly one "everything" representation ([ALL]) instead of two that mean the
-// same thing. The real options still RENDER as checked while ALL is on, so the
-// control looks the way a user expects "all selected" to look, and nothing
-// visibly jumps when a selection that covers every option collapses to [ALL].
-// The selection is never allowed to go empty — unticking the last option falls
-// back to ALL rather than leaving a filter that matches nothing.
+// "All" is a plain master toggle and is never itself stored: it is derived from
+// whether every option is selected, so ticking the options one by one lights it
+// up on its own, and unticking it clears them all. An empty selection is a
+// legitimate state meaning "nothing qualifies" — buildParams sends NONE_SELECTED
+// for it, which the server turns into a false predicate.
 function MultiSelect({ options, selected, onChange, disabled, allLabel, labelOf = (v) => v }) {
   const detRef = useRef(null);
   useEffect(() => {
@@ -69,18 +70,15 @@ function MultiSelect({ options, selected, onChange, disabled, allLabel, labelOf 
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const isAll = selected.includes(ALL);
-  // Collapse a selection that covers everything back to the canonical [ALL].
-  const commit = (next) => onChange(
-    (next.length === 0 || next.length === options.length) ? [ALL] : next
+  const allChecked = selected.length === options.length;
+  const toggleAll = () => onChange(allChecked ? [] : [...options]);
+  const toggle = (s) => onChange(
+    selected.includes(s) ? selected.filter(x => x !== s) : [...selected, s]
   );
-  const toggle = (s) => {
-    if (s === ALL) { if (!isAll) onChange([ALL]); return; }
-    if (isAll) { commit(options.filter(o => o !== s)); return; }
-    commit(selected.includes(s) ? selected.filter(x => x !== s) : [...selected, s]);
-  };
 
-  const label = isAll ? allLabel : `${selected.length} selected`;
+  const label = allChecked
+    ? allLabel
+    : (selected.length === 0 ? 'None selected' : `${selected.length} selected`);
   return (
     <details ref={detRef} className={`relative ${disabled ? 'pointer-events-none opacity-50' : ''}`}>
       <summary className="list-none cursor-pointer flex items-center justify-between w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30">
@@ -89,12 +87,12 @@ function MultiSelect({ options, selected, onChange, disabled, allLabel, labelOf 
       </summary>
       <div className="absolute z-20 mt-1 w-60 bg-white border border-gray-200 rounded-lg shadow-lg p-1 max-h-64 overflow-auto">
         <label className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer text-sm border-b border-gray-100 mb-1">
-          <input type="checkbox" checked={isAll} onChange={() => toggle(ALL)} />
+          <input type="checkbox" checked={allChecked} onChange={toggleAll} />
           <span className="font-medium text-gray-700">{allLabel}</span>
         </label>
         {options.map(s => (
           <label key={s} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer text-sm">
-            <input type="checkbox" checked={isAll || selected.includes(s)} onChange={() => toggle(s)} />
+            <input type="checkbox" checked={selected.includes(s)} onChange={() => toggle(s)} />
             <span className="text-gray-700">{labelOf(s)}</span>
           </label>
         ))}
@@ -170,10 +168,12 @@ export default function OutboundPOList() {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  // Key bumped to .v2: the filter shape changed (show_deleted removed, ALL
-  // sentinel added), so a persisted v1 object would carry a dead show_deleted
-  // flag and a status list that predates Deleted being an option.
-  const [filters, setFilters] = useSessionState('outboundPOs.filters.v2', defaultFilters);
+  // Key bumped per filter-shape change: v2 dropped show_deleted and added an
+  // '__all__' sentinel, v3 removed that sentinel again ("All" is now derived,
+  // not stored). A persisted v2 object holds flags: ['__all__'], which under v3
+  // is one unrecognised entry — the control would read "1 selected" with
+  // nothing ticked.
+  const [filters, setFilters] = useSessionState('outboundPOs.filters.v3', defaultFilters);
   const [sort, setSort] = useSessionState('outboundPOs.sort', { key: 'updated_at', dir: 'desc' });
   const [page, setPage] = useSessionState('outboundPOs.page', 1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('outboundPOs', 25));
@@ -258,17 +258,17 @@ export default function OutboundPOList() {
     if (f.vendor_id) params.vendor_id = f.vendor_id;
     if (f.po_date_from) params.po_date_from = f.po_date_from;
     if (f.po_date_to) params.po_date_to = f.po_date_to;
-    // ALL means "don't constrain this dimension". For flags that is simply
-    // omitting the param. For status it has to be spelled out, because sending
-    // no status is NOT unconstrained server-side — it means "every status
-    // except Deleted". Array.isArray guards a filter object persisted in
-    // sessionStorage before a key existed, which would blow up on .length.
-    const statuses = Array.isArray(f.status)
-      ? (f.status.includes(ALL) ? STATUS_MULTI_OPTIONS : f.status)
-      : [];
-    if (statuses.length) params.status = statuses.join(',');
-    if (Array.isArray(f.flags) && f.flags.length && !f.flags.includes(ALL)) {
-      params.flag = f.flags.join(',');
+    // Both are always sent. Every option selected needs no special case — for
+    // status that is all four including Deleted, and for flags the OR of every
+    // flag plus the clean-POs key already covers every PO. An emptied selection
+    // is a deliberate "match nothing" rather than "no filter", and an absent
+    // param already means unconstrained server-side, so it is said explicitly.
+    // Array.isArray guards a filter object persisted before a key existed.
+    if (Array.isArray(f.status)) {
+      params.status = f.status.length ? f.status.join(',') : NONE_SELECTED;
+    }
+    if (Array.isArray(f.flags)) {
+      params.flag = f.flags.length ? f.flags.join(',') : NONE_SELECTED;
     }
     if (itn && itn !== 'All') params.item_name = itn;
     return params;
