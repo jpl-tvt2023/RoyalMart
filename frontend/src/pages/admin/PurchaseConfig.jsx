@@ -1,6 +1,6 @@
 import AppShell from '../../components/layout/AppShell';
 import MasterTab from '../Configurations/MasterTab';
-import PackagingCatalogTab from '../packaging/PackagingList';
+import OutboundProductsTab from '../Configurations/OutboundProductsTab';
 import { useSessionState } from '../../hooks/useSessionState';
 import {
   listCompanies, createCompany, updateCompany, deleteCompany,
@@ -8,16 +8,19 @@ import {
 
 const TABS = [
   { key: 'global', label: 'Global' },
-  { key: 'packagingItems', label: 'Packaging Items' },
+  { key: 'outboundProducts', label: 'Outbound Product List' },
 ];
 
 const SUBTITLES = {
   global: 'Company master data',
-  packagingItems: 'The master article catalog (Category · Item Name · Variant · Unit Metric) that outbound vendors map to and outbound POs draw from',
+  outboundProducts: 'The Category · Item Name · Unit Metric taxonomy that packaging products are onboarded against',
 };
 
 export default function PurchaseConfig() {
-  const [tab, setTab] = useSessionState('purchaseConfig.tab', 'global');
+  const [storedTab, setTab] = useSessionState('purchaseConfig.tab', 'global');
+  // A session that stored a tab key from an earlier layout would otherwise render
+  // no body and highlight no button.
+  const tab = TABS.some(t => t.key === storedTab) ? storedTab : 'global';
 
   return (
     <AppShell>
@@ -50,7 +53,7 @@ export default function PurchaseConfig() {
           deleteFn={deleteCompany}
         />
       )}
-      {tab === 'packagingItems' && <PackagingCatalogTab />}
+      {tab === 'outboundProducts' && <OutboundProductsTab />}
     </AppShell>
   );
 }

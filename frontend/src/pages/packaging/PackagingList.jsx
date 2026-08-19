@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
+import AppShell from '../../components/layout/AppShell';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
@@ -70,18 +71,30 @@ const rawMaterialUploadConfig = {
   headers: ['category', 'item_name', 'variant', 'unit_metric'],
   sampleRow: ['Packaging', 'Corrugated', '5 Ply', 'pcs'],
   requiredKeys: ['category', 'item_name'],
-  instructions: 'Category + Item Name must already exist in Configurations → Outbound Product List; rows that do not match are skipped. Variant is optional — leave it blank for an item that has no variants. The unit metric is taken from the Outbound Product List, so that column is normally ignored — fill it in only when an item is listed there under more than one metric, to say which one applies. Rows whose Category + Item Name + Variant match an existing product are updated, new combinations are added.',
+  instructions: 'Category + Item Name must already exist in Admin → Purchase Config → Outbound Product List; rows that do not match are skipped. Variant is optional — leave it blank for an item that has no variants. The unit metric is taken from the Outbound Product List, so that column is normally ignored — fill it in only when an item is listed there under more than one metric, to say which one applies. Rows whose Category + Item Name + Variant match an existing product are updated, new combinations are added.',
   submit: (rows) => bulkUpsertPackagingRawMaterials(rows),
 };
 
+export default function PackagingList() {
+  return (
+    <AppShell>
+      <div className="mb-4">
+        <h1 className="text-2xl font-bold text-[#003049]">Packaging Products</h1>
+        <p className="text-gray-500 text-sm">
+          The master article catalog (Category · Item Name · Variant · Unit Metric) that outbound vendors map to and outbound POs draw from
+        </p>
+      </div>
+
+      <PackagingCatalogTab />
+    </AppShell>
+  );
+}
+
 // ───────────────────────── Packaging Products catalog ─────────────────────────
 
-// Rendered as the "Packaging Items" tab of Admin -> Purchase Config, which owns
-// the page shell and heading. Exported as the default so this file stays the
-// single home of the catalog UI.
 const EMPTY_RAW_MATERIAL = { category: '', item_name: '', variant: '', unit_metric: '' };
 
-export default function PackagingCatalogTab() {
+function PackagingCatalogTab() {
   const { canEdit: canWrite } = useRBAC();
 
   const [rows, setRows] = useState([]);
@@ -328,7 +341,7 @@ export default function PackagingCatalogTab() {
 
       {canWrite && masterRows.length === 0 && (
         <p className="mb-4 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
-          The Outbound Product List is empty — add categories and items under Configurations → Outbound Product List before onboarding packaging products.
+          The Outbound Product List is empty — add categories and items under Admin → Purchase Config → Outbound Product List before onboarding packaging products.
         </p>
       )}
 
@@ -493,8 +506,8 @@ export default function PackagingCatalogTab() {
             )}
             <p className="mt-1 text-xs text-gray-400">
               {metricIsAmbiguous
-                ? 'This item is listed under more than one unit metric on Configurations → Outbound Product List'
-                : 'Set on Configurations → Outbound Product List'}
+                ? 'This item is listed under more than one unit metric on Admin → Purchase Config → Outbound Product List'
+                : 'Set on Admin → Purchase Config → Outbound Product List'}
             </p>
           </div>
           <div className="flex gap-3 justify-end pt-2">

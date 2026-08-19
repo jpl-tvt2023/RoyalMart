@@ -10,9 +10,10 @@ const outboundProducts = require('../controllers/outboundProducts.controller');
 const canView  = allowRoles(...ALL_ROLES);
 // Master data is editable by any logged-in user; every change is audited.
 const canAdmin = allowRoles(...ALL_ROLES);
-// Companies (Global Config) is managed by Admin/Owner only. GET stays open to
-// ALL_ROLES since Outbound PO creation (open to all roles) reads the company
-// list for its dropdown.
+// The two masters that live on Admin -> Purchase Config (companies and the
+// outbound product list) are managed by Admin/Owner only. Their GETs stay open
+// to ALL_ROLES: Outbound PO creation reads the company list for its dropdown,
+// and Packaging Items reads the outbound product list for its pickers.
 const canAdminOnly = allowRoles(...ADMIN_ROLES);
 
 // Cities master
@@ -34,11 +35,12 @@ router.patch('/companies/:id',  auth, canAdminOnly, companies.update);
 router.delete('/companies/:id', auth, canAdminOnly, companies.remove);
 
 // Outbound Product List master — the Category / Item Name / Unit Metric
-// taxonomy that packaging product onboarding validates against.
-router.get('/outbound-products',        auth, canView,  outboundProducts.list);
-router.post('/outbound-products',       auth, canAdmin, outboundProducts.create);
-router.patch('/outbound-products/:id',  auth, canAdmin, outboundProducts.update);
-router.delete('/outbound-products/:id', auth, canAdmin, outboundProducts.remove);
+// taxonomy that packaging product onboarding validates against. Editing it
+// reshapes every downstream catalog, so writes are Admin/Owner only.
+router.get('/outbound-products',        auth, canView,      outboundProducts.list);
+router.post('/outbound-products',       auth, canAdminOnly, outboundProducts.create);
+router.patch('/outbound-products/:id',  auth, canAdminOnly, outboundProducts.update);
+router.delete('/outbound-products/:id', auth, canAdminOnly, outboundProducts.remove);
 
 // Vendors master
 router.get('/vendors',        auth, canView,  vendors.list);

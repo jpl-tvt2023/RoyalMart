@@ -21,6 +21,7 @@ import ProcurementPage from './pages/Procurement/ProcurementPage';
 import OutboundVendorsPage from './pages/OutboundVendors/OutboundVendorsPage';
 import OutboundPOList from './pages/OutboundPOs/OutboundPOList';
 import OutboundPODetail from './pages/OutboundPOs/OutboundPODetail';
+import PackagingList from './pages/packaging/PackagingList';
 import { ALL_ROLES, ADMIN_ONLY } from './utils/roles';
 
 export default function App() {
@@ -56,10 +57,13 @@ export default function App() {
           <Route path="/admin/purchase-config" element={
             <ProtectedRoute roles={ADMIN_ONLY}><PurchaseConfig /></ProtectedRoute>
           } />
-          {/* Both pages folded into Purchase Config — kept so existing links and
-              bookmarks land somewhere useful instead of 404ing. */}
+          {/* Global Config was folded into Purchase Config — kept so existing links
+              and bookmarks land somewhere useful instead of 404ing. */}
           <Route path="/admin/global-config" element={<Navigate to="/admin/purchase-config" replace />} />
-          <Route path="/packaging-items" element={<Navigate to="/admin/purchase-config" replace />} />
+
+          <Route path="/packaging-items" element={
+            <ProtectedRoute roles={ALL_ROLES}><PackagingList /></ProtectedRoute>
+          } />
 
           <Route path="/products" element={
             <ProtectedRoute roles={ALL_ROLES}><ProductList /></ProtectedRoute>

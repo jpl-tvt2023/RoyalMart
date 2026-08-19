@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import AppShell from '../../components/layout/AppShell';
 import MasterTab from './MasterTab';
-import OutboundProductsTab from './OutboundProductsTab';
 import {
   listCities,   createCity,   updateCity,   deleteCity,
 } from '../../api/cities.api';
@@ -20,7 +19,6 @@ const TABS = [
   { key: 'vendors',    label: 'Vendors' },
   { key: 'couriers',   label: 'Courier Partners' },
   { key: 'categories', label: 'Categories' },
-  { key: 'outboundProducts', label: 'Outbound Product List' },
 ];
 
 export default function ConfigurationsPage() {
@@ -30,7 +28,7 @@ export default function ConfigurationsPage() {
     <AppShell>
       <div className="mb-4">
         <h1 className="text-2xl font-bold text-[#003049]">Configurations</h1>
-        <p className="text-gray-500 text-sm">Master data for cities, vendors, courier partners, categories, and the outbound product list</p>
+        <p className="text-gray-500 text-sm">Master data for cities, vendors, courier partners and categories</p>
       </div>
 
       <div className="flex gap-1 mb-4 border-b border-gray-200">
@@ -96,7 +94,6 @@ export default function ConfigurationsPage() {
           deleteFn={deleteCategory}
         />
       )}
-      {tab === 'outboundProducts' && <OutboundProductsTab />}
     </AppShell>
   );
 }
