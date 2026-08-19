@@ -38,7 +38,7 @@ const uploadConfig = {
   headers: ['vendor_name', 'category', 'item_name', 'variant'],
   sampleRow: ['Om Sai Packaging', 'Packaging', 'Corrugated', '60'],
   requiredKeys: ['vendor_name', 'category', 'item_name'],
-  instructions: 'One row per article mapping. category, item_name and variant must together match an existing product under Admin → Purchase Config → Packaging Items — leave variant blank for an item that has no variants. New vendor names are created automatically; rows matching an existing mapping are skipped — nothing is ever deleted.',
+  instructions: 'One row per article mapping. category, item_name and variant must together match an existing product under Configurations → Packaging Items — leave variant blank for an item that has no variants. New vendor names are created automatically; rows matching an existing mapping are skipped — nothing is ever deleted.',
   submit: (rows) => bulkUpsertOutboundVendors(rows),
 };
 
@@ -322,7 +322,7 @@ export default function OutboundVendorsPage() {
               <Button type="button" variant="ghost" onClick={addRow}><Plus size={14} />Add Mapping</Button>
             </div>
             {catalogCategories.length === 0 && (
-              <p className="text-xs text-amber-600 mb-2">No packaging products exist yet — add them under Admin → Purchase Config → Packaging Items first.</p>
+              <p className="text-xs text-amber-600 mb-2">No packaging products exist yet — add them under Configurations → Packaging Items first.</p>
             )}
             <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
               <table className="w-full text-sm">

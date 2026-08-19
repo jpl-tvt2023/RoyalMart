@@ -12,7 +12,8 @@ import {
 
 // The Outbound Product List: the Category / Item Name / Unit Metric taxonomy
 // that drives the dropdowns when packaging products are onboarded on
-// Admin -> Purchase Config -> Packaging Items. MasterTab cannot be reused
+// Configurations -> Packaging Items. Rendered as a tab of Admin -> Purchase
+// Config, which owns the page shell and heading. MasterTab cannot be reused
 // here -- it is built around a
 // single `name` field -- so this mirrors its layout and behaviour instead.
 

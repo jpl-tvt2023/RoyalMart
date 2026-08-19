@@ -13,6 +13,7 @@ const TITLES = [
   ['/admin/users', 'User Management'],
   ['/admin/purchase-config', 'Purchase Config'],
   ['/products', 'SKU Products'],
+  ['/packaging-items', 'Packaging Items'],
   ['/procurement', 'Procurement Status'],
   ['/purchase-orders/new', 'Import PO'],
   ['/purchase-orders/:poId', (m) => `PO ${m.params.poId}`],

@@ -381,7 +381,7 @@ export default function OutboundTab({ kind = 'packaging' }) {
             </tbody>
           </table>
           {!loading && articles.length === 0 && (
-            <p className="text-center text-gray-400 py-8">No {copy.articlesLabel} yet — add them under Admin → Purchase Config → Packaging Items.</p>
+            <p className="text-center text-gray-400 py-8">No {copy.articlesLabel} yet — add them under Configurations → Packaging Items.</p>
           )}
           {!loading && articles.length > 0 && pos.length === 0 && (
             <p className="text-center text-gray-400 py-8">No POs in the selected date range.</p>

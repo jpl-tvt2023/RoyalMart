@@ -794,7 +794,7 @@ function SKUsTab() {
             </div>
             <p className="text-xs text-gray-500 mb-2">The packaging products and quantities consumed to make one unit of this SKU.</p>
             {selectablePackagingItemNames.length === 0 && (
-              <p className="text-xs text-amber-600 mb-2">No packaging products exist yet — add them under Admin → Purchase Config → Packaging Items (Packaging tab) first.</p>
+              <p className="text-xs text-amber-600 mb-2">No packaging products exist yet — add them under Configurations → Packaging Items (Packaging tab) first.</p>
             )}
             <div className="space-y-2">
               {form.packaging_requirements.map((r, idx) => {
@@ -852,7 +852,7 @@ function SKUsTab() {
             </div>
             <p className="text-xs text-gray-500 mb-2">The barcode(s) and quantities consumed to make one unit of this SKU.</p>
             {barcodeItemNames.length === 0 && (
-              <p className="text-xs text-amber-600 mb-2">No barcodes exist yet — add them under Admin → Purchase Config → Packaging Items (Barcode tab) first.</p>
+              <p className="text-xs text-amber-600 mb-2">No barcodes exist yet — add them under Configurations → Packaging Items (Barcode tab) first.</p>
             )}
             <div className="space-y-2">
               {form.barcode_requirements.map((r, idx) => {

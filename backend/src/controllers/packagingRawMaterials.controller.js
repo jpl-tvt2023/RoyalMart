@@ -40,7 +40,7 @@ async function loadOutboundProducts() {
 }
 
 const unlistedMessage = (category, itemName) =>
-  `"${category} / ${itemName}" is not in the Outbound Product List — add it under Configurations → Outbound Product List first`;
+  `"${category} / ${itemName}" is not in the Outbound Product List — add it under Admin → Purchase Config → Outbound Product List first`;
 
 const ambiguousMetricMessage = (category, itemName, options) =>
   `"${category} / ${itemName}" is listed under more than one unit metric (${options.map(o => o.unit_metric).join(', ')}) — say which one this product uses`;
