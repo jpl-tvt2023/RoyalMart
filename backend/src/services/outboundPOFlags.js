@@ -44,8 +44,10 @@ const FLAGS = {
     label: 'Missing Incoming No',
     short: 'Missing Inc No',
     color: 'yellow',
-    sql: 'r.incoming_no IS NULL',
-    js: (r) => r.incoming_no == null,
+    // incoming_no is free text and stored trimmed-or-NULL, so IS NULL alone
+    // would miss a whitespace-only value that predates that normalisation.
+    sql: "r.incoming_no IS NULL OR TRIM(r.incoming_no) = ''",
+    js: (r) => r.incoming_no == null || String(r.incoming_no).trim() === '',
   },
   not_approved: {
     label: 'Not Approved',

@@ -33,6 +33,10 @@ const emptyLine = () => ({
 
 const EMPTY_RECEIPT = { received_qty: '', received_rate: '', bill_no: '', incoming_no: '', checked_by: '' };
 
+// Twin of INCOMING_NO_MAX in backend/src/controllers/outboundPOs.controller.js,
+// keep the two in step.
+const INCOMING_NO_MAX = 50;
+
 // A mapping option's identity: the article tuple, joined so it can live in a
 // <select> value. Matches are case-insensitive like the backend.
 const mapKey = (a) => `${a.category}${a.item_name}${a.variant || ''}`.toLowerCase();
@@ -310,8 +314,9 @@ export default function OutboundPODetail() {
     if (!v.checked_by) return 'Checked By is required';
     if (requireBillNo && !String(v.bill_no ?? '').trim()) return 'Bill No is required';
     if (v.incoming_no !== '' && v.incoming_no != null) {
-      const n = Number(v.incoming_no);
-      if (!Number.isInteger(n) || n <= 0) return 'Incoming No must be a whole number > 0';
+      const s = String(v.incoming_no).trim();
+      if (!s) return 'Incoming No cannot be blank';
+      if (s.length > INCOMING_NO_MAX) return `Incoming No must be ${INCOMING_NO_MAX} characters or less`;
     }
     return null;
   };
@@ -327,7 +332,7 @@ export default function OutboundPODetail() {
         received_rate: Number(newReceipt.received_rate),
         bill_no: newReceipt.bill_no || null,
         checked_by: Number(newReceipt.checked_by),
-        incoming_no: newReceipt.incoming_no === '' ? null : Number(newReceipt.incoming_no),
+        incoming_no: String(newReceipt.incoming_no ?? '').trim() || null,
       });
       toast.success('Receipt added');
       setAddingReceiptFor(null);
@@ -363,7 +368,7 @@ export default function OutboundPODetail() {
         received_qty: Number(draft.received_qty),
         received_rate: Number(draft.received_rate),
         checked_by: Number(draft.checked_by),
-        incoming_no: draft.incoming_no === '' ? null : Number(draft.incoming_no),
+        incoming_no: String(draft.incoming_no ?? '').trim() || null,
       };
       // Omit bill_no entirely for a receipt that never had one, rather than
       // sending an explicit null. The server validates only the fields actually
@@ -673,7 +678,7 @@ export default function OutboundPODetail() {
                                     </td>
                                     <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
                                       <input
-                                        type="number" min={1} step="1"
+                                        type="text" maxLength={INCOMING_NO_MAX}
                                         value={receiptValue(receipt, 'incoming_no')}
                                         onChange={e => setReceiptField(receipt, 'incoming_no', e.target.value)}
                                         disabled={readOnly || !!receipt.deleted_at}
@@ -731,7 +736,7 @@ export default function OutboundPODetail() {
                                         <input type="text" placeholder="Bill No" value={newReceipt.bill_no} onChange={e => setNewReceipt(r => ({ ...r, bill_no: e.target.value }))} className={cellCls} />
                                       </td>
                                       <td className="px-3 py-2">
-                                        <input type="number" min={1} step="1" placeholder="Incoming" value={newReceipt.incoming_no} onChange={e => setNewReceipt(r => ({ ...r, incoming_no: e.target.value }))} className={cellCls} />
+                                        <input type="text" maxLength={INCOMING_NO_MAX} placeholder="e.g. IN-4521" value={newReceipt.incoming_no} onChange={e => setNewReceipt(r => ({ ...r, incoming_no: e.target.value }))} className={cellCls} />
                                       </td>
                                       <td className="px-3 py-2">
                                         <select value={newReceipt.checked_by} onChange={e => setNewReceipt(r => ({ ...r, checked_by: e.target.value }))} className={cellCls}>

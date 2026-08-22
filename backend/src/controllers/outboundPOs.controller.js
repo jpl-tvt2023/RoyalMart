@@ -21,6 +21,12 @@ const FILTERABLE_STATUSES = [...VALID_STATUSES, 'Deleted'];
 // frontend/src/pages/OutboundPOs/OutboundPOList.jsx, keep the two in step.
 const NONE_SELECTED = '__none_selected__';
 
+// Incoming No is free text (the warehouse gate register uses ids like IN-4521),
+// capped only so a paste accident cannot land an essay in the column. Twin
+// constant in frontend/src/pages/OutboundPOs/OutboundPODetail.jsx, keep the two
+// in step -- the client mirrors this rule to spare a round trip.
+const INCOMING_NO_MAX = 50;
+
 const padOrderNo = (id) => String(id).padStart(3, '0');
 
 const SORT_COLUMNS = {
@@ -151,8 +157,9 @@ async function catalogUnitMetrics() {
 // Admin/Owner do NOT implicitly qualify, matching how POC assignment behaves
 // elsewhere. Bill No is mandatory too — a receipt records a delivery against a
 // vendor's bill, so it has one by definition. Incoming No stays optional (a
-// receipt without one is flagged, not blocked) but must be a whole number when
-// supplied.
+// receipt without one is flagged, not blocked). It is free text — the warehouse
+// gate register uses alphanumeric ids like IN-4521 — so the only rules are that
+// a supplied value is not whitespace-only and fits the column.
 //
 // With requireAll, absent fields are errors (create). Without it, only fields
 // actually present in the body are checked (update), so a user fixing a typo in
@@ -188,9 +195,13 @@ async function validateReceiptFields(body, { requireAll }) {
     if (blankText(body?.bill_no)) return 'Bill No is required';
   }
 
+  // Free text, but stored trimmed-or-NULL like bill_no, so a whitespace-only
+  // value must be rejected rather than silently becoming NULL — which would
+  // raise missing_incoming_no on a receipt the user believes they filled in.
   if (present('incoming_no') && !blank(body?.incoming_no)) {
-    const n = Number(body.incoming_no);
-    if (!Number.isInteger(n) || n <= 0) return 'Incoming No must be a whole number > 0';
+    const s = String(body.incoming_no).trim();
+    if (!s) return 'Incoming No cannot be blank';
+    if (s.length > INCOMING_NO_MAX) return `Incoming No must be ${INCOMING_NO_MAX} characters or less`;
   }
 
   return null;
@@ -340,15 +351,14 @@ function buildListWhere(query, { excludeItemName = false } = {}) {
     if (Number.isInteger(n)) { conditions.push('p.id = ?'); args.push(n); }
     else { conditions.push('0'); }
   }
+  // Substring match, exactly like bill_no below. Incoming No is alphanumeric
+  // now, so an exact match would make the box useless for anyone who remembers
+  // the digits but not the prefix -- and the two adjacent search boxes behaving
+  // differently is its own surprise.
   if (incoming_no) {
-    const n = parseInt(String(incoming_no).replace(/^0+/, ''), 10);
-    if (Number.isInteger(n)) {
-      conditions.push(`EXISTS (SELECT 1 FROM outbound_po_lines l JOIN outbound_po_line_receipts r ON r.line_id = l.id
-        WHERE l.po_id = p.id AND l.deleted_at IS NULL AND r.deleted_at IS NULL AND r.incoming_no = ?)`);
-      args.push(n);
-    } else {
-      conditions.push('0');
-    }
+    conditions.push(`EXISTS (SELECT 1 FROM outbound_po_lines l JOIN outbound_po_line_receipts r ON r.line_id = l.id
+      WHERE l.po_id = p.id AND l.deleted_at IS NULL AND r.deleted_at IS NULL AND r.incoming_no LIKE ?)`);
+    args.push(`%${incoming_no}%`);
   }
   if (bill_no) {
     conditions.push(`EXISTS (SELECT 1 FROM outbound_po_lines l JOIN outbound_po_line_receipts r ON r.line_id = l.id
@@ -877,8 +887,8 @@ async function createReceipt(req, res, next) {
     const receivedRate = Number(req.body.received_rate);
     const billNo = req.body?.bill_no != null ? (String(req.body.bill_no).trim() || null) : null;
     const checkedBy = Number(req.body.checked_by);
-    const incomingNo = req.body?.incoming_no == null || req.body.incoming_no === ''
-      ? null : Number(req.body.incoming_no);
+    const incomingNo = req.body?.incoming_no != null
+      ? (String(req.body.incoming_no).trim() || null) : null;
 
     const tx = await db.transaction('write');
     try {
@@ -938,8 +948,8 @@ async function updateReceipt(req, res, next) {
     const nextCheckedBy = has('checked_by') ? Number(req.body.checked_by) : receipt.checked_by;
     let nextIncomingNo = receipt.incoming_no;
     if (has('incoming_no')) {
-      nextIncomingNo = req.body.incoming_no == null || req.body.incoming_no === ''
-        ? null : Number(req.body.incoming_no);
+      nextIncomingNo = req.body.incoming_no != null
+        ? (String(req.body.incoming_no).trim() || null) : null;
     }
 
     const RECEIPT_FIELDS = ['received_qty', 'received_rate', 'bill_no', 'checked_by', 'incoming_no'];
