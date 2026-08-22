@@ -905,11 +905,57 @@ describe('Outbound POs API', () => {
       expect(res.status).toBe(201);
     });
 
-    test.each([[1.5], ['abc'], [0], [-1]])('rejects incoming_no %p', async (value) => {
+    // The warehouse gate register is alphanumeric, so letters, punctuation and
+    // values that used to fail the whole-number rule are all legitimate now.
+    test.each([['IN-4521'], ['A/2026/0077'], ['abc'], ['0'], ['1.5']])('accepts incoming_no %p', async (value) => {
       const { poId, lineId } = await setupLine();
       const res = await postReceipt(poId, lineId, { received_qty: 1, incoming_no: value });
+      expect(res.status).toBe(201);
+      const { rows } = await db.execute({
+        sql: 'SELECT incoming_no FROM outbound_po_line_receipts WHERE id = ?',
+        args: [res.body.id],
+      });
+      expect(rows[0].incoming_no).toBe(value);
+    });
+
+    // The reason migration 066 rebuilt the column as TEXT rather than leaving
+    // INTEGER affinity to carry the letters: affinity coerces an all-digit
+    // value losslessly, and the register genuinely uses leading zeros.
+    test('a numeric-looking incoming_no keeps its leading zeros', async () => {
+      const { poId, lineId } = await setupLine();
+      const res = await postReceipt(poId, lineId, { received_qty: 1, incoming_no: '0077' });
+      expect(res.status).toBe(201);
+      const { rows } = await db.execute({
+        sql: 'SELECT incoming_no, typeof(incoming_no) AS t FROM outbound_po_line_receipts WHERE id = ?',
+        args: [res.body.id],
+      });
+      expect(rows[0].incoming_no).toBe('0077');
+      expect(rows[0].t).toBe('text');
+    });
+
+    test('a whitespace-only incoming_no is rejected rather than stored as NULL', async () => {
+      const { poId, lineId } = await setupLine();
+      const res = await postReceipt(poId, lineId, { received_qty: 1, incoming_no: '   ' });
       expect(res.status).toBe(400);
       expect(res.body.message).toMatch(/Incoming No/);
+    });
+
+    test('an over-long incoming_no is rejected', async () => {
+      const { poId, lineId } = await setupLine();
+      const res = await postReceipt(poId, lineId, { received_qty: 1, incoming_no: 'X'.repeat(51) });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/Incoming No/);
+    });
+
+    test('incoming_no is stored trimmed', async () => {
+      const { poId, lineId } = await setupLine();
+      const res = await postReceipt(poId, lineId, { received_qty: 1, incoming_no: '  IN-4521  ' });
+      expect(res.status).toBe(201);
+      const { rows } = await db.execute({
+        sql: 'SELECT incoming_no FROM outbound_po_line_receipts WHERE id = ?',
+        args: [res.body.id],
+      });
+      expect(rows[0].incoming_no).toBe('IN-4521');
     });
 
     test('PATCH cannot clear an existing billed rate', async () => {
@@ -971,14 +1017,14 @@ describe('Outbound POs API', () => {
 
       const res = await request(app)
         .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
-        .set('Authorization', `Bearer ${token}`).send({ incoming_no: 77 });
+        .set('Authorization', `Bearer ${token}`).send({ incoming_no: 'IN-77' });
       expect(res.status).toBe(200);
 
       const { rows } = await db.execute({
         sql: 'SELECT bill_no, incoming_no FROM outbound_po_line_receipts WHERE id = ?',
         args: [created.body.id],
       });
-      expect(rows[0].incoming_no).toBe(77);
+      expect(rows[0].incoming_no).toBe('IN-77');
       expect(rows[0].bill_no).toBeNull();
     });
   });
@@ -1029,9 +1075,31 @@ describe('Outbound POs API', () => {
     const getPO = (poId) => request(app).get(`/api/outbound-pos/${poId}`).set('Authorization', `Bearer ${token}`);
     const listPOs = (query) => request(app).get('/api/outbound-pos').query(query).set('Authorization', `Bearer ${token}`);
 
+    // ?incoming_no= is a substring search like ?bill_no=, not the exact-match
+    // integer lookup it was before the column became TEXT — so the digits alone
+    // still find a value carrying a prefix.
+    test('?incoming_no matches on a substring, and misses when nothing contains it', async () => {
+      const a = await setupLine();
+      await postReceipt(a.poId, a.lineId, { received_qty: 1, incoming_no: 'IN-4521' });
+      const b = await setupLine();
+      await postReceipt(b.poId, b.lineId, { received_qty: 1, incoming_no: 'IN-9999' });
+
+      const hit = await listPOs({ incoming_no: '4521', page_size: 'all' });
+      const hitIds = hit.body.rows.map(r => r.id);
+      expect(hitIds).toContain(a.poId);
+      expect(hitIds).not.toContain(b.poId);
+
+      const prefix = await listPOs({ incoming_no: 'IN-', page_size: 'all' });
+      const prefixIds = prefix.body.rows.map(r => r.id);
+      expect(prefixIds).toEqual(expect.arrayContaining([a.poId, b.poId]));
+
+      const miss = await listPOs({ incoming_no: 'ZZZZ', page_size: 'all' });
+      expect(miss.body.rows.map(r => r.id)).not.toContain(a.poId);
+    });
+
     test('a billed rate differing from the agreed rate flags the line and the PO', async () => {
       const { poId, lineId } = await setupLine({ rate: 10 });
-      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 12, incoming_no: 1 });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 12, incoming_no: 'IN-1' });
       const detail = await getPO(poId);
       expect(detail.body.lines[0].flags).toContain('rate_mismatch');
       const list = await listPOs({ order_no: String(poId) });
@@ -1040,7 +1108,7 @@ describe('Outbound POs API', () => {
 
     test('a matching billed rate raises no flag', async () => {
       const { poId, lineId } = await setupLine({ rate: 10 });
-      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10, incoming_no: 1 });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10, incoming_no: 'IN-1' });
       const detail = await getPO(poId);
       expect(detail.body.lines[0].flags).toEqual([]);
     });
@@ -1049,14 +1117,14 @@ describe('Outbound POs API', () => {
     // rate is stored as 0 and must never raise a mismatch.
     test('a blank agreed rate never raises a rate mismatch', async () => {
       const { poId, lineId } = await setupLine({ rate: 0 });
-      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 12, incoming_no: 1 });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 12, incoming_no: 'IN-1' });
       const detail = await getPO(poId);
       expect(detail.body.lines[0].flags).not.toContain('rate_mismatch');
     });
 
     test('float round-trip noise does not raise a mismatch', async () => {
       const { poId, lineId } = await setupLine({ rate: 10.1 });
-      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10.1, incoming_no: 1 });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10.1, incoming_no: 'IN-1' });
       const detail = await getPO(poId);
       expect(detail.body.lines[0].flags).not.toContain('rate_mismatch');
     });
@@ -1088,7 +1156,7 @@ describe('Outbound POs API', () => {
       const dirty = await setupLine();
       await postReceipt(dirty.poId, dirty.lineId, { received_qty: 1 }); // no incoming_no
       const clean = await setupLine({ approved: true });
-      await postReceipt(clean.poId, clean.lineId, { received_qty: 1, incoming_no: 7 });
+      await postReceipt(clean.poId, clean.lineId, { received_qty: 1, incoming_no: 'IN-7' });
 
       const flagged = await listPOs({ flag: 'missing_incoming_no', page_size: 'all' });
       const flaggedIds = flagged.body.rows.map(r => r.id);
@@ -1140,7 +1208,7 @@ describe('Outbound POs API', () => {
 
     test('Not Approved is PO-scoped — it never appears on a line or a receipt', async () => {
       const { poId, lineId } = await setupLine();
-      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10, incoming_no: 1 });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10, incoming_no: 'IN-1' });
       const detail = await getPO(poId);
       expect(detail.body.flags).toContain('not_approved');
       expect(detail.body.lines[0].flags).not.toContain('not_approved');
@@ -1173,12 +1241,13 @@ describe('Outbound POs API', () => {
     });
 
     test.each([
-      [{ received_rate: 12, incoming_no: 1 }, { rate: 10 }, ['rate_mismatch']],
-      [{ received_rate: 10, incoming_no: 1 }, { rate: 10 }, []],
-      [{ received_rate: 12, incoming_no: 1 }, { rate: 0 }, []],
+      [{ received_rate: 12, incoming_no: 'IN-1' }, { rate: 10 }, ['rate_mismatch']],
+      [{ received_rate: 10, incoming_no: 'IN-1' }, { rate: 10 }, []],
+      [{ received_rate: 12, incoming_no: 'IN-1' }, { rate: 0 }, []],
       [{ received_rate: 10, incoming_no: null }, { rate: 10 }, ['missing_incoming_no']],
       [{ received_rate: 12, incoming_no: null }, { rate: 10 }, ['rate_mismatch', 'missing_incoming_no']],
-      [{ received_rate: null, incoming_no: 1 }, { rate: 10 }, []],
+      [{ received_rate: null, incoming_no: 'IN-1' }, { rate: 10 }, []],
+      [{ received_rate: 10, incoming_no: '   ' }, { rate: 10 }, ['missing_incoming_no']],
     ])('receipt %j against line %j yields %j', (receipt, line, expected) => {
       const actual = RECEIPT_FLAG_KEYS.filter(k => FLAGS[k].js(receipt, line));
       expect(actual.sort()).toEqual([...expected].sort());

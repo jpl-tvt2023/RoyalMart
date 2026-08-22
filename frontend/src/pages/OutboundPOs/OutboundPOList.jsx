@@ -424,7 +424,7 @@ export default function OutboundPOList() {
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Incoming No</label>
-            <input value={filters.incoming_no} onChange={e => setFilter('incoming_no', e.target.value)} onKeyDown={onSearchKey} placeholder="e.g. 1234" className={inputCls} />
+            <input value={filters.incoming_no} onChange={e => setFilter('incoming_no', e.target.value)} onKeyDown={onSearchKey} placeholder="Search incoming no..." className={inputCls} />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Bill No</label>
