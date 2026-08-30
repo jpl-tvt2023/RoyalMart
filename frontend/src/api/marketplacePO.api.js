@@ -42,3 +42,8 @@ export async function getPoStatusCountsByVendor() {
   const { data } = await api.get('/marketplace-pos/status-counts-by-vendor');
   return data;
 }
+
+export async function listPartyNames(vendor) {
+  const { data } = await api.get('/marketplace-pos/party-names', { params: { vendor } });
+  return data;
+}
