@@ -38,6 +38,7 @@ app.use('/api/raw-products', require('./src/routes/rawProducts.routes'));
 app.use('/api/procurement', require('./src/routes/procurement.routes'));
 app.use('/api/marketplace-pos', require('./src/routes/marketplacePO.routes'));
 app.use('/api/order-summary', require('./src/routes/orderSummary.routes'));
+app.use('/api/lead-time',    require('./src/routes/leadTime.routes'));
 app.use('/api/product-vendor-codes', require('./src/routes/productVendorCodes.routes'));
 app.use('/api/couriers',     require('./src/routes/couriers.routes'));
 app.use('/api/configurations', require('./src/routes/configurations.routes'));
