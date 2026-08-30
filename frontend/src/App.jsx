@@ -15,6 +15,7 @@ import PurchaseOrderDetail from './pages/PurchaseOrders/PurchaseOrderDetail';
 import OrderSummaryList from './pages/OrderSummary/OrderSummaryList';
 import BuiltyList from './pages/Builty/BuiltyList';
 import GRNList from './pages/GRN/GRNList';
+import LeadTimeReport from './pages/LeadTime/LeadTimeReport';
 import ConfigurationsPage from './pages/Configurations/ConfigurationsPage';
 import ProductList from './pages/products/ProductList';
 import ProcurementPage from './pages/Procurement/ProcurementPage';
@@ -93,6 +94,10 @@ export default function App() {
 
           <Route path="/grn" element={
             <ProtectedRoute roles={ALL_ROLES}><GRNList /></ProtectedRoute>
+          } />
+
+          <Route path="/lead-time-report" element={
+            <ProtectedRoute roles={ALL_ROLES}><LeadTimeReport /></ProtectedRoute>
           } />
 
           <Route path="/configurations" element={

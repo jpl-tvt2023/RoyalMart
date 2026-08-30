@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard, ClipboardList, Package, Truck, ClipboardCheck,
+  LayoutDashboard, ClipboardList, Package, Truck, ClipboardCheck, Timer,
   Tag, Settings, Users, SlidersHorizontal,
   ShoppingCart, PackageSearch, PackageOpen, Send, Store, Building2, Boxes,
 } from 'lucide-react';
@@ -69,6 +69,13 @@ export const NAV = [
         path: '/grn',
         icon: ClipboardCheck,
         description: 'Goods receipt & discrepancies',
+        roles: ORDER_FLOW_ROLES,
+      },
+      {
+        label: 'Lead Time Report',
+        path: '/lead-time-report',
+        icon: Timer,
+        description: 'PO → dispatch → GRN turnaround',
         roles: ORDER_FLOW_ROLES,
       },
     ],
