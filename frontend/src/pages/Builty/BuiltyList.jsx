@@ -12,6 +12,8 @@ import { listOrderSummary, updateOrderSummary, getOrderSummaryCountsByVendor } f
 import { listVendors } from '../../api/vendors.api';
 import { listCities } from '../../api/cities.api';
 import { listCouriers } from '../../api/couriers.api';
+import { listPartyNames } from '../../api/marketplacePO.api';
+import PartyNameInput from '../../components/ui/PartyNameInput';
 import { formatDateTime } from '../../utils/formatters';
 import { isValidDateString } from '../../utils/dateValidation';
 import { sortByText } from '../../utils/sort';
@@ -80,6 +82,7 @@ export default function BuiltyList() {
   const [couriers, setCouriers] = useState([]);
   const [vendorCounts, setVendorCounts] = useState({});
   const activeCouriers = couriers.filter(c => c.is_active);
+  const [partyNames, setPartyNames] = useState([]);
   const [edits, setEdits] = useState({});
   const [savingId, setSavingId] = useState(null);
   const [exporting, setExporting] = useState(false);
@@ -141,6 +144,15 @@ export default function BuiltyList() {
       .catch(() => {});
   }, []);
 
+  // Builty is always scoped to a single vendor tab, so the party-name
+  // suggestions load once per tab rather than once per row.
+  const loadPartyNames = useCallback(() => {
+    listPartyNames(vendorTab)
+      .then(rows => setPartyNames(rows || []))
+      .catch(() => setPartyNames([]));
+  }, [vendorTab]);
+  useEffect(() => { loadPartyNames(); }, [loadPartyNames]);
+
   useEffect(() => { setEdits({}); }, [items]);
 
   const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }));
@@ -181,29 +193,42 @@ export default function BuiltyList() {
 
   const saveRow = async (po) => {
     const e = edits[po.po_id];
-    if (!e || (!('bill_no' in e) && !('bill_date' in e))) return;
-    const billNo = (('bill_no' in e ? e.bill_no : po.bill_no) ?? '').trim();
-    const billDate = ('bill_date' in e ? e.bill_date : po.bill_date) ?? '';
-    if (billNo !== '' && !billDate) {
-      return toast.error('Bill date is required when setting a bill no');
+    const touchesBill = !!e && ('bill_no' in e || 'bill_date' in e);
+    const touchesParty = !!e && 'party_name' in e;
+    if (!touchesBill && !touchesParty) return;
+
+    // Send only the fields actually edited -- the server keys off which
+    // properties are present, so posting untouched ones would overwrite them.
+    const payload = {};
+    if (touchesBill) {
+      const billNo = (('bill_no' in e ? e.bill_no : po.bill_no) ?? '').trim();
+      const billDate = ('bill_date' in e ? e.bill_date : po.bill_date) ?? '';
+      if (billNo !== '' && !billDate) {
+        return toast.error('Bill date is required when setting a bill no');
+      }
+      if (billDate && !isValidDateString(billDate)) {
+        return toast.error('Bill date has an invalid year');
+      }
+      payload.bill_no = billNo === '' ? null : billNo;
+      payload.bill_date = billNo === '' ? null : billDate;
     }
-    if (billDate && !isValidDateString(billDate)) {
-      return toast.error('Bill date has an invalid year');
+    if (touchesParty) {
+      const partyName = (e.party_name ?? '').trim();
+      payload.party_name = partyName === '' ? null : partyName;
     }
+
     setSavingId(po.po_id);
     try {
-      await updateOrderSummary(po.po_id, {
-        bill_no: billNo === '' ? null : billNo,
-        bill_date: billNo === '' ? null : billDate,
-      });
+      await updateOrderSummary(po.po_id, payload);
       toast.success(`Saved ${po.po_id}`);
       cancelEdit(po.po_id);
       setConflict(null);
       load();
+      if (touchesParty) loadPartyNames();
     } catch (err) {
       const data = err.response?.data;
       if (err.response?.status === 409 && data?.error === 'bill_no_duplicate') {
-        setConflict({ po, billNo, rows: data.conflicts || [] });
+        setConflict({ po, billNo: payload.bill_no, rows: data.conflicts || [] });
       } else if (err.response?.status === 400) {
         toast.error(data?.message || 'Invalid bill no');
       } else {
@@ -348,7 +373,21 @@ export default function BuiltyList() {
                         case 'vendor':
                           return <td key={col.key} className="px-3 py-2 whitespace-nowrap">{po.vendor}</td>;
                         case 'party_name':
-                          return <td key={col.key} className="px-3 py-2 text-gray-700">{po.party_name || '—'}</td>;
+                          return (
+                            <td key={col.key} className="px-3 py-2 min-w-[14rem]">
+                              {canEdit ? (
+                                <PartyNameInput
+                                  value={valueOf(po, 'party_name') ?? ''}
+                                  options={partyNames}
+                                  onChange={v => setEdit(po.po_id, { party_name: v })}
+                                  onKeyDown={onKey}
+                                  className={cellCls}
+                                />
+                              ) : (
+                                <span className="text-gray-700">{po.party_name || '—'}</span>
+                              )}
+                            </td>
+                          );
                         case 'total_qty':
                           return <td key={col.key} className="px-3 py-2 font-semibold text-gray-800">{po.total_qty ?? 0}</td>;
                         case 'city':

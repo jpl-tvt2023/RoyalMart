@@ -290,7 +290,8 @@ async function create(req, res, next) {
         poId = existing[0].po_id;
         await tx.execute({
           sql: `UPDATE marketplace_pos
-                SET po_date = ?, po_expiry_date = ?, pickup_date = ?, city = ?, party_name = ?, delivery_code = ?,
+                SET po_date = ?, po_expiry_date = ?, pickup_date = ?, city = ?,
+                    party_name = COALESCE(?, party_name), delivery_code = ?,
                     appointment_date = COALESCE(?, appointment_date),
                     status = CASE WHEN status = 'Deleted' THEN 'Open' ELSE status END,
                     updated_by = ?, updated_at = datetime('now')
@@ -528,4 +529,22 @@ async function statusCountsByVendor(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { parsePreview, list, getOne, create, update, remove, restore, statusCountsByVendor, buildPagination, buildOrderBy };
+// Party name has no master table -- the picker on the Add PO and Builty screens
+// is seeded from whatever this vendor has used before, so spellings converge
+// without locking out a genuinely new party (both inputs still accept free text).
+async function partyNames(req, res, next) {
+  try {
+    const { vendor } = req.query;
+    if (!vendor) return res.status(400).json({ message: 'vendor is required' });
+    const { rows } = await db.execute({
+      sql: `SELECT DISTINCT party_name FROM marketplace_pos
+            WHERE vendor = ? AND party_name IS NOT NULL AND TRIM(party_name) <> ''
+              AND status <> 'Deleted'
+            ORDER BY party_name`,
+      args: [vendor],
+    });
+    res.json(rows.map(r => r.party_name));
+  } catch (err) { next(err); }
+}
+
+module.exports = { parsePreview, list, getOne, create, update, remove, restore, statusCountsByVendor, partyNames, buildPagination, buildOrderBy };

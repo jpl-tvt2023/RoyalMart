@@ -3,10 +3,12 @@ import { Trash2, Plus } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import { listCities } from '../../api/cities.api';
 import { getVendorCodes } from '../../api/productVendorCodes.api';
+import { listPartyNames } from '../../api/marketplacePO.api';
+import PartyNameInput from '../../components/ui/PartyNameInput';
 import { sortByText } from '../../utils/sort';
 import { usesPickupDate } from '../../utils/pickupDate';
 
-export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true, codePicker = false, onboarderSlot = null }) {
+export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true, codePicker = false, manual = false, onboarderSlot = null }) {
   const [cities, setCities] = useState([]);
   useEffect(() => {
     listCities()
@@ -36,6 +38,18 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
       .catch(() => { if (alive) { setCodeOptions([]); setCodesLoaded(true); } });
     return () => { alive = false; };
   }, [codePicker, vendor]);
+
+  // Party names have no master table -- suggest the ones this vendor has used
+  // before so spellings stay consistent, while still allowing a new one.
+  const [partyNames, setPartyNames] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    Promise.resolve(vendor ? listPartyNames(vendor) : [])
+      .then(rows => { if (alive) setPartyNames(rows || []); })
+      .catch(() => { if (alive) setPartyNames([]); });
+    return () => { alive = false; };
+  }, [vendor]);
+
   const useCombobox = codePicker && codeOptions.length > 0;
   const set = (patch) => onChange({ ...value, ...patch });
   const lines = value.lines || [];
@@ -63,8 +77,13 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
         <Field label="Vendor PO No.">
           <input value={value.vendor_po_id || ''} onChange={e => set({ vendor_po_id: e.target.value })} className={inputCls} />
         </Field>
-        <Field label="Party Name (Ship-To, parsed)">
-          <input value={value.party_name || ''} onChange={e => set({ party_name: e.target.value })} placeholder="—" className={inputCls} />
+        <Field label={manual ? 'Party Name' : 'Party Name (Ship-To, parsed)'}>
+          <PartyNameInput
+            value={value.party_name || ''}
+            options={partyNames}
+            onChange={v => set({ party_name: v })}
+            className={inputCls}
+          />
         </Field>
         <Field label="Delivery Code (Ship-To, parsed)">
           <input value={value.delivery_code || ''} onChange={e => set({ delivery_code: e.target.value })} placeholder="—" className={inputCls} />

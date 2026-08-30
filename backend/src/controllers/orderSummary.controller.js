@@ -6,7 +6,7 @@ const { isValidDateString } = require('../utils/dateValidation');
 const ORDER_SUMMARY_FIELDS = [
   'office_poc', 'warehouse_poc', 'status', 'dispatch_date', 'courier_id', 'tracking_id', 'box',
   'bill_no', 'bill_date', 'appointment_date', 'asn', 'appointment_id', 'grn_status', 'grn_date', 'grn_qty', 'grn_number',
-  'discrepancy_qty', 'discrepancy_number', 'note', 'delivery_code',
+  'discrepancy_qty', 'discrepancy_number', 'note', 'delivery_code', 'party_name',
 ];
 
 // Vendors whose appointment carries an extra reference alongside the appointment
@@ -185,7 +185,7 @@ async function updateOne(req, res, next) {
       sql: `SELECT po_id, vendor, city, status, dispatch_date, office_poc, warehouse_poc,
                    courier_id, tracking_id, box, bill_no, bill_date,
                    appointment_date, asn, appointment_id, grn_status, grn_date, grn_qty, grn_number,
-                   discrepancy_qty, discrepancy_number, note, delivery_code
+                   discrepancy_qty, discrepancy_number, note, delivery_code, party_name
             FROM marketplace_pos WHERE po_id = ?`,
       args: [poId],
     });
@@ -372,6 +372,7 @@ async function updateOne(req, res, next) {
     let nextDiscrepancyNumber  = current.discrepancy_number;
     let nextNote               = current.note;
     let nextDeliveryCode       = current.delivery_code;
+    let nextPartyName          = current.party_name;
 
     const parseDateField = (val, label) => {
       if (val == null || String(val).trim() === '') return null;
@@ -446,6 +447,12 @@ async function updateOne(req, res, next) {
       if (has('delivery_code')) {
         const d = req.body.delivery_code;
         nextDeliveryCode = (d == null || String(d).trim() === '') ? null : String(d).trim();
+      }
+      // Free text: party names carry spaces, periods and commas, so the
+      // alphanumeric guard used for bill/GRN references doesn't apply here.
+      if (has('party_name')) {
+        const p = req.body.party_name;
+        nextPartyName = (p == null || String(p).trim() === '') ? null : String(p).trim();
       }
       if (has('box')) nextBox = parsePositiveInt(req.body.box, 'Box');
     } catch (e) {
@@ -537,14 +544,14 @@ async function updateOne(req, res, next) {
                   courier_id = ?, tracking_id = ?, box = ?, bill_no = ?, bill_date = ?,
                   appointment_date = ?, asn = ?, appointment_id = ?, grn_status = ?, grn_date = ?,
                   grn_qty = ?, grn_number = ?, discrepancy_qty = ?, discrepancy_number = ?,
-                  note = ?, delivery_code = ?,
+                  note = ?, delivery_code = ?, party_name = ?,
                   updated_by = ?, updated_at = datetime('now')
               WHERE po_id = ?`,
         args: [
           officePoc, warehousePoc, nextStatus, nextDispatchDate, nextCourierId, nextTrackingId, nextBox, nextBillNo, nextBillDate,
           nextAppointmentDate, nextAsn, nextAppointmentId, nextGrnStatus, nextGrnDate,
           nextGrnQty, nextGrnNumber, nextDiscrepancyQty, nextDiscrepancyNumber,
-          nextNote, nextDeliveryCode,
+          nextNote, nextDeliveryCode, nextPartyName,
           req.user.id, poId,
         ],
       });
@@ -556,6 +563,7 @@ async function updateOne(req, res, next) {
         grn_status: nextGrnStatus, grn_date: nextGrnDate, grn_qty: nextGrnQty,
         grn_number: nextGrnNumber, discrepancy_qty: nextDiscrepancyQty,
         discrepancy_number: nextDiscrepancyNumber, note: nextNote, delivery_code: nextDeliveryCode,
+        party_name: nextPartyName,
       }, ORDER_SUMMARY_FIELDS);
       await logAction({
         client: tx,
