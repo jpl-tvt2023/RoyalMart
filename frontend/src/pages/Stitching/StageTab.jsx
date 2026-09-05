@@ -13,7 +13,10 @@ import { STATUSES, STATUS_COLORS, fmtNum } from '../../utils/stitching';
 import ForwardModal from './ForwardModal';
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
-const thCls = 'px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap';
+// Density scales with the viewport, matching OutboundPODetail: tight enough for
+// a 1366px laptop, roomier on a large monitor.
+const thCls = 'px-2 py-2 xl:px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap';
+const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2';
 
 const EMPTY_FILTERS = {
   party_name: '', incoming_no: '', bill_no: '', challan_no: '', po_order_no: '', status: '',
@@ -100,7 +103,7 @@ export default function StageTab({ stage }) {
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[1000px] text-xs xl:text-sm">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className={thCls}>Sr</th>
@@ -130,10 +133,10 @@ export default function StageTab({ stage }) {
 
               {!loading && rows.map((r, i) => (
                 <tr key={r.lot_key} className="hover:bg-gray-50/60">
-                  <td className="px-3 py-2 text-gray-400">{srBase + i + 1}</td>
-                  <td className="px-3 py-2 font-medium text-[#003049] whitespace-nowrap">{r.party_name}</td>
-                  <td className="px-3 py-2 text-gray-600">{r.bill_no || '—'}</td>
-                  <td className="px-3 py-2">
+                  <td className={`${tdCls} text-gray-400`}>{srBase + i + 1}</td>
+                  <td className={`${tdCls} font-medium text-[#003049] whitespace-nowrap`}>{r.party_name}</td>
+                  <td className={`${tdCls} text-gray-600`}>{r.bill_no || '—'}</td>
+                  <td className={tdCls}>
                     <div className="text-[#003049] whitespace-nowrap">
                       {r.item_name}{r.variant ? ` — ${r.variant}` : ''}
                     </div>
@@ -141,10 +144,10 @@ export default function StageTab({ stage }) {
                       PO {r.po_order_no}{r.unit_metric ? ` · ${r.unit_metric}` : ''}
                     </div>
                   </td>
-                  <td className="px-3 py-2">
+                  <td className={tdCls}>
                     <Badge color={STATUS_COLORS[r.status] || 'gray'}>{r.status}</Badge>
                   </td>
-                  <td className="px-3 py-2 whitespace-nowrap">
+                  <td className={`${tdCls} whitespace-nowrap`}>
                     {fmtNum(r.metre)}
                     {/* Sent > received means the difference was lost in processing. */}
                     {r.sent_qty != null && Number(r.sent_qty) - Number(r.metre) > 0.005 && (
@@ -153,20 +156,20 @@ export default function StageTab({ stage }) {
                       </div>
                     )}
                   </td>
-                  <td className={`px-3 py-2 font-semibold whitespace-nowrap ${Number(r.balance) > 0.005 ? 'text-amber-700' : 'text-gray-400'}`}>
+                  <td className={`${tdCls} font-semibold whitespace-nowrap ${Number(r.balance) > 0.005 ? 'text-amber-700' : 'text-gray-400'}`}>
                     {fmtNum(r.balance)}
                   </td>
-                  <td className="px-3 py-2 text-gray-600">{fmtNum(r.rate)}</td>
-                  <td className="px-3 py-2 text-gray-600">{fmtNum(r.process_rate)}</td>
-                  <td className="px-3 py-2 font-medium text-[#003049]">{fmtNum(r.after_rate)}</td>
-                  <td className="px-3 py-2 text-gray-600">{r.challan_no || '—'}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">
+                  <td className={`${tdCls} text-gray-600`}>{fmtNum(r.rate)}</td>
+                  <td className={`${tdCls} text-gray-600`}>{fmtNum(r.process_rate)}</td>
+                  <td className={`${tdCls} font-medium text-[#003049]`}>{fmtNum(r.after_rate)}</td>
+                  <td className={`${tdCls} text-gray-600`}>{r.challan_no || '—'}</td>
+                  <td className={`${tdCls} whitespace-nowrap`}>
                     {r.incoming_prefix || r.incoming_no
                       ? <span className="font-mono text-xs">{r.incoming_prefix || ''}{r.incoming_no || ''}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
-                  <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{r.checked_by_name || '—'}</td>
-                  <td className="px-3 py-2">
+                  <td className={`${tdCls} text-gray-600 whitespace-nowrap`}>{r.checked_by_name || '—'}</td>
+                  <td className={tdCls}>
                     <div className="flex items-center gap-1">
                       {r.can_forward && (
                         <button

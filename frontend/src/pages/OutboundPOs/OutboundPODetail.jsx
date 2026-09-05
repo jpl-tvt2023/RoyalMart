@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, RotateCcw, Save, Download, X, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, RotateCcw, Save, Download, Pencil, AlertTriangle } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
 import AppShell from '../../components/layout/AppShell';
@@ -11,17 +11,16 @@ import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { listOutboundVendors } from '../../api/outboundVendors.api';
 import { listCompanies } from '../../api/companies.api';
 import { listUsersLite } from '../../api/users.api';
-import { listStitchingPrefixes } from '../../api/stitchingPrefixes.api';
 import {
   getOutboundPO, createOutboundPO, updateOutboundPO,
-  updateOutboundPOLineShort, addOutboundPOLineReceipt, updateOutboundPOLineReceipt,
+  updateOutboundPOLineShort,
   deleteOutboundPOLineReceipt, restoreOutboundPOLineReceipt,
 } from '../../api/outboundPOs.api';
 import { ROLES } from '../../utils/roles';
 import { FLAG_META } from '../../utils/outboundPOFlags';
 import { isValidDateString } from '../../utils/dateValidation';
 import { formatDateTime } from '../../utils/formatters';
-import { moneyError, defaultAfterRate, STAGES } from '../../utils/stitching';
+import ReceiptModal from './ReceiptModal';
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
 
@@ -32,15 +31,6 @@ const emptyLine = () => ({
   qty: 1, rate: 0, short: 0, received: 0, receipts: [], unit_metric: '', flags: [],
   updated_by_name: '', updated_at: null, deleted_at: null, deleted_by: null,
 });
-
-const EMPTY_RECEIPT = {
-  received_qty: '', received_rate: '', bill_no: '', incoming_no: '', checked_by: '',
-  process_rate: '', after_rate: '', challan_no: '', incoming_prefix_id: '',
-};
-
-// Twin of INCOMING_NO_MAX in backend/src/controllers/outboundPOs.controller.js,
-// keep the two in step.
-const INCOMING_NO_MAX = 50;
 
 // A mapping option's identity: the article tuple, joined so it can live in a
 // <select> value. Matches are case-insensitive like the backend.
@@ -86,8 +76,6 @@ export default function OutboundPODetail() {
   const [vendors, setVendors] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [approvers, setApprovers] = useState([]);
-  const [checkers, setCheckers] = useState([]);
-  const [prefixes, setPrefixes] = useState([]);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -101,54 +89,21 @@ export default function OutboundPODetail() {
   const [originalApprovedBy, setOriginalApprovedBy] = useState('');
   const [lines, setLines] = useState([emptyLine()]);
 
-  // Receiving Details working state (short drafts, receipt drafts/add-forms).
+  // Receiving Details working state. The receipt form itself lives in
+  // ReceiptModal, which also loads its own prefix/checker options on open — so
+  // neither list is held here any more.
   const [shortDrafts, setShortDrafts] = useState({});
   const [savingShortKey, setSavingShortKey] = useState(null);
-  const [addingReceiptFor, setAddingReceiptFor] = useState(null);
-  const [newReceipt, setNewReceipt] = useState(EMPTY_RECEIPT);
-  const [savingNewReceipt, setSavingNewReceipt] = useState(false);
-  const [receiptDrafts, setReceiptDrafts] = useState({});
-  const [savingReceiptId, setSavingReceiptId] = useState(null);
+  const [receiptModal, setReceiptModal] = useState(null); // { line, receipt|null }
   const [confirmDeleteReceipt, setConfirmDeleteReceipt] = useState(null);
   const [deletingReceipt, setDeletingReceipt] = useState(false);
   const [restoringReceiptId, setRestoringReceiptId] = useState(null);
-
-  // Refetched whenever a receipt row starts being edited, not only on mount:
-  // an admin can add or deactivate a prefix while this tab sits open, and the
-  // server validates against the live rows. Same fix as the outbound vendor
-  // catalog stale-dropdown bug.
-  const loadPrefixes = () => listStitchingPrefixes().then(setPrefixes).catch(() => {});
 
   useEffect(() => {
     listOutboundVendors().then(setVendors).catch(() => toast.error('Failed to load vendors'));
     listCompanies().then(setCompanies).catch(() => {});
     listUsersLite({ role: ROLES.PURCHASE_HEAD }).then(setApprovers).catch(() => {});
-    listUsersLite({ role: ROLES.WAREHOUSE_POC }).then(setCheckers).catch(() => {});
-    loadPrefixes();
   }, []);
-
-  // Prefix options grouped by stage. The option text is the bare code so the
-  // COLLAPSED select stays narrow enough to sit beside the number box — a
-  // <select> can only ever show the selected option's own text, so putting the
-  // stage in an <optgroup> label is the only way to keep the closed control
-  // short and still say what each code means when it is open.
-  //
-  // A receipt can keep a prefix that has since been deactivated, so the stored
-  // one is appended under its own heading or the dropdown would silently blank a
-  // real recorded value. Mirrors checkerOptionsFor below.
-  const prefixGroupsFor = (prefixId, prefixLabel) => {
-    const active = prefixes.filter(p => p.is_active);
-    const groups = STAGES
-      .map(stage => ({
-        stage,
-        options: active.filter(p => p.stage === stage).map(p => ({ value: p.id, label: p.prefix })),
-      }))
-      .filter(g => g.options.length);
-    if (prefixId && !active.some(p => String(p.id) === String(prefixId))) {
-      groups.push({ stage: 'Inactive', options: [{ value: prefixId, label: prefixLabel || 'Unknown' }] });
-    }
-    return groups;
-  };
 
   const load = () => {
     if (isNew) return;
@@ -354,150 +309,13 @@ export default function OutboundPODetail() {
     } finally { setSavingShortKey(null); }
   };
 
-  // If a receipt's stored checker isn't in the live Warehouse_POC list (tagged
-  // before the rule existed, or since untagged), keep them selectable so the
-  // dropdown doesn't silently blank out a real recorded value.
-  const checkerOptionsFor = (checkedById, checkedByName) => {
-    const opts = checkers.map(u => ({ value: u.id, label: u.name }));
-    if (checkedById && !opts.some(o => String(o.value) === String(checkedById))) {
-      opts.push({ value: checkedById, label: `${checkedByName || 'Unknown'} (not Warehouse POC)` });
-    }
-    return opts;
-  };
+  // Receipts are added and edited in ReceiptModal now. Eleven inputs strung
+  // across a table row was what pushed this grid past the width it had, and the
+  // rules that used to live here moved to ./receiptFields so the modal and any
+  // future caller share one copy.
+  const startAddReceipt = (l) => setReceiptModal({ line: l, receipt: null });
+  const startEditReceipt = (l, r) => setReceiptModal({ line: l, receipt: r });
 
-  // Mirrors the server's receipt rules — including their ORDER, so the message
-  // shown here is the one the server would have returned — so the user gets the
-  // error before a round trip. Returns an error string, or null when usable.
-  //
-  // requireBillNo is false only when editing a receipt that has never had one
-  // (migration 053 synthesized those from the legacy flat `received` value, with
-  // no bill to record). Those stay editable for unrelated fixes rather than
-  // demanding a bill number nobody has — matching what the server enforces.
-  const receiptFieldError = (v, { requireBillNo = true } = {}) => {
-    if (!v.received_qty || Number(v.received_qty) <= 0) return 'Received Qty is required';
-    if (v.received_rate === '' || v.received_rate == null) return 'Billed Rate is required';
-    if (!Number.isFinite(Number(v.received_rate)) || Number(v.received_rate) < 0) return 'Billed Rate must be a number >= 0';
-    if (!v.checked_by) return 'Checked By is required';
-    if (requireBillNo && !String(v.bill_no ?? '').trim()) return 'Bill No is required';
-    if (v.incoming_no !== '' && v.incoming_no != null) {
-      const s = String(v.incoming_no).trim();
-      if (!s) return 'Incoming No cannot be blank';
-      if (s.length > INCOMING_NO_MAX) return `Incoming No must be ${INCOMING_NO_MAX} characters or less`;
-    }
-    // Appended after the existing rules, matching the server's ordering.
-    const procErr = moneyError(v.process_rate, 'Process Rate');
-    if (procErr) return procErr;
-    const afterErr = moneyError(v.after_rate, 'After Rate');
-    if (afterErr) return afterErr;
-    // A prefix with no number would print as a bare "GRY" and put a phantom lot
-    // on the Stitching page. The reverse is fine — a number with no stage yet is
-    // the legacy shape, and raises the Missing Incoming Stage flag instead.
-    if (v.incoming_prefix_id && !String(v.incoming_no ?? '').trim()) {
-      return 'Incoming No is required when a prefix is selected';
-    }
-    return null;
-  };
-
-  // After Rate tracks Received Rate + Process Rate until the user types over it,
-  // exactly as the server stores it. Editing either input re-derives it unless
-  // the value currently shown is already an override.
-  const withDerivedAfterRate = (draft, field, value) => {
-    const next = { ...draft, [field]: value };
-    if (field === 'after_rate') return next;
-    if (field !== 'received_rate' && field !== 'process_rate') return next;
-    const wasDefault = draft.after_rate === '' || draft.after_rate == null
-      || Number(draft.after_rate) === Number(draft.received_rate || 0) + Number(draft.process_rate || 0);
-    if (wasDefault) next.after_rate = defaultAfterRate(next.received_rate, next.process_rate);
-    return next;
-  };
-
-  const startAddReceipt = (lineKey) => {
-    loadPrefixes();
-    setAddingReceiptFor(lineKey);
-    setNewReceipt(EMPTY_RECEIPT);
-  };
-  const saveNewReceipt = async (l) => {
-    const err = receiptFieldError(newReceipt);
-    if (err) { toast.error(err); return; }
-    setSavingNewReceipt(true);
-    try {
-      await addOutboundPOLineReceipt(id, l.id, {
-        received_qty: Number(newReceipt.received_qty),
-        received_rate: Number(newReceipt.received_rate),
-        bill_no: newReceipt.bill_no || null,
-        checked_by: Number(newReceipt.checked_by),
-        incoming_no: String(newReceipt.incoming_no ?? '').trim() || null,
-        process_rate: newReceipt.process_rate === '' ? null : Number(newReceipt.process_rate),
-        after_rate: newReceipt.after_rate === '' ? null : Number(newReceipt.after_rate),
-        challan_no: String(newReceipt.challan_no ?? '').trim() || null,
-        incoming_prefix_id: newReceipt.incoming_prefix_id || null,
-      });
-      toast.success('Receipt added');
-      setAddingReceiptFor(null);
-      load();
-    } catch (err2) {
-      toast.error(err2.response?.data?.message || 'Failed to add receipt');
-    } finally { setSavingNewReceipt(false); }
-  };
-
-  const receiptValue = (r, field) => {
-    const draft = receiptDrafts[r.id];
-    if (draft && field in draft) return draft[field];
-    return r[field] ?? '';
-  };
-  const setReceiptField = (r, field, value) => setReceiptDrafts(d => {
-    // Seed the draft from the saved row so the After Rate derivation sees the
-    // fields the user has NOT touched, not just the one being edited.
-    const current = {
-      received_rate: receiptValue(r, 'received_rate'),
-      process_rate: receiptValue(r, 'process_rate'),
-      after_rate: receiptValue(r, 'after_rate'),
-      ...d[r.id],
-    };
-    return { ...d, [r.id]: withDerivedAfterRate(current, field, value) };
-  });
-  const saveReceipt = async (l, r) => {
-    const draft = {
-      received_qty: receiptValue(r, 'received_qty'),
-      received_rate: receiptValue(r, 'received_rate'),
-      checked_by: receiptValue(r, 'checked_by'),
-      incoming_no: receiptValue(r, 'incoming_no'),
-      bill_no: receiptValue(r, 'bill_no'),
-      process_rate: receiptValue(r, 'process_rate'),
-      after_rate: receiptValue(r, 'after_rate'),
-      challan_no: receiptValue(r, 'challan_no'),
-      incoming_prefix_id: receiptValue(r, 'incoming_prefix_id'),
-    };
-    // A receipt that already has a bill number must keep one — but one that
-    // never had it can still be edited without inventing it.
-    const hadBillNo = !!String(r.bill_no ?? '').trim();
-    const err = receiptFieldError(draft, { requireBillNo: hadBillNo });
-    if (err) { toast.error(err); return; }
-    setSavingReceiptId(r.id);
-    try {
-      const billNo = String(draft.bill_no ?? '').trim();
-      const payload = {
-        received_qty: Number(draft.received_qty),
-        received_rate: Number(draft.received_rate),
-        checked_by: Number(draft.checked_by),
-        incoming_no: String(draft.incoming_no ?? '').trim() || null,
-        process_rate: draft.process_rate === '' || draft.process_rate == null ? null : Number(draft.process_rate),
-        after_rate: draft.after_rate === '' || draft.after_rate == null ? null : Number(draft.after_rate),
-        challan_no: String(draft.challan_no ?? '').trim() || null,
-        incoming_prefix_id: draft.incoming_prefix_id || null,
-      };
-      // Omit bill_no entirely for a receipt that never had one, rather than
-      // sending an explicit null. The server validates only the fields actually
-      // present, so sending null would count as touching it and fail the
-      // mandatory rule on an edit that has nothing to do with the bill number.
-      if (billNo || hadBillNo) payload.bill_no = billNo || null;
-      await updateOutboundPOLineReceipt(id, l.id, r.id, payload);
-      setReceiptDrafts(d => { const n = { ...d }; delete n[r.id]; return n; });
-      load();
-    } catch (err2) {
-      toast.error(err2.response?.data?.message || 'Failed to update receipt');
-    } finally { setSavingReceiptId(null); }
-  };
   const handleDeleteReceipt = async () => {
     setDeletingReceipt(true);
     try {
@@ -637,37 +455,42 @@ export default function OutboundPODetail() {
                 {!readOnly && <Button type="button" variant="ghost" onClick={addLine}><Plus size={14} />Add Line</Button>}
               </div>
             </div>
+            {/* w-full keeps everything on screen without sideways scrolling at
+                normal sizes; min-w floors it so a tablet or a heavily zoomed
+                browser scrolls instead of crushing the columns to nothing. */}
             <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[1150px] text-xs xl:text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-12">Line</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600 min-w-[220px]">Article (Category · Item · Variant)</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Qty</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">UM</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Rate</th>
-                    {!readOnly && <th className="px-3 py-2 w-10" />}
+                    <th className={`${thCls} w-10`}>Line</th>
+                    <th className={`${thCls} min-w-[200px]`}>Article (Category · Item · Variant)</th>
+                    <th className={`${thCls} w-20`}>Qty</th>
+                    <th className={`${thCls} w-14`}>UM</th>
+                    <th className={`${thCls} w-20`}>Rate</th>
+                    {/* Line-level actions: delete plus History, merged into one
+                        column. Both are line-scoped and already rowSpan the same
+                        rows, so keeping them apart cost a column for nothing. */}
+                    <th className={`${thCls} w-16`} />
                     {!isNew && (
                       <>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-20 border-l-2 border-gray-200">Pending</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-32">Status</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-20">Short</th>
-                        <th className="px-3 py-2 w-10">History</th>
-                        {/* Asterisks mark the fields a receipt cannot be saved
-                            without. Received Rate and Checked By were already
-                            mandatory server-side but carried no marker. */}
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Received Qty <span className="text-red-500">*</span></th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Received Rate <span className="text-red-500">*</span></th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Process Rate</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">After Rate</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Bill No <span className="text-red-500">*</span></th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Challan No</th>
-                        {/* Wide enough for the prefix select plus a usable number box. */}
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-52">Incoming No</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-36">Checked By <span className="text-red-500">*</span></th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Updated By</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-36">Updated Timestamp</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-20">Actions</th>
+                        <th className={`${thCls} w-16 border-l-2 border-gray-200`}>Pending</th>
+                        <th className={`${thCls} w-28`}>Status</th>
+                        <th className={`${thCls} w-16`}>Short</th>
+                        {/* Receipt columns are read-only text — the form lives in
+                            ReceiptModal. Asterisks still mark what the modal will
+                            not save without. */}
+                        <th className={`${thCls} w-16`}>Recd Qty <span className="text-red-500">*</span></th>
+                        <th className={`${thCls} w-16`}>Rate <span className="text-red-500">*</span></th>
+                        <th className={`${thCls} w-16`}>Process</th>
+                        <th className={`${thCls} w-16`}>After</th>
+                        <th className={`${thCls} w-24`}>Bill No <span className="text-red-500">*</span></th>
+                        <th className={`${thCls} w-24`}>Challan No</th>
+                        <th className={`${thCls} w-28`}>Incoming No</th>
+                        <th className={`${thCls} w-24`}>Checked By <span className="text-red-500">*</span></th>
+                        {/* Lowest-value pair, merged and dropped first on narrow
+                            screens — the same information is in the History drawer. */}
+                        <th className={`${thCls} w-28 hidden min-[1600px]:table-cell`}>Updated</th>
+                        <th className={`${thCls} w-16`}>Actions</th>
                       </>
                     )}
                   </tr>
@@ -692,8 +515,8 @@ export default function OutboundPODetail() {
                           <tr key={`${l._key}-${rIdx}`} className={`border-b border-gray-100 ${l.deleted_at ? 'opacity-50' : ''}`}>
                             {rIdx === 0 && (
                               <>
-                                <td rowSpan={rowCount} className="px-3 py-2 text-gray-700 align-top">{displayNo ?? '—'}</td>
-                                <td rowSpan={rowCount} className="px-3 py-2 align-top">
+                                <td rowSpan={rowCount} className={`${tdCls} text-gray-700 align-top`}>{displayNo ?? '—'}</td>
+                                <td rowSpan={rowCount} className={`${tdCls} align-top`}>
                                   <select
                                     value={l.mapping}
                                     onChange={e => pickMapping(l._key, e.target.value)}
@@ -704,10 +527,10 @@ export default function OutboundPODetail() {
                                     {mappingOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                                   </select>
                                 </td>
-                                <td rowSpan={rowCount} className="px-3 py-2 align-top">
+                                <td rowSpan={rowCount} className={`${tdCls} align-top`}>
                                   <input type="number" min={0.01} step="0.01" value={l.qty} onChange={e => setLine(l._key, { qty: e.target.value })} disabled={readOnly || !!l.deleted_at} className={cellCls} />
                                 </td>
-                                <td rowSpan={rowCount} className="px-3 py-2 align-top text-gray-600">
+                                <td rowSpan={rowCount} className={`${tdCls} align-top text-gray-600`}>
                                   {(() => {
                                     const metricOptions = metricOptionsFor(l);
                                     // A single option is decided entirely by the
@@ -726,34 +549,40 @@ export default function OutboundPODetail() {
                                     );
                                   })()}
                                 </td>
-                                <td rowSpan={rowCount} className="px-3 py-2 align-top">
+                                <td rowSpan={rowCount} className={`${tdCls} align-top`}>
                                   <input type="number" min={0} step="0.01" value={l.rate} onChange={e => setLine(l._key, { rate: e.target.value })} disabled={readOnly || !!l.deleted_at} className={cellCls} />
                                 </td>
-                                {!readOnly && (
-                                  <td rowSpan={rowCount} className="px-3 py-2 align-top">
-                                    {!l.deleted_at && (
+                                {/* Line-level actions: remove plus History. Both are
+                                    line-scoped and rowSpan the same rows, so they
+                                    share one column instead of costing two. */}
+                                <td rowSpan={rowCount} className={`${tdCls} align-top`}>
+                                  <div className="flex items-center gap-0.5">
+                                    {!readOnly && !l.deleted_at && (
                                       <button
                                         type="button"
                                         onClick={() => removeLine(l._key)}
                                         disabled={activeLines.length === 1}
                                         title="Remove line"
-                                        className="p-1.5 rounded hover:bg-red-50 text-red-500 disabled:opacity-30 disabled:hover:bg-transparent"
+                                        className="p-1 rounded hover:bg-red-50 text-red-500 disabled:opacity-30 disabled:hover:bg-transparent"
                                       >
                                         <Trash2 size={14} />
                                       </button>
                                     )}
-                                  </td>
-                                )}
+                                    {!isNew && l.id && (
+                                      <HistoryButton entityType="outbound_po_line" entityId={l.id} title={`Line ${displayNo ?? ''} history`} className="p-1" />
+                                    )}
+                                  </div>
+                                </td>
                               </>
                             )}
                             {!isNew && (
                               <>
                                 {rIdx === 0 && (
                                   <>
-                                    <td rowSpan={rowCount} className={`px-3 py-2 font-semibold align-top border-l-2 border-gray-200 ${pendingOf(l) > 0 ? 'text-amber-700' : 'text-gray-700'}`}>
+                                    <td rowSpan={rowCount} className={`${tdCls} font-semibold align-top border-l-2 border-gray-200 ${pendingOf(l) > 0 ? 'text-amber-700' : 'text-gray-700'}`}>
                                       {l.deleted_at ? '—' : pendingOf(l)}
                                     </td>
-                                    <td rowSpan={rowCount} className="px-3 py-2 align-top">
+                                    <td rowSpan={rowCount} className={`${tdCls} align-top`}>
                                       {l.deleted_at ? <Badge color="gray">Deleted</Badge> : <Badge color={STATUS_COLORS[status] || 'gray'}>{status}</Badge>}
                                       {!l.deleted_at && !!(l.flags || []).length && (
                                         <div className="flex flex-wrap gap-1 mt-1">
@@ -763,7 +592,7 @@ export default function OutboundPODetail() {
                                         </div>
                                       )}
                                     </td>
-                                    <td rowSpan={rowCount} className="px-3 py-2 align-top">
+                                    <td rowSpan={rowCount} className={`${tdCls} align-top`}>
                                       <div className="flex items-center gap-1">
                                         <input
                                           type="number" min={0} step="0.01"
@@ -779,125 +608,47 @@ export default function OutboundPODetail() {
                                         )}
                                       </div>
                                     </td>
-                                    <td rowSpan={rowCount} className="px-3 py-2 align-top">
-                                      {l.id && <HistoryButton entityType="outbound_po_line" entityId={l.id} title={`Line ${displayNo ?? ''} history`} />}
-                                    </td>
                                   </>
                                 )}
                                 {receipt ? (
                                   <>
-                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
-                                      <input
-                                        type="number" min={0.01} step="0.01"
-                                        value={receiptValue(receipt, 'received_qty')}
-                                        onChange={e => setReceiptField(receipt, 'received_qty', e.target.value)}
-                                        disabled={readOnly || !!receipt.deleted_at}
-                                        className={cellCls}
-                                      />
+                                    <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{num(receipt.received_qty)}</td>
+                                    <td
+                                      className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''} ${(receipt.flags || []).includes('rate_mismatch') ? 'text-red-600 font-semibold' : ''}`}
+                                      title={(receipt.flags || []).includes('rate_mismatch') ? `${FLAG_META.rate_mismatch.hint} (agreed ${l.rate})` : undefined}
+                                    >
+                                      {num(receipt.received_rate)}
                                     </td>
-                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
-                                      <input
-                                        type="number" min={0} step="0.01"
-                                        value={receiptValue(receipt, 'received_rate')}
-                                        onChange={e => setReceiptField(receipt, 'received_rate', e.target.value)}
-                                        disabled={readOnly || !!receipt.deleted_at}
-                                        title={(receipt.flags || []).includes('rate_mismatch') ? `${FLAG_META.rate_mismatch.hint} (agreed ${l.rate})` : undefined}
-                                        className={`${cellCls} ${(receipt.flags || []).includes('rate_mismatch') ? 'ring-1 ring-red-400 border-red-400' : ''}`}
-                                      />
+                                    <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{num(receipt.process_rate)}</td>
+                                    <td className={`${tdCls} font-medium text-[#003049] ${receipt.deleted_at ? 'opacity-50' : ''}`}>{num(receipt.after_rate)}</td>
+                                    <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{receipt.bill_no || '—'}</td>
+                                    <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{receipt.challan_no || '—'}</td>
+                                    {/* Prefix and number read as one value: the prefix records
+                                        which stage the goods arrived at, and is what puts the lot
+                                        on a Stitching tab. */}
+                                    <td
+                                      className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''} ${(receipt.flags || []).some(f => f === 'missing_incoming_no' || f === 'missing_incoming_stage') ? 'text-amber-600' : ''}`}
+                                      title={receiptIncomingHint(receipt)}
+                                    >
+                                      {receipt.incoming_no
+                                        ? <span className="font-mono">{receipt.incoming_prefix || ''}{receipt.incoming_no}</span>
+                                        : '—'}
+                                      {/* Colour alone is not a signal everyone can see, so the
+                                          flagged state also carries a glyph. */}
+                                      {(receipt.flags || []).includes('missing_incoming_stage') && <span className="ml-1">⚠</span>}
                                     </td>
-                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
-                                      <input
-                                        type="number" min={0} step="0.01"
-                                        value={receiptValue(receipt, 'process_rate')}
-                                        onChange={e => setReceiptField(receipt, 'process_rate', e.target.value)}
-                                        disabled={readOnly || !!receipt.deleted_at}
-                                        title="Cost of processing this material up to the stage it was received at"
-                                        className={cellCls}
-                                      />
+                                    <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{receipt.checked_by_name || '—'}</td>
+                                    <td className={`${tdCls} hidden min-[1600px]:table-cell ${receipt.deleted_at ? 'opacity-50' : ''}`}>
+                                      <div className="text-gray-600">{receipt.updated_by_name || receipt.created_by_name || '—'}</div>
+                                      <div className="text-[11px] text-gray-400">{formatDateTime(receipt.updated_at)}</div>
                                     </td>
-                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
-                                      <input
-                                        type="number" min={0} step="0.01"
-                                        value={receiptValue(receipt, 'after_rate')}
-                                        onChange={e => setReceiptField(receipt, 'after_rate', e.target.value)}
-                                        disabled={readOnly || !!receipt.deleted_at}
-                                        title="Defaults to Received Rate + Process Rate — type over it to pin a different value"
-                                        className={cellCls}
-                                      />
-                                    </td>
-                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
-                                      <input
-                                        type="text"
-                                        value={receiptValue(receipt, 'bill_no')}
-                                        onChange={e => setReceiptField(receipt, 'bill_no', e.target.value)}
-                                        disabled={readOnly || !!receipt.deleted_at}
-                                        className={cellCls}
-                                      />
-                                    </td>
-                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
-                                      <input
-                                        type="text" maxLength={INCOMING_NO_MAX}
-                                        value={receiptValue(receipt, 'challan_no')}
-                                        onChange={e => setReceiptField(receipt, 'challan_no', e.target.value)}
-                                        disabled={readOnly || !!receipt.deleted_at}
-                                        className={cellCls}
-                                      />
-                                    </td>
-                                    {/* Prefix and number are one field to the user: the prefix
-                                        records which stage the goods arrived at, and is what puts
-                                        the lot on a Stitching tab. */}
-                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
-                                      <div className="flex gap-1">
-                                        <select
-                                          value={receiptValue(receipt, 'incoming_prefix_id') || ''}
-                                          onChange={e => setReceiptField(receipt, 'incoming_prefix_id', e.target.value)}
-                                          onFocus={loadPrefixes}
-                                          disabled={readOnly || !!receipt.deleted_at}
-                                          title={(receipt.flags || []).includes('missing_incoming_stage') ? FLAG_META.missing_incoming_stage.hint : undefined}
-                                          className={`${cellBase} w-20 shrink-0 ${(receipt.flags || []).includes('missing_incoming_stage') ? 'ring-1 ring-amber-400 border-amber-400' : ''}`}
-                                        >
-                                          <option value="">—</option>
-                                          {prefixGroupsFor(receipt.incoming_prefix_id, receipt.incoming_prefix).map(g => (
-                                            <optgroup key={g.stage} label={g.stage}>
-                                              {g.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                                            </optgroup>
-                                          ))}
-                                        </select>
-                                        <input
-                                          type="text" maxLength={INCOMING_NO_MAX}
-                                          value={receiptValue(receipt, 'incoming_no')}
-                                          onChange={e => setReceiptField(receipt, 'incoming_no', e.target.value)}
-                                          disabled={readOnly || !!receipt.deleted_at}
-                                          placeholder="Number"
-                                          title={(receipt.flags || []).includes('missing_incoming_no') ? FLAG_META.missing_incoming_no.hint : undefined}
-                                          className={`${cellBase} flex-1 min-w-0 ${(receipt.flags || []).includes('missing_incoming_no') ? 'ring-1 ring-amber-400 border-amber-400' : ''}`}
-                                        />
-                                      </div>
-                                    </td>
-                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
-                                      <select
-                                        value={receiptValue(receipt, 'checked_by') || ''}
-                                        onChange={e => setReceiptField(receipt, 'checked_by', e.target.value)}
-                                        disabled={readOnly || !!receipt.deleted_at}
-                                        className={cellCls}
-                                      >
-                                        <option value="">Select...</option>
-                                        {checkerOptionsFor(receipt.checked_by, receipt.checked_by_name).map(o => (
-                                          <option key={o.value} value={o.value}>{o.label}</option>
-                                        ))}
-                                      </select>
-                                    </td>
-                                    <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{receipt.updated_by_name || receipt.created_by_name || '—'}</td>
-                                    <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{formatDateTime(receipt.updated_at)}</td>
-                                    <td className="px-3 py-2">
+                                    <td className={tdCls}>
                                       <div className="flex items-center gap-1">
                                         {!receipt.deleted_at && !readOnly && (
                                           <>
-                                            {receiptDrafts[receipt.id] && (
-                                              <button type="button" onClick={() => saveReceipt(l, receipt)} disabled={savingReceiptId === receipt.id} title="Save receipt" className="p-1 rounded hover:bg-green-50 text-green-600 disabled:opacity-40">
-                                                <Save size={13} />
-                                              </button>
-                                            )}
+                                            <button type="button" onClick={() => startEditReceipt(l, receipt)} title="Edit receipt" className="p-1 rounded hover:bg-gray-100 text-gray-500">
+                                              <Pencil size={13} />
+                                            </button>
                                             <button type="button" onClick={() => setConfirmDeleteReceipt({ id: receipt.id, lineId: l.id })} title="Delete receipt" className="p-1 rounded hover:bg-red-50 text-red-500">
                                               <Trash2 size={13} />
                                             </button>
@@ -912,66 +663,13 @@ export default function OutboundPODetail() {
                                     </td>
                                   </>
                                 ) : isAddRow ? (
-                                  addingReceiptFor === l._key ? (
-                                    <>
-                                      <td className="px-3 py-2">
-                                        <input type="number" min={0.01} step="0.01" placeholder="Qty" value={newReceipt.received_qty} onChange={e => setNewReceipt(r => ({ ...r, received_qty: e.target.value }))} className={cellCls} />
-                                      </td>
-                                      <td className="px-3 py-2">
-                                        <input type="number" min={0} step="0.01" placeholder="Rate" value={newReceipt.received_rate} onChange={e => setNewReceipt(r => withDerivedAfterRate(r, 'received_rate', e.target.value))} className={cellCls} />
-                                      </td>
-                                      <td className="px-3 py-2">
-                                        <input type="number" min={0} step="0.01" placeholder="Process" value={newReceipt.process_rate} onChange={e => setNewReceipt(r => withDerivedAfterRate(r, 'process_rate', e.target.value))} className={cellCls} />
-                                      </td>
-                                      <td className="px-3 py-2">
-                                        <input type="number" min={0} step="0.01" placeholder="After" title="Defaults to Rate + Process Rate" value={newReceipt.after_rate} onChange={e => setNewReceipt(r => ({ ...r, after_rate: e.target.value }))} className={cellCls} />
-                                      </td>
-                                      <td className="px-3 py-2">
-                                        <input type="text" placeholder="Bill No" value={newReceipt.bill_no} onChange={e => setNewReceipt(r => ({ ...r, bill_no: e.target.value }))} className={cellCls} />
-                                      </td>
-                                      <td className="px-3 py-2">
-                                        <input type="text" maxLength={INCOMING_NO_MAX} placeholder="Challan No" value={newReceipt.challan_no} onChange={e => setNewReceipt(r => ({ ...r, challan_no: e.target.value }))} className={cellCls} />
-                                      </td>
-                                      <td className="px-3 py-2">
-                                        <div className="flex gap-1">
-                                          <select value={newReceipt.incoming_prefix_id} onChange={e => setNewReceipt(r => ({ ...r, incoming_prefix_id: e.target.value }))} className={`${cellBase} w-20 shrink-0`}>
-                                            <option value="">—</option>
-                                            {prefixGroupsFor().map(g => (
-                                              <optgroup key={g.stage} label={g.stage}>
-                                                {g.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                                              </optgroup>
-                                            ))}
-                                          </select>
-                                          <input type="text" maxLength={INCOMING_NO_MAX} placeholder="e.g. 0077" value={newReceipt.incoming_no} onChange={e => setNewReceipt(r => ({ ...r, incoming_no: e.target.value }))} className={`${cellBase} flex-1 min-w-0`} />
-                                        </div>
-                                      </td>
-                                      <td className="px-3 py-2">
-                                        <select value={newReceipt.checked_by} onChange={e => setNewReceipt(r => ({ ...r, checked_by: e.target.value }))} className={cellCls}>
-                                          <option value="">Checked by...</option>
-                                          {checkerOptionsFor().map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                                        </select>
-                                      </td>
-                                      <td colSpan={2} className="px-3 py-2 text-xs text-gray-400">New receipt</td>
-                                      <td className="px-3 py-2">
-                                        <div className="flex items-center gap-1">
-                                          <button type="button" onClick={() => saveNewReceipt(l)} disabled={savingNewReceipt} title="Add receipt" className="p-1 rounded hover:bg-green-50 text-green-600 disabled:opacity-40">
-                                            <Save size={13} />
-                                          </button>
-                                          <button type="button" onClick={() => setAddingReceiptFor(null)} title="Cancel" className="p-1 rounded hover:bg-gray-100 text-gray-400">
-                                            <X size={13} />
-                                          </button>
-                                        </div>
-                                      </td>
-                                    </>
-                                  ) : (
-                                    <td colSpan={12} className="px-3 py-2">
-                                      <button type="button" onClick={() => startAddReceipt(l._key)} className="inline-flex items-center gap-1 text-xs text-[#c1121f] hover:underline">
-                                        <Plus size={12} />Add receipt
-                                      </button>
-                                    </td>
-                                  )
+                                  <td colSpan={RECEIPT_COLSPAN} className={tdCls}>
+                                    <button type="button" onClick={() => startAddReceipt(l)} className="inline-flex items-center gap-1 text-xs text-[#c1121f] hover:underline">
+                                      <Plus size={12} />Add receipt
+                                    </button>
+                                  </td>
                                 ) : (
-                                  <td colSpan={12} className="px-3 py-2 text-xs text-gray-400">
+                                  <td colSpan={RECEIPT_COLSPAN} className={`${tdCls} text-gray-400`}>
                                     {l.deleted_at ? '—'
                                       : lineClosed ? 'Line is Closed — increase Qty to receive more'
                                       : l.id ? 'No receipts yet' : 'Save the PO to add receipts'}
@@ -1003,6 +701,16 @@ export default function OutboundPODetail() {
         </form>
       )}
 
+      {receiptModal && (
+        <ReceiptModal
+          poId={id}
+          line={receiptModal.line}
+          receipt={receiptModal.receipt}
+          onClose={() => setReceiptModal(null)}
+          onSaved={() => { setReceiptModal(null); load(); }}
+        />
+      )}
+
       <ConfirmDialog
         isOpen={!!confirmDeleteReceipt}
         onClose={() => setConfirmDeleteReceipt(null)}
@@ -1017,6 +725,19 @@ export default function OutboundPODetail() {
 }
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f] disabled:bg-gray-50 disabled:text-gray-600';
+
+// Table density scales with the viewport: tight enough for a 1366px laptop,
+// roomier on a large monitor. Applied to every th/td so the two stay aligned.
+const thCls = 'px-2 py-2 xl:px-3 text-left font-semibold text-gray-600 whitespace-nowrap';
+const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2 whitespace-nowrap';
+
+// Receipt-side column count, for the colSpan on the "Add receipt" and
+// "No receipts yet" rows. Keep in step with the receipt <th> block above:
+// Recd Qty, Rate, Process, After, Bill No, Challan No, Incoming No, Checked By,
+// Updated, Actions. The Updated column is hidden below 1600px but still occupies
+// a slot in the colSpan, which is correct — a spanned cell counts hidden columns.
+const RECEIPT_COLSPAN = 10;
+
 // Cell chrome WITHOUT a width. cellCls keeps w-full for the single-control
 // cells; a cell packing two controls composes from cellBase and sizes them
 // itself, because `${cellCls} w-20` does NOT work — Tailwind emits w-full after
@@ -1024,6 +745,17 @@ const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm foc
 // source order no matter how the className string is ordered.
 const cellBase = 'px-2 py-1 border border-gray-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-[#c1121f]/40 focus:border-[#c1121f] disabled:bg-gray-50 disabled:text-gray-600';
 const cellCls = `w-full ${cellBase}`;
+
+// Trailing zeros are noise in a dense grid: 62.5 reads better than 62.50.
+const num = (v) => (v == null || v === '' ? '—' : String(Math.round(Number(v) * 100) / 100));
+
+// One tooltip for the Incoming No cell, since either flag can apply to it.
+const receiptIncomingHint = (r) => {
+  const flags = r.flags || [];
+  if (flags.includes('missing_incoming_stage')) return FLAG_META.missing_incoming_stage.hint;
+  if (flags.includes('missing_incoming_no')) return FLAG_META.missing_incoming_no.hint;
+  return undefined;
+};
 
 function Field({ label, required, children }) {
   return (
