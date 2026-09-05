@@ -21,7 +21,7 @@ import { ROLES } from '../../utils/roles';
 import { FLAG_META } from '../../utils/outboundPOFlags';
 import { isValidDateString } from '../../utils/dateValidation';
 import { formatDateTime } from '../../utils/formatters';
-import { moneyError, defaultAfterRate } from '../../utils/stitching';
+import { moneyError, defaultAfterRate, STAGES } from '../../utils/stitching';
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
 
@@ -127,15 +127,27 @@ export default function OutboundPODetail() {
     loadPrefixes();
   }, []);
 
-  // A receipt can keep a prefix that has since been deactivated, so the option
-  // list has to include the stored one or the dropdown would silently blank a
+  // Prefix options grouped by stage. The option text is the bare code so the
+  // COLLAPSED select stays narrow enough to sit beside the number box — a
+  // <select> can only ever show the selected option's own text, so putting the
+  // stage in an <optgroup> label is the only way to keep the closed control
+  // short and still say what each code means when it is open.
+  //
+  // A receipt can keep a prefix that has since been deactivated, so the stored
+  // one is appended under its own heading or the dropdown would silently blank a
   // real recorded value. Mirrors checkerOptionsFor below.
-  const prefixOptionsFor = (prefixId, prefixLabel) => {
-    const opts = prefixes.filter(p => p.is_active).map(p => ({ value: p.id, label: `${p.prefix} · ${p.stage}` }));
-    if (prefixId && !opts.some(o => String(o.value) === String(prefixId))) {
-      opts.push({ value: prefixId, label: `${prefixLabel || 'Unknown'} (inactive)` });
+  const prefixGroupsFor = (prefixId, prefixLabel) => {
+    const active = prefixes.filter(p => p.is_active);
+    const groups = STAGES
+      .map(stage => ({
+        stage,
+        options: active.filter(p => p.stage === stage).map(p => ({ value: p.id, label: p.prefix })),
+      }))
+      .filter(g => g.options.length);
+    if (prefixId && !active.some(p => String(p.id) === String(prefixId))) {
+      groups.push({ stage: 'Inactive', options: [{ value: prefixId, label: prefixLabel || 'Unknown' }] });
     }
-    return opts;
+    return groups;
   };
 
   const load = () => {
@@ -650,7 +662,8 @@ export default function OutboundPODetail() {
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">After Rate</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Bill No <span className="text-red-500">*</span></th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Challan No</th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-44">Incoming No</th>
+                        {/* Wide enough for the prefix select plus a usable number box. */}
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-52">Incoming No</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-36">Checked By <span className="text-red-500">*</span></th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Updated By</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-36">Updated Timestamp</th>
@@ -841,11 +854,13 @@ export default function OutboundPODetail() {
                                           onFocus={loadPrefixes}
                                           disabled={readOnly || !!receipt.deleted_at}
                                           title={(receipt.flags || []).includes('missing_incoming_stage') ? FLAG_META.missing_incoming_stage.hint : undefined}
-                                          className={`${cellCls} w-20 shrink-0 ${(receipt.flags || []).includes('missing_incoming_stage') ? 'ring-1 ring-amber-400 border-amber-400' : ''}`}
+                                          className={`${cellBase} w-20 shrink-0 ${(receipt.flags || []).includes('missing_incoming_stage') ? 'ring-1 ring-amber-400 border-amber-400' : ''}`}
                                         >
                                           <option value="">—</option>
-                                          {prefixOptionsFor(receipt.incoming_prefix_id, receipt.incoming_prefix).map(o => (
-                                            <option key={o.value} value={o.value}>{o.label}</option>
+                                          {prefixGroupsFor(receipt.incoming_prefix_id, receipt.incoming_prefix).map(g => (
+                                            <optgroup key={g.stage} label={g.stage}>
+                                              {g.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                            </optgroup>
                                           ))}
                                         </select>
                                         <input
@@ -853,8 +868,9 @@ export default function OutboundPODetail() {
                                           value={receiptValue(receipt, 'incoming_no')}
                                           onChange={e => setReceiptField(receipt, 'incoming_no', e.target.value)}
                                           disabled={readOnly || !!receipt.deleted_at}
+                                          placeholder="Number"
                                           title={(receipt.flags || []).includes('missing_incoming_no') ? FLAG_META.missing_incoming_no.hint : undefined}
-                                          className={`${cellCls} ${(receipt.flags || []).includes('missing_incoming_no') ? 'ring-1 ring-amber-400 border-amber-400' : ''}`}
+                                          className={`${cellBase} flex-1 min-w-0 ${(receipt.flags || []).includes('missing_incoming_no') ? 'ring-1 ring-amber-400 border-amber-400' : ''}`}
                                         />
                                       </div>
                                     </td>
@@ -918,11 +934,15 @@ export default function OutboundPODetail() {
                                       </td>
                                       <td className="px-3 py-2">
                                         <div className="flex gap-1">
-                                          <select value={newReceipt.incoming_prefix_id} onChange={e => setNewReceipt(r => ({ ...r, incoming_prefix_id: e.target.value }))} className={`${cellCls} w-20 shrink-0`}>
+                                          <select value={newReceipt.incoming_prefix_id} onChange={e => setNewReceipt(r => ({ ...r, incoming_prefix_id: e.target.value }))} className={`${cellBase} w-20 shrink-0`}>
                                             <option value="">—</option>
-                                            {prefixOptionsFor().map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                            {prefixGroupsFor().map(g => (
+                                              <optgroup key={g.stage} label={g.stage}>
+                                                {g.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                              </optgroup>
+                                            ))}
                                           </select>
-                                          <input type="text" maxLength={INCOMING_NO_MAX} placeholder="e.g. 0077" value={newReceipt.incoming_no} onChange={e => setNewReceipt(r => ({ ...r, incoming_no: e.target.value }))} className={cellCls} />
+                                          <input type="text" maxLength={INCOMING_NO_MAX} placeholder="e.g. 0077" value={newReceipt.incoming_no} onChange={e => setNewReceipt(r => ({ ...r, incoming_no: e.target.value }))} className={`${cellBase} flex-1 min-w-0`} />
                                         </div>
                                       </td>
                                       <td className="px-3 py-2">
@@ -997,7 +1017,13 @@ export default function OutboundPODetail() {
 }
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f] disabled:bg-gray-50 disabled:text-gray-600';
-const cellCls = 'w-full px-2 py-1 border border-gray-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-[#c1121f]/40 focus:border-[#c1121f] disabled:bg-gray-50 disabled:text-gray-600';
+// Cell chrome WITHOUT a width. cellCls keeps w-full for the single-control
+// cells; a cell packing two controls composes from cellBase and sizes them
+// itself, because `${cellCls} w-20` does NOT work — Tailwind emits w-full after
+// w-20 in its stylesheet, and both are single-class selectors, so w-full wins on
+// source order no matter how the className string is ordered.
+const cellBase = 'px-2 py-1 border border-gray-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-[#c1121f]/40 focus:border-[#c1121f] disabled:bg-gray-50 disabled:text-gray-600';
+const cellCls = `w-full ${cellBase}`;
 
 function Field({ label, required, children }) {
   return (

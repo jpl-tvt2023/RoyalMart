@@ -8,7 +8,12 @@ import { listStitchingParties, forwardStitchingLot } from '../../api/stitching.a
 import { ROLES } from '../../utils/roles';
 import { defaultAfterRate, fmtNum, moneyError, qtyError, EPSILON } from '../../utils/stitching';
 
-const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
+// Field chrome WITHOUT a width. inputCls keeps w-full for the single-control
+// fields; the Incoming No pair composes from inputBase and sizes its two halves
+// itself, because `${inputCls} w-28` does NOT work — Tailwind emits w-full after
+// w-28, so w-full wins on source order however the class string is written.
+const inputBase = 'px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
+const inputCls = `w-full ${inputBase}`;
 const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
 
 const EMPTY = {
@@ -250,10 +255,12 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
             hint={stagePrefixes.length ? undefined : `No active ${lot.next_stage} prefix — add one in Admin → Purchase Config`}
           >
             <div className="flex gap-2">
+              {/* Already filtered to the one target stage, so plain options are
+                  right here — no optgroup needed as on the PO detail page. */}
               <select
                 value={form.incoming_prefix_id}
                 onChange={e => setField('incoming_prefix_id', e.target.value)}
-                className={`${inputCls} w-28 shrink-0`}
+                className={`${inputBase} w-28 shrink-0`}
               >
                 <option value="">Prefix</option>
                 {stagePrefixes.map(p => <option key={p.id} value={p.id}>{p.prefix}</option>)}
@@ -261,7 +268,7 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
               <input
                 value={form.incoming_no}
                 onChange={e => setField('incoming_no', e.target.value)}
-                className={inputCls}
+                className={`${inputBase} flex-1 min-w-0`}
                 maxLength={50}
                 placeholder="e.g. 0077"
               />
