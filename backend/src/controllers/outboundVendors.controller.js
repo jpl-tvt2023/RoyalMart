@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
+const { pairKey, unitMetricsByPair } = require('../services/outboundProducts.service');
 
 function normName(v) {
   return v == null ? '' : String(v).trim();
@@ -39,6 +40,23 @@ function validateArticles(articles, allowed) {
   return null;
 }
 
+// An article's unit_metric is only the DEFAULT a PO line starts from -- since
+// migration 064 its (category, item_name) pair can be listed in the Outbound
+// Product List under several metrics, and the PO line picks between them. So the
+// mapping carries the whole option list alongside the default.
+//
+// The default is kept in the list even when the master no longer offers it, so a
+// line already ordered in a since-retired metric still renders its own value.
+function withUnitMetrics(article, metricsByPair) {
+  const listed = metricsByPair.get(pairKey(article.category, article.item_name)) || [];
+  const unit_metrics = [...listed];
+  const fallback = normName(article.unit_metric);
+  if (fallback && !unit_metrics.some(m => normName(m).toLowerCase() === fallback.toLowerCase())) {
+    unit_metrics.push(article.unit_metric);
+  }
+  return { ...article, unit_metrics };
+}
+
 async function list(req, res, next) {
   try {
     const { rows: vendors } = await db.execute(
@@ -48,21 +66,24 @@ async function list(req, res, next) {
        LEFT JOIN users u ON u.id = v.updated_by
        ORDER BY v.is_active DESC, v.name ASC`
     );
-    // unit_metric comes from the catalog so the PO screens can show the UM that
-    // a future line will inherit. LEFT JOIN so a mapping whose catalog row was
-    // since deleted still lists (with a null UM) instead of vanishing.
-    const { rows: articles } = await db.execute(
-      `SELECT a.id, a.vendor_id, a.category, a.item_name, a.variant, prm.unit_metric
-       FROM outbound_vendor_articles a
-       LEFT JOIN packaging_raw_materials prm
-         ON prm.category = a.category AND prm.item_name = a.item_name
-        AND prm.variant = COALESCE(a.variant, '')
-       ORDER BY a.id ASC`
-    );
+    // unit_metric comes from the catalog: it is the UM a new PO line DEFAULTS
+    // to. LEFT JOIN so a mapping whose catalog row was since deleted still lists
+    // (with a null UM) instead of vanishing.
+    const [{ rows: articles }, metricsByPair] = await Promise.all([
+      db.execute(
+        `SELECT a.id, a.vendor_id, a.category, a.item_name, a.variant, prm.unit_metric
+         FROM outbound_vendor_articles a
+         LEFT JOIN packaging_raw_materials prm
+           ON prm.category = a.category AND prm.item_name = a.item_name
+          AND prm.variant = COALESCE(a.variant, '')
+         ORDER BY a.id ASC`
+      ),
+      unitMetricsByPair(),
+    ]);
     const byVendor = new Map();
     for (const a of articles) {
       if (!byVendor.has(a.vendor_id)) byVendor.set(a.vendor_id, []);
-      byVendor.get(a.vendor_id).push(a);
+      byVendor.get(a.vendor_id).push(withUnitMetrics(a, metricsByPair));
     }
     res.json(vendors.map(v => ({ ...v, articles: byVendor.get(v.id) || [] })));
   } catch (err) { next(err); }
@@ -173,16 +194,19 @@ async function update(req, res, next) {
       });
       await tx.commit();
 
-      const { rows: articleRows } = await db.execute({
-        sql: `SELECT a.id, a.category, a.item_name, a.variant, prm.unit_metric
-              FROM outbound_vendor_articles a
-              LEFT JOIN packaging_raw_materials prm
-                ON prm.category = a.category AND prm.item_name = a.item_name
-               AND prm.variant = COALESCE(a.variant, '')
-              WHERE a.vendor_id = ? ORDER BY a.id ASC`,
-        args: [id],
-      });
-      res.json({ ...rows[0], articles: articleRows });
+      const [{ rows: articleRows }, metricsByPair] = await Promise.all([
+        db.execute({
+          sql: `SELECT a.id, a.category, a.item_name, a.variant, prm.unit_metric
+                FROM outbound_vendor_articles a
+                LEFT JOIN packaging_raw_materials prm
+                  ON prm.category = a.category AND prm.item_name = a.item_name
+                 AND prm.variant = COALESCE(a.variant, '')
+                WHERE a.vendor_id = ? ORDER BY a.id ASC`,
+          args: [id],
+        }),
+        unitMetricsByPair(),
+      ]);
+      res.json({ ...rows[0], articles: articleRows.map(a => withUnitMetrics(a, metricsByPair)) });
     } catch (e) {
       await tx.rollback();
       throw e;

@@ -5,6 +5,7 @@ const { isValidDateString } = require('../utils/dateValidation');
 const {
   FLAG_KEYS, RECEIPT_FLAG_KEYS, poFlagExists, lineFlagExists, receiptFlags, pickFlags, flagSelect,
 } = require('../services/outboundPOFlags');
+const { pairKey, unitMetricsByPair } = require('../services/outboundProducts.service');
 
 const VALID_STATUSES = ['Open', 'Partially Received', 'Closed'];
 
@@ -118,11 +119,49 @@ function lineKey(l) {
   return `${String(l.category || '').trim().toLowerCase()}${String(l.item_name || '').trim().toLowerCase()}${String(l.variant || '').trim().toLowerCase()}`;
 }
 
-function normLine(l, idx, umMap) {
+// unit_metric is COLLATE NOCASE in both masters, so metrics compare
+// case-insensitively everywhere -- letting "taga" and "Taga" count as different
+// would fragment the column in exactly the way migration 064 set out to prevent.
+const eqMetric = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
+
+// Resolve the unit metric a submitted line should be stored with, returning
+// { metric } or { error }.
+//
+// Omitted or blank keeps the pre-selectable behaviour exactly: the packaging
+// catalog's own UM for the triple, falling back to the item's UM ignoring
+// variant so a historical line whose free-text variant never made it into the
+// catalog still shows a unit. Every existing API caller therefore keeps working.
+//
+// A supplied metric must be one the Outbound Product List actually lists for the
+// line's (category, item_name) pair, and is stored in the master's canonical
+// casing. Two values are always accepted on top of that list: the catalog
+// default (it is what the server itself would have chosen, and the pair may
+// predate the Outbound Product List entirely) and `storedMetric`, an existing
+// line's current value. Both are grandfathering, on the same principle as the
+// tuple grandfathering in validateLines -- editing a master must never leave an
+// existing PO unsaveable. The vendor listing mirrors this set in
+// withUnitMetrics, so the dropdown offers precisely what this accepts.
+function resolveLineMetric(l, idx, umMap, metricsByPair, storedMetric) {
   const exact = umMap.get(lineKey(l));
-  // Fall back to the item's UM ignoring variant, so a historical line whose
-  // free-text variant never made it into the catalog still shows a unit.
   const fallback = umMap.get(lineKey({ category: l.category, item_name: l.item_name, variant: '' }));
+  const catalogDefault = exact ?? fallback ?? null;
+
+  const submitted = String(l.unit_metric ?? '').trim();
+  if (!submitted) return { metric: catalogDefault };
+
+  const allowed = [...(metricsByPair.get(pairKey(l.category, l.item_name)) || [])];
+  for (const extra of [catalogDefault, storedMetric]) {
+    if (extra && !allowed.some(m => eqMetric(m, extra))) allowed.push(extra);
+  }
+  const match = allowed.find(m => eqMetric(m, submitted));
+  if (match) return { metric: match };
+
+  const label = `${String(l.category || '').trim()} / ${String(l.item_name || '').trim()}`;
+  const options = allowed.length ? ` (${allowed.join(', ')})` : '';
+  return { error: `Line ${idx + 1}: "${submitted}" is not a listed unit metric for "${label}"${options}` };
+}
+
+function normLine(l, idx, unitMetric) {
   return {
     id: l.id ? Number(l.id) : null,
     line_no: Number(l.line_no) || idx + 1,
@@ -131,7 +170,7 @@ function normLine(l, idx, umMap) {
     variant: String(l.variant || '').trim() || null,
     qty: Number(l.qty),
     rate: l.rate === '' || l.rate == null ? 0 : Number(l.rate) || 0,
-    unit_metric: exact ?? fallback ?? null,
+    unit_metric: unitMetric,
   };
 }
 
@@ -519,8 +558,14 @@ async function create(req, res, next) {
     const mappingSet = await vendorMappingSet(vendor_id);
     const linesError = validateLines(lines, mappingSet);
     if (linesError) return res.status(400).json({ message: linesError });
-    const umMap = await catalogUnitMetrics();
-    const normLines = lines.map((l, i) => normLine(l, i, umMap));
+    const [umMap, metricsByPair] = await Promise.all([catalogUnitMetrics(), unitMetricsByPair()]);
+    const normLines = [];
+    for (let i = 0; i < lines.length; i++) {
+      // No stored metric to grandfather: every line here is brand new.
+      const { metric, error: metricError } = resolveLineMetric(lines[i], i, umMap, metricsByPair, null);
+      if (metricError) return res.status(400).json({ message: metricError });
+      normLines.push(normLine(lines[i], i, metric));
+    }
     // Brand-new lines have no receipts yet, so every line starts at
     // received=0/short=0 for status-derivation purposes.
     const status = deriveStatus(normLines.map(l => ({ ...l, received: 0, short: 0 })));
@@ -632,20 +677,41 @@ async function update(req, res, next) {
     let existingLines = [];
     if (has('lines')) {
       const mappingSet = await vendorMappingSet(current.vendor_id);
-      // unit_metric must be selected here even though nothing edits it
-      // directly: diffFields compares before/after below, and an absent
-      // `before` value would read as undefined vs a real value and emit a
-      // spurious change on every single save.
+      // unit_metric is selected because diffFields compares before/after below
+      // (an absent `before` value would read as undefined vs a real value and
+      // emit a spurious change on every single save) and because the metric lock
+      // compares against it. short and received come along for that lock too:
+      // computeLineStatus needs all three to say whether a line is still Open.
       const { rows: activeLines } = await db.execute({
-        sql: 'SELECT id, line_no, category, item_name, variant, qty, rate, unit_metric FROM outbound_po_lines WHERE po_id = ? AND deleted_at IS NULL',
+        sql: `SELECT l.id, l.line_no, l.category, l.item_name, l.variant, l.qty, l.rate, l.unit_metric, l.short,
+                     COALESCE((SELECT SUM(r.received_qty) FROM outbound_po_line_receipts r
+                               WHERE r.line_id = l.id AND r.deleted_at IS NULL), 0) AS received
+              FROM outbound_po_lines l WHERE l.po_id = ? AND l.deleted_at IS NULL`,
         args: [id],
       });
       existingLines = activeLines;
       const grandfathered = new Set(existingLines.map(lineKey));
       const linesError = validateLines(req.body.lines, mappingSet, grandfathered);
       if (linesError) return res.status(400).json({ message: linesError });
-      const umMap = await catalogUnitMetrics();
-      nextLines = req.body.lines.map((l, i) => normLine(l, i, umMap));
+      const [umMap, metricsByPair] = await Promise.all([catalogUnitMetrics(), unitMetricsByPair()]);
+      const beforeById = new Map(existingLines.map(el => [el.id, el]));
+      nextLines = [];
+      for (let i = 0; i < req.body.lines.length; i++) {
+        const l = req.body.lines[i];
+        const before = l.id ? beforeById.get(Number(l.id)) : null;
+        const { metric, error: metricError } = resolveLineMetric(l, i, umMap, metricsByPair, before?.unit_metric);
+        if (metricError) return res.status(400).json({ message: metricError });
+        // Once a line stops being Open, its received quantities and the rates it
+        // was billed at were all recorded against the metric in force at the
+        // time. Re-labelling it now would silently reinterpret every one of them,
+        // so the metric is fixed from that point on.
+        if (before && computeLineStatus(before) !== 'Open' && !eqMetric(metric, before.unit_metric)) {
+          return res.status(400).json({
+            message: `Line ${i + 1}: unit metric cannot be changed once the line has been received against`,
+          });
+        }
+        nextLines.push(normLine(l, i, metric));
+      }
     }
 
     const tx = await db.transaction('write');

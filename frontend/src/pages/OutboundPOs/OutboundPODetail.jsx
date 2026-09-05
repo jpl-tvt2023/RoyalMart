@@ -158,12 +158,16 @@ export default function OutboundPODetail() {
   const pickMapping = (key, value) => {
     const fromVendor = (vendor?.articles || []).find(a => mapKey(a) === value);
     if (fromVendor) {
-      // unit_metric is shown immediately for feedback, but is not sent on save —
-      // the server re-derives it from the catalog so a stale client value can
-      // never overwrite the authoritative one.
+      // unit_metric is the user's to pick now (see the UM column), so it IS sent
+      // on save — the server validates it against the Outbound Product List
+      // rather than re-deriving it, so a stale client value still can't win.
+      // It starts at the packaging catalog's own UM, or at the only listed
+      // metric when the catalog has none to offer.
+      const metrics = fromVendor.unit_metrics || [];
       setLine(key, {
         mapping: value, category: fromVendor.category, item_name: fromVendor.item_name,
-        variant: fromVendor.variant || '', unit_metric: fromVendor.unit_metric || '',
+        variant: fromVendor.variant || '',
+        unit_metric: fromVendor.unit_metric || (metrics.length === 1 ? metrics[0] : ''),
       });
     } else {
       setLine(key, { mapping: value });
@@ -175,7 +179,7 @@ export default function OutboundPODetail() {
   const changeVendor = (vendorId) => {
     setPo(p => ({ ...p, vendor_id: vendorId }));
     // Different vendor = different mapping catalogue; reset picked articles.
-    setLines(ls => ls.map(l => ({ ...l, mapping: '', category: '', item_name: '', variant: '' })));
+    setLines(ls => ls.map(l => ({ ...l, mapping: '', category: '', item_name: '', variant: '', unit_metric: '' })));
   };
 
   // Counts flagged receipts (not lines) so the banner headline matches what the
@@ -199,6 +203,27 @@ export default function OutboundPODetail() {
   const pendingOf = (l) => Math.max(0, Number(l.qty) - Number(l.received || 0) - Number(l.short || 0));
   const liveStatus = isNew ? 'Open' : (po.status === 'Deleted' ? 'Deleted' : deriveStatus(activeLines));
   const readOnly = po.status === 'Deleted';
+
+  // The metrics a line may be switched between: whatever the Outbound Product
+  // List publishes for its article, plus the line's own stored value when that
+  // is no longer among them — a metric retired from the master must not vanish
+  // from a line already ordered in it. Mirrors the grandfathering that
+  // resolveLineMetric applies server-side, so the dropdown offers exactly what
+  // a save will accept. Derived rather than held in line state: the vendor list
+  // and the PO load independently, so stored options would go stale.
+  const metricOptionsFor = (l) => {
+    const fromVendor = (vendor?.articles || []).find(a => mapKey(a) === l.mapping);
+    const opts = [...(fromVendor?.unit_metrics || [])];
+    if (l.unit_metric && !opts.some(m => m.toLowerCase() === l.unit_metric.toLowerCase())) {
+      opts.push(l.unit_metric);
+    }
+    return opts;
+  };
+
+  // Locked once the line stops being Open. The server refuses the change anyway:
+  // everything already received against the line was recorded in the metric in
+  // force at the time, so relabelling it would reinterpret those quantities.
+  const metricEditable = (l) => !readOnly && !l.deleted_at && (!l.id || computeLineStatus(l) === 'Open');
 
   const approverChanged = String(po.approved_by || '') !== String(originalApprovedBy || '');
   const approvalDateRequired = !!po.approved_by && approverChanged;
@@ -237,6 +262,11 @@ export default function OutboundPODetail() {
     e.preventDefault();
     if (!po.vendor_id) { toast.error('Select a vendor'); return; }
     if (activeLines.some(l => !l.category)) { toast.error('Every line needs an article'); return; }
+    // Only articles listed under several metrics can be blank here — a single-metric
+    // article is filled in for the user the moment it is picked.
+    if (activeLines.some(l => !l.unit_metric && metricOptionsFor(l).length > 1)) {
+      toast.error('Every line needs a unit metric'); return;
+    }
     // Optional when first onboarding a PO, but every edit after that must carry an approver.
     if (!isNew && !po.approved_by) { toast.error('Approved By is required to save changes to this PO'); return; }
     if (approvalDateRequired && !po.approval_date) {
@@ -254,7 +284,7 @@ export default function OutboundPODetail() {
         id: l.id || undefined,
         line_no: i + 1,
         category: l.category, item_name: l.item_name, variant: l.variant || null,
-        qty: Number(l.qty), rate: Number(l.rate),
+        qty: Number(l.qty), rate: Number(l.rate), unit_metric: l.unit_metric || null,
       })),
     };
     setSaving(true);
@@ -528,7 +558,7 @@ export default function OutboundPODetail() {
                     <th className="px-3 py-2 text-left font-semibold text-gray-600 w-12">Line</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-600 min-w-[220px]">Article (Category · Item · Variant)</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Qty</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-16">UM</th>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">UM</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Rate</th>
                     {!readOnly && <th className="px-3 py-2 w-10" />}
                     {!isNew && (
@@ -587,7 +617,25 @@ export default function OutboundPODetail() {
                                 <td rowSpan={rowCount} className="px-3 py-2 align-top">
                                   <input type="number" min={0.01} step="0.01" value={l.qty} onChange={e => setLine(l._key, { qty: e.target.value })} disabled={readOnly || !!l.deleted_at} className={cellCls} />
                                 </td>
-                                <td rowSpan={rowCount} className="px-3 py-2 align-top text-gray-600">{l.unit_metric || '—'}</td>
+                                <td rowSpan={rowCount} className="px-3 py-2 align-top text-gray-600">
+                                  {(() => {
+                                    const metricOptions = metricOptionsFor(l);
+                                    // A single option is decided entirely by the
+                                    // catalog, so it stays plain text — only a
+                                    // genuinely multi-metric article asks.
+                                    if (metricOptions.length <= 1 || !metricEditable(l)) return l.unit_metric || '—';
+                                    return (
+                                      <select
+                                        value={l.unit_metric || ''}
+                                        onChange={e => setLine(l._key, { unit_metric: e.target.value })}
+                                        className={cellCls}
+                                      >
+                                        <option value="">Select...</option>
+                                        {metricOptions.map(m => <option key={m} value={m}>{m}</option>)}
+                                      </select>
+                                    );
+                                  })()}
+                                </td>
                                 <td rowSpan={rowCount} className="px-3 py-2 align-top">
                                   <input type="number" min={0} step="0.01" value={l.rate} onChange={e => setLine(l._key, { rate: e.target.value })} disabled={readOnly || !!l.deleted_at} className={cellCls} />
                                 </td>

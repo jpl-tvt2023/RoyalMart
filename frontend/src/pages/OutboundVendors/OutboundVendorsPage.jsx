@@ -15,6 +15,7 @@ import {
   bulkUpsertOutboundVendors,
 } from '../../api/outboundVendors.api';
 import { getPackagingRawMaterials } from '../../api/packagingRawMaterials.api';
+import { listOutboundProducts } from '../../api/outboundProducts.api';
 
 const emptyRow = () => ({ category: '', item_name: '', variant: '' });
 const emptyForm = () => ({ name: '', is_active: true, articles: [emptyRow()] });
@@ -59,6 +60,7 @@ export default function OutboundVendorsPage() {
   const [togglingId, setTogglingId] = useState(null);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [catalogRows, setCatalogRows] = useState([]);
+  const [masterRows, setMasterRows] = useState([]);
 
   const loadCatalog = () => {
     getPackagingRawMaterials()
@@ -66,6 +68,16 @@ export default function OutboundVendorsPage() {
       .catch(() => {});
   };
   useEffect(loadCatalog, []);
+
+  // The Outbound Product List, for the UM column: since migration 064 a
+  // (Category, Item Name) pair can be listed under several metrics, and a PO
+  // line mapped to this article picks between them.
+  const loadMasterRows = () => {
+    listOutboundProducts()
+      .then(rows => setMasterRows(rows || []))
+      .catch(() => {});
+  };
+  useEffect(loadMasterRows, []);
 
   // Category / Item Name / Variant options for the article-mapping sub-form,
   // sourced from the Packaging Products master catalog. The catalog carries one
@@ -93,9 +105,25 @@ export default function OutboundVendorsPage() {
     for (const k of Object.keys(map)) map[k] = sortByText(Array.from(map[k]));
     return map;
   }, [catalogRows]);
-  const unitMetricFor = (a) => catalogRows.find(r =>
-    r.category === a.category && r.item_name === a.item_name && (r.variant || '') === (a.variant || '')
-  )?.unit_metric || '';
+  // Every metric a PO line for this article could be raised in — the master's
+  // list for the pair, plus the packaging catalog's own value when the master no
+  // longer offers it. Same set the API publishes as `unit_metrics` on each
+  // mapping, and the same grandfathering, so the two screens agree.
+  const unitMetricsFor = (a) => {
+    const metrics = [...new Set(
+      masterRows
+        .filter(m => m.category === a.category && m.item_name === a.item_name)
+        .map(m => m.unit_metric)
+        .filter(Boolean),
+    )];
+    const catalogMetric = catalogRows.find(r =>
+      r.category === a.category && r.item_name === a.item_name && (r.variant || '') === (a.variant || '')
+    )?.unit_metric || '';
+    if (catalogMetric && !metrics.some(m => m.toLowerCase() === catalogMetric.toLowerCase())) {
+      metrics.push(catalogMetric);
+    }
+    return metrics;
+  };
 
   // One export row per mapping, headers matching the upload template.
   const downloadXlsx = () => downloadRows('outbound-vendors', [
@@ -383,7 +411,7 @@ export default function OutboundVendorsPage() {
                           {orphanVariant && <option value={a.variant}>{a.variant} (not in catalog)</option>}
                         </select>
                       </td>
-                      <td className="px-3 py-2 text-gray-500 text-xs">{unitMetricFor(a) || '—'}</td>
+                      <td className="px-3 py-2 text-gray-500 text-xs">{unitMetricsFor(a).join(' / ') || '—'}</td>
                       <td className="px-3 py-2">
                         <button
                           type="button"

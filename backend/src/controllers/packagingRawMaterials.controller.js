@@ -1,19 +1,15 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
+const { pairKey, normText, loadOutboundProducts } = require('../services/outboundProducts.service');
 
 const PACKAGING_RAW_MATERIAL_FIELDS = ['category', 'item_name', 'variant', 'unit_metric'];
 const BULK_LIMIT = 2000;
-
-function normText(v) {
-  return v == null ? '' : String(v).trim();
-}
 
 // '' is the canonical "no variant" in the DB (a nullable variant would break
 // UNIQUE dedupe, since SQLite treats NULLs as distinct). Callers outside this
 // module see null instead, which is what the rest of the API uses.
 const variantKey = (v) => normText(v).toLowerCase();
 const tripleKey = (c, i, v) => `${normText(c).toLowerCase()}|${normText(i).toLowerCase()}|${variantKey(v)}`;
-const pairKey = (c, i) => `${normText(c).toLowerCase()}|${normText(i).toLowerCase()}`;
 const outward = (row) => ({ ...row, variant: row.variant || null });
 
 // (Category, Item Name) must exist and be active in the Outbound Product List,
@@ -23,21 +19,9 @@ const outward = (row) => ({ ...row, variant: row.variant || null });
 // catalog against the taxonomy above it.
 //
 // Since migration 064 one pair can be listed under several unit metrics, so the
-// index is pair -> [rows] rather than pair -> row.
-async function loadOutboundProducts() {
-  const { rows } = await db.execute(
-    `SELECT category, item_name, unit_metric FROM outbound_products
-     WHERE is_active = 1
-     ORDER BY unit_metric COLLATE NOCASE`
-  );
-  const map = new Map();
-  for (const r of rows) {
-    const k = pairKey(r.category, r.item_name);
-    if (!map.has(k)) map.set(k, []);
-    map.get(k).push(r);
-  }
-  return map;
-}
+// index loadOutboundProducts returns is pair -> [rows] rather than pair -> row.
+// It lives in services/outboundProducts.service.js because the vendor and PO
+// controllers need the same index.
 
 const unlistedMessage = (category, itemName) =>
   `"${category} / ${itemName}" is not in the Outbound Product List — add it under Admin → Purchase Config → Outbound Product List first`;
@@ -148,7 +132,15 @@ async function create(req, res, next) {
     res.status(201).json(outward(rows[0]));
   } catch (err) {
     if (err.message && err.message.includes('UNIQUE constraint failed')) {
-      return res.status(409).json({ message: 'This category + item name + variant combination already exists' });
+      // Worth spelling out: an item listed under several unit metrics turns the
+      // Unit Metric field into a picker, which reads as an invitation to onboard
+      // the same variant once per metric. It isn't -- a variant is one row with
+      // one default metric, and the metric to order in is a per-PO-line choice.
+      return res.status(409).json({
+        message: 'This category + item name + variant combination already exists. A variant is listed once, '
+          + 'with one unit metric; to order it in another metric, list that metric for the item on the '
+          + 'Outbound Product List and pick it on the PO line.',
+      });
     }
     next(err);
   }
