@@ -1,10 +1,10 @@
 const db = require('../config/db');
 const { buildPagination, buildOrderBy } = require('./marketplacePO.controller');
 
-// The Lead Time Report only covers POs that reached a terminal outcome, so every
-// row has a settled dispatch/GRN story to measure. Anything still in flight
-// ('Pending', 'Out For Delivery', 'Delivered - GRN Pending') is out of scope.
-const LEAD_TIME_STATUSES = ['Returned to Vendor', 'Delivered - GRN Received'];
+// The Lead Time Report covers every PO the GRN screen knows about, whatever its
+// GRN status. Order Summary scopes that view with a single condition
+// (p.status <> 'Deleted'), so carrying the same condition here keeps the two
+// screens on identical populations. In-flight POs simply have NULL leads.
 
 // Same expression the Order Summary / GRN views use, so status semantics stay in
 // one shape across the app.
@@ -29,13 +29,18 @@ const APPOINTMENT_LEAD_SQL = 'CAST(julianday(p.appointment_date) - julianday(p.d
 
 const TOTAL_QTY_SQL = '(SELECT COALESCE(SUM(qty), 0) FROM marketplace_po_lines WHERE po_id = p.po_id)';
 
-// Given the status scope above this is only ever 'Yes' or 'RTV'; the 'No' arm is
-// a safety net so an unexpected status never renders as an empty cell.
+// "Has this PO been received?" collapsed to three values. Everything still in
+// flight ('Yet to Dispatch', 'Pending', 'Out For Delivery', 'Delivered - GRN
+// Pending') is a plain 'No' — the common case now that the report is unfiltered.
 const GRN_FLAG_SQL = `CASE ${COMPUTED_GRN_STATUS_SQL}
     WHEN 'Delivered - GRN Received' THEN 'Yes'
     WHEN 'Returned to Vendor'       THEN 'RTV'
     ELSE 'No'
   END`;
+
+// Selectable values for the GRN Received? filter. Anything else (including the
+// 'All' the UI sends for "no filter") leaves the flag unrestricted.
+const GRN_FLAG_VALUES = ['Yes', 'RTV', 'No'];
 
 const SORT_COLUMNS = {
   vendor:           'p.vendor',
@@ -58,16 +63,20 @@ function basisColumn(query) {
 }
 
 // Conditions that apply to every query on this page, minus the date range:
-// soft-deleted POs never appear, and only terminal-outcome POs are in scope.
-// 'All' (or an absent vendor) means no vendor restriction.
+// soft-deleted POs never appear. 'All' (or an absent value) means no restriction
+// on that filter. Everything downstream — the list, the summary, the medians,
+// the excluded-rows count and the per-vendor counts — builds from here, so a
+// filter added here applies consistently across all of them.
 function baseConditions(query) {
   const conditions = ["p.status <> 'Deleted'"];
   const args = [];
-  conditions.push(`${COMPUTED_GRN_STATUS_SQL} IN (${LEAD_TIME_STATUSES.map(() => '?').join(', ')})`);
-  args.push(...LEAD_TIME_STATUSES);
   if (query.vendor && query.vendor !== 'All') {
     conditions.push('p.vendor = ?');
     args.push(query.vendor);
+  }
+  if (GRN_FLAG_VALUES.includes(query.grn_flag)) {
+    conditions.push(`${GRN_FLAG_SQL} = ?`);
+    args.push(query.grn_flag);
   }
   return { conditions, args };
 }
@@ -127,15 +136,21 @@ async function list(req, res, next) {
     `;
 
     // Statistics cover the whole filtered set, not the visible page. AVG ignores
-    // NULL leads, so the GRN-lead figures describe delivered POs only (RTV rows
-    // carry no grn_date by design).
+    // NULL leads, so each lead figure describes only the POs that carry both of
+    // its dates — a much smaller slice than po_count now that in-flight POs are
+    // in scope. COUNT(<expr>) also skips NULLs, so the *_lead_n counts are
+    // exactly the sample each average is drawn from; the UI shows them so the
+    // two numbers can't be mistaken for each other.
     const summarySql = `
       SELECT COUNT(*)                            AS po_count,
              COALESCE(SUM(${TOTAL_QTY_SQL}), 0)  AS total_qty,
              COALESCE(SUM(p.grn_qty), 0)         AS total_grn_qty,
              AVG(${DISPATCH_LEAD_SQL})           AS avg_dispatch_lead,
              AVG(${GRN_LEAD_SQL})                AS avg_grn_lead,
-             AVG(${APPOINTMENT_LEAD_SQL})        AS avg_appointment_lead
+             AVG(${APPOINTMENT_LEAD_SQL})        AS avg_appointment_lead,
+             COUNT(${DISPATCH_LEAD_SQL})         AS dispatch_lead_n,
+             COUNT(${GRN_LEAD_SQL})              AS grn_lead_n,
+             COUNT(${APPOINTMENT_LEAD_SQL})      AS appointment_lead_n
       FROM marketplace_pos p
       ${where}
     `;
@@ -171,6 +186,9 @@ async function list(req, res, next) {
       median_dispatch_lead:    num(dispatchMed.rows[0]?.median),
       median_grn_lead:         num(grnMed.rows[0]?.median),
       median_appointment_lead: num(apptMed.rows[0]?.median),
+      dispatch_lead_n:         num(s.dispatch_lead_n) || 0,
+      grn_lead_n:              num(s.grn_lead_n) || 0,
+      appointment_lead_n:      num(s.appointment_lead_n) || 0,
     };
     const excluded_no_date = Number(excludedRes.rows[0]?.total) || 0;
 
