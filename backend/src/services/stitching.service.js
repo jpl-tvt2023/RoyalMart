@@ -44,6 +44,33 @@ const nextStage = (stage) => {
   return i === -1 ? null : (STAGES[i + 1] || null);
 };
 
+// The stage a lot came FROM, or null at the head of the chain.
+//
+// Safe as a stand-in for "what stage is my parent at" only because hop creation
+// is forward-only -- create() derives its target from nextStage(parent.stage)
+// and never accepts a caller-supplied stage, so every entry sits exactly one
+// stage after its parent. A test pins that. If a backward hop is ever allowed
+// (rework, as opposed to the correction this was built for), this stops being
+// equivalent and the parent's stage has to be joined instead.
+const prevStage = (stage) => {
+  const i = STAGES.indexOf(stage);
+  return i <= 0 ? null : STAGES[i - 1];
+};
+
+// A send-back is a correction, so the reason is the whole point of the record --
+// "why is there a retired hop here" has to be answerable without asking anyone.
+// Hence required, unlike every other free-text field on this feature.
+const REVERT_REASON_MAX = 300;
+
+const revertReasonError = (value) => {
+  const text = String(value ?? '').trim();
+  if (!text) return 'A reason is required to send this back';
+  if (text.length > REVERT_REASON_MAX) {
+    return `Reason can be at most ${REVERT_REASON_MAX} characters`;
+  }
+  return null;
+};
+
 // The landed rate at a stage. after_rate is stored because the user may
 // overwrite the default (to absorb wastage or rounding), so this is only the
 // fallback for a row that has none -- which is what the server writes when the
@@ -109,6 +136,32 @@ const moneyError = (value, label, { required = false } = {}) => {
   return null;
 };
 
+// The challan a lot is dispatched under. It belongs to the lot being SENT, not
+// to the hop that arrives: a lot that has just come in has not been sent
+// anywhere yet, so its challan is genuinely blank until it moves on. That is
+// also why a lot cannot be forwarded without one -- there is no dispatch without
+// a challan to dispatch it under.
+//
+// Free text, deliberately. The user was asked whether "numerical" should mean
+// digits-only and chose free text, the same call already made for Incoming No.
+// Do not add a digits-only rule without asking again -- challan books that use a
+// prefix or a slash would stop being enterable.
+//
+// Blank is not an error here. Clearing a challan is allowed, and the only
+// consequence is that the lot stops being forwardable, which is the gate in
+// create() doing its job rather than something to reject at write time.
+const CHALLAN_MAX = 50;
+
+const challanError = (value) => {
+  const text = String(value ?? '').trim();
+  if (text.length > CHALLAN_MAX) return `Challan No must be ${CHALLAN_MAX} characters or less`;
+  return null;
+};
+
+// The gate itself, shared by the SQL-free checks on both sides so "has a
+// challan" means exactly one thing.
+const hasChallan = (lot) => String(lot?.challan_no ?? '').trim() !== '';
+
 // Quantities (metres) use the same 2dp rule but must be strictly positive --
 // forwarding or receiving zero metres is not a thing that happens.
 const qtyError = (value, label) => {
@@ -122,8 +175,8 @@ const qtyError = (value, label) => {
 };
 
 module.exports = {
-  STAGES, STATUS, OPEN_STATUSES, EPSILON,
-  isValidStage, nextStage,
+  STAGES, STATUS, OPEN_STATUSES, EPSILON, REVERT_REASON_MAX, CHALLAN_MAX,
+  isValidStage, nextStage, prevStage,
   effectiveAfterRate, balanceOf, computeStatus, statusSql,
-  moneyError, qtyError,
+  moneyError, qtyError, revertReasonError, challanError, hasChallan,
 };

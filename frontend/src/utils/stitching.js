@@ -23,6 +23,27 @@ export const nextStage = (stage) => {
   return i === -1 ? null : (STAGES[i + 1] || null);
 };
 
+// Twin of prevStage on the server. The stage a hop came from, which is where a
+// send-back returns its metre. Null at the head of the chain.
+export const prevStage = (stage) => {
+  const i = STAGES.indexOf(stage);
+  return i <= 0 ? null : STAGES[i - 1];
+};
+
+// The suffix to offer at the next stage, so GRY123 becomes PRC123 rather than
+// being retyped. Only the number travels — the prefix belongs to the stage the
+// lot is moving to, not the one it is leaving.
+export const carriedIncomingNo = (lot) => String(lot?.incoming_no ?? '').trim();
+
+// The prefix to pre-select for a stage, but only when the choice is unambiguous.
+// Prefixes are admin-managed and deliberately many-per-stage, so picking one of
+// several would be a guess the user then has to notice and undo — worse than
+// leaving it empty.
+export const soleActivePrefix = (prefixes, stage) => {
+  const matches = (prefixes || []).filter(p => p.stage === stage && p.is_active);
+  return matches.length === 1 ? matches[0] : null;
+};
+
 // Half a paisa / half a millimetre. Twin of EPSILON in the backend service.
 export const EPSILON = 0.005;
 
@@ -48,6 +69,30 @@ export function qtyError(value, label) {
   if (!has2dp(n)) return `${label} can have at most 2 decimal places`;
   return null;
 }
+
+// Twins of challanError / revertReasonError on the server, including the message
+// text, so the user sees the same wording whichever side rejects the value.
+//
+// Challan is FREE TEXT by explicit decision -- the user was asked whether
+// "numerical" should mean digits-only and chose free text, as with Incoming No.
+// Do not add a digits-only rule without asking again. Blank is not an error: it
+// just means the lot cannot be sent ahead.
+export const CHALLAN_MAX = 50;
+
+export const challanError = (value) => {
+  const text = String(value ?? '').trim();
+  if (text.length > CHALLAN_MAX) return `Challan No must be ${CHALLAN_MAX} characters or less`;
+  return null;
+};
+
+export const REVERT_REASON_MAX = 300;
+
+export const revertReasonError = (value) => {
+  const text = String(value ?? '').trim();
+  if (!text) return 'A reason is required to send this back';
+  if (text.length > REVERT_REASON_MAX) return `Reason can be at most ${REVERT_REASON_MAX} characters`;
+  return null;
+};
 
 // After Rate defaults to carried-in rate plus this stage's process rate, and
 // stays on that default until the user types over it.

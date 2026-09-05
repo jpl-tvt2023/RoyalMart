@@ -12,7 +12,12 @@ const A = (r) => r.set('Authorization', `Bearer ${token}`);
 
 const api = {
   listStage: (query = {}) => A(request(app).get('/api/stitching').query({ page_size: 'all', ...query })),
-  forward: (body) => A(request(app).post('/api/stitching')).send(body),
+  forward: (body) => A(request(app).post('/api/stitching'))
+    .send('challan_no' in body ? body : { ...body, challan_no: `CH-${uid()}` }),
+  setChallan: (src, id, challan_no) =>
+    A(request(app).patch(`/api/stitching/${src}/${id}/challan`)).send({ challan_no }),
+  revert: (src, id, reason) =>
+    A(request(app).post(`/api/stitching/${src}/${id}/revert`)).send({ reason }),
   patchLot: (id, body) => A(request(app).patch(`/api/stitching/${id}`)).send(body),
   deleteLot: (id) => A(request(app).delete(`/api/stitching/${id}`)),
   restoreLot: (id) => A(request(app).post(`/api/stitching/${id}/restore`)),
@@ -277,10 +282,16 @@ describe('Receipt rate fields', () => {
     expect(res.body.message).toMatch(/prefix not found/);
   });
 
-  test('challan_no round-trips', async () => {
+  // Challan moved off the PO receipt entirely: Bill No already covers what a
+  // receipt records, and a challan is raised when material is SENT OUT to a
+  // processor, which is a Stitching concept. The column still exists and is
+  // still written -- but only by the Stitching page.
+  test('challan_no posted to a receipt is ignored', async () => {
     const { poId, lineId } = await setupLine();
-    const created = await postReceipt(poId, lineId, { challan_no: '  CH-9  ' });
-    expect((await getReceipt(poId, created.body.id)).challan_no).toBe('CH-9');
+    const created = await postReceipt(poId, lineId, { challan_no: 'CH-9' });
+    expect(created.status).toBe(201);
+    const receipt = await getReceipt(poId, created.body.id);
+    expect(receipt.challan_no).toBeUndefined();
   });
 });
 
@@ -1023,6 +1034,288 @@ describe('Journey view', () => {
   test('an unknown lot is a 404 and a bad type a 400', async () => {
     expect((await api.journey('entry', 999999)).status).toBe(404);
     expect((await api.journey('nonsense', 1)).status).toBe(400);
+  });
+});
+
+describe('Challan No -- owned by the lot being sent', () => {
+  const fwd = (receiptId, extra = {}) => api.forward({
+    parent_src: 'receipt', parent_id: receiptId, party_name: 'Dyeing House',
+    sent_qty: 60, metre: 58, process_rate: 7, checked_by: warehousePocId, ...extra,
+  });
+
+  const lotRow = async (stage, src, id) =>
+    findLot((await api.listStage({ stage })).body.rows, src, id);
+
+  test('a lot with no challan cannot be sent ahead, and says so by stage', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const res = await fwd(receiptId, { challan_no: null });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/challan number to this Gray lot/i);
+  });
+
+  test('challan_missing is reported on the row so the button can explain itself', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    expect((await lotRow('Gray', 'receipt', receiptId)).challan_missing).toBe(true);
+    await api.setChallan('receipt', receiptId, '4471');
+    expect((await lotRow('Gray', 'receipt', receiptId)).challan_missing).toBe(false);
+  });
+
+  test('setting a challan first makes the lot forwardable, clearing it blocks again', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    expect((await api.setChallan('receipt', receiptId, '  4471  ')).status).toBe(200);
+    expect((await lotRow('Gray', 'receipt', receiptId)).challan_no).toBe('4471');
+
+    expect((await fwd(receiptId, { challan_no: null, sent_qty: 10, metre: 10 })).status).toBe(201);
+
+    await api.setChallan('receipt', receiptId, '');
+    const blocked = await fwd(receiptId, { challan_no: null, sent_qty: 10, metre: 10 });
+    expect(blocked.status).toBe(400);
+    expect(blocked.body.message).toMatch(/challan number/i);
+  });
+
+  test('a challan sent with the forward lands on the PARENT, and the new lot starts blank', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const res = await fwd(receiptId, { challan_no: 'CH-PARENT' });
+    expect(res.status).toBe(201);
+
+    expect((await lotRow('Gray', 'receipt', receiptId)).challan_no).toBe('CH-PARENT');
+    // The new lot has arrived, not been dispatched, so it has no challan yet.
+    expect((await lotRow('Processed', 'entry', res.body.id)).challan_no).toBeNull();
+  });
+
+  test('the challan can be set on a downstream entry too, which is what lets it move on', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const child = await fwd(receiptId);
+    const blocked = await api.forward({
+      parent_src: 'entry', parent_id: child.body.id, party_name: 'Stitch Unit',
+      sent_qty: 50, metre: 50, checked_by: warehousePocId, challan_no: null,
+    });
+    expect(blocked.status).toBe(400);
+    expect(blocked.body.message).toMatch(/challan number to this Processed lot/i);
+
+    await api.setChallan('entry', child.body.id, 'CH-STC');
+    const ok = await api.forward({
+      parent_src: 'entry', parent_id: child.body.id, party_name: 'Stitch Unit',
+      sent_qty: 50, metre: 50, checked_by: warehousePocId, challan_no: null,
+    });
+    expect(ok.status).toBe(201);
+  });
+
+  // Free text by explicit decision, the same call already made for Incoming No.
+  // Pinned so it is not quietly tightened to digits-only later.
+  test('challan is free text, not digits-only', async () => {
+    const { receiptId } = await grayLot();
+    expect((await api.setChallan('receipt', receiptId, 'CH-2026/07')).status).toBe(200);
+    expect((await lotRow('Gray', 'receipt', receiptId)).challan_no).toBe('CH-2026/07');
+  });
+
+  test('challan is capped at 50 characters', async () => {
+    const { receiptId } = await grayLot();
+    const res = await api.setChallan('receipt', receiptId, 'x'.repeat(51));
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/50 characters or less/);
+  });
+
+  test('an unknown lot type is refused', async () => {
+    const { receiptId } = await grayLot();
+    const res = await api.setChallan('nonsense', receiptId, '1');
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/receipt.*entry/i);
+  });
+
+  test('setting a challan on a receipt is audited against its PO line', async () => {
+    const { receiptId, lineId } = await grayLot();
+    await api.setChallan('receipt', receiptId, 'CH-AUDIT');
+    const audit = await A(request(app).get('/api/audit-logs')
+      .query({ entity_type: 'outbound_po_line', entity_id: lineId }));
+    const rows = audit.body.rows || audit.body;
+    const entry = rows.find(r => r.action_type === 'STITCHING_LOT_CHALLAN');
+    expect(entry).toBeTruthy();
+    expect(entry.description).toMatch(/CH-AUDIT/);
+  });
+});
+
+describe('Sending a hop back', () => {
+  const chain = async () => {
+    const { receiptId, lineId } = await grayLot({ qty: 100 });
+    const child = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dyeing House',
+      sent_qty: 100, metre: 98, process_rate: 7, checked_by: warehousePocId,
+    });
+    return { receiptId, lineId, entryId: child.body.id };
+  };
+
+  const grayRow = async (receiptId) =>
+    findLot((await api.listStage({ stage: 'Gray' })).body.rows, 'receipt', receiptId);
+
+  test('retiring a hop returns its metre to the parent and reopens it', async () => {
+    const { receiptId, entryId } = await chain();
+    expect((await grayRow(receiptId)).status).toBe('Forwarded');
+
+    const res = await api.revert('entry', entryId, 'recorded against the wrong lot');
+    expect(res.status).toBe(200);
+    expect(res.body.returned_to).toBe('Gray');
+
+    const gray = await grayRow(receiptId);
+    expect(gray.status).toBe('Pending');
+    expect(gray.balance).toBe(100);
+
+    // Retired, not erased.
+    const processed = await api.listStage({ stage: 'Processed' });
+    expect(findLot(processed.body.rows, 'entry', entryId)).toBeUndefined();
+  });
+
+  test('the reason is required', async () => {
+    const { entryId } = await chain();
+    for (const bad of [undefined, '', '   ']) {
+      const res = await api.revert('entry', entryId, bad);
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/reason is required/i);
+    }
+  });
+
+  test('the reason is capped', async () => {
+    const { entryId } = await chain();
+    const res = await api.revert('entry', entryId, 'x'.repeat(301));
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/at most 300 characters/);
+  });
+
+  test('a receipt cannot be sent back -- it is where material entered', async () => {
+    const { receiptId } = await chain();
+    const res = await api.revert('receipt', receiptId, 'nope');
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/received directly on a PO/i);
+  });
+
+  test('a hop with live children is refused, naming how many', async () => {
+    const { entryId } = await chain();
+    await api.setChallan('entry', entryId, 'CH-ON');
+    await api.forward({
+      parent_src: 'entry', parent_id: entryId, party_name: 'Stitch Unit',
+      sent_qty: 50, metre: 50, checked_by: warehousePocId, challan_no: null,
+    });
+    const res = await api.revert('entry', entryId, 'too late');
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/have been forwarded from it/);
+  });
+
+  test('a closed lot must be reopened first', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    let parent = { src: 'receipt', id: receiptId };
+    let last;
+    for (const party of ['Dyeing House', 'Stitch Unit', 'Packer A']) {
+      const r = await api.forward({
+        parent_src: parent.src, parent_id: parent.id, party_name: party,
+        sent_qty: 100, metre: 100, checked_by: warehousePocId,
+      });
+      last = r.body.id;
+      parent = { src: 'entry', id: last };
+    }
+    expect((await api.close('entry', last)).status).toBe(200);
+    const res = await api.revert('entry', last, 'wrong');
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/reopen it before sending it back/i);
+
+    await api.reopen('entry', last);
+    expect((await api.revert('entry', last, 'wrong')).status).toBe(200);
+  });
+
+  test('it is audited with the reason, which survives a restore', async () => {
+    const { entryId } = await chain();
+    await api.revert('entry', entryId, 'wrong party');
+    const audit = await A(request(app).get('/api/audit-logs')
+      .query({ entity_type: 'stitching_entry', entity_id: entryId }));
+    const rows = audit.body.rows || audit.body;
+    const entry = rows.find(r => r.action_type === 'STITCHING_ENTRY_REVERT');
+    expect(entry).toBeTruthy();
+    expect(entry.description).toMatch(/wrong party/);
+
+    await api.restoreLot(entryId);
+    const after = await A(request(app).get('/api/audit-logs')
+      .query({ entity_type: 'stitching_entry', entity_id: entryId }));
+    const stillThere = (after.body.rows || after.body)
+      .find(r => r.action_type === 'STITCHING_ENTRY_REVERT');
+    expect(stillThere.description).toMatch(/wrong party/);
+  });
+
+  test('restoring clears the reason and re-consumes the balance', async () => {
+    const { receiptId, entryId } = await chain();
+    await api.revert('entry', entryId, 'mistake');
+    expect((await api.restoreLot(entryId)).status).toBe(200);
+    expect((await grayRow(receiptId)).balance).toBe(0);
+
+    const journey = await api.journey('receipt', receiptId);
+    const node = journey.body.nodes.find(n => n.src === 'entry' && n.id === entryId);
+    expect(node.deleted).toBeFalsy();
+    expect(node.revert_reason).toBeFalsy();
+  });
+
+  test('forwarding again after a send-back works, and the journey keeps both in order', async () => {
+    const { receiptId, entryId } = await chain();
+    await api.revert('entry', entryId, 'wrong processor');
+
+    // An ordinary forward -- nothing on that path knows a retired sibling exists.
+    const again = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Right Processor',
+      sent_qty: 100, metre: 97, process_rate: 7, checked_by: warehousePocId,
+    });
+    expect(again.status).toBe(201);
+    expect((await grayRow(receiptId)).status).toBe('Forwarded');
+
+    const journey = await api.journey('receipt', receiptId);
+    const ids = journey.body.nodes.filter(n => n.src === 'entry').map(n => n.id);
+    // The retired hop happened first, so it must READ first.
+    expect(ids).toEqual([entryId, again.body.id]);
+
+    const retired = journey.body.nodes.find(n => n.id === entryId && n.src === 'entry');
+    expect(retired.deleted).toBe(true);
+    expect(retired.revert_reason).toBe('wrong processor');
+
+    // And now the metre is spoken for, so the retired hop cannot come back.
+    const restore = await api.restoreLot(entryId);
+    expect(restore.status).toBe(400);
+    expect(restore.body.message).toMatch(/is left on the source/i);
+  });
+
+  test('the journey names the challan the lot was sent under, on the hop', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const child = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dyeing House',
+      sent_qty: 100, metre: 98, checked_by: warehousePocId, challan_no: 'CH-JRN',
+    });
+    const journey = await api.journey('receipt', receiptId);
+    const origin = journey.body.nodes.find(n => n.src === 'receipt');
+    const hop = journey.body.nodes.find(n => n.id === child.body.id && n.src === 'entry');
+    expect(origin.sent_under_challan).toBeNull();
+    expect(hop.sent_under_challan).toBe('CH-JRN');
+  });
+});
+
+describe('prevStage', () => {
+  const { prevStage, nextStage, STAGES } = require('../src/services/stitching.service');
+
+  test('is the inverse of nextStage, and null at the head', () => {
+    expect(prevStage('Gray')).toBeNull();
+    expect(prevStage('nonsense')).toBeNull();
+    for (const stage of STAGES.slice(0, -1)) {
+      expect(prevStage(nextStage(stage))).toBe(stage);
+    }
+  });
+
+  // parent_stage is derived with prevStage rather than joined, which is only
+  // sound while hop creation stays forward-only. This pins that.
+  test('parent_stage matches the parent a hop was actually created from', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const child = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dyeing House',
+      sent_qty: 100, metre: 100, checked_by: warehousePocId,
+    });
+    const row = findLot((await api.listStage({ stage: 'Processed' })).body.rows,
+      'entry', child.body.id);
+    expect(row.parent_stage).toBe('Gray');
+    expect(row.parent_src).toBe('receipt');
+    expect(row.parent_id).toBe(receiptId);
   });
 });
 

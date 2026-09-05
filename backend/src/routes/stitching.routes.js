@@ -22,6 +22,16 @@ router.post('/', auth, canEdit, stitching.create);
 router.post('/:src/:id/close', auth, canEdit, stitching.close);
 router.post('/:src/:id/reopen', auth, canEdit, stitching.reopen);
 
+// Sending a hop back is a correction, and takes the src for the same reason —
+// here it is what refuses a receipt outright rather than letting its id match an
+// unrelated entry, since the two tables number their rows independently.
+router.post('/:src/:id/revert', auth, canEdit, stitching.revert);
+
+// The challan a lot is dispatched under. Takes the src because this is the only
+// path by which the Stitching page writes to a PO receipt, which is what an
+// origin lot is.
+router.patch('/:src/:id/challan', auth, canEdit, stitching.setChallan);
+
 router.patch('/:id', auth, canEdit, stitching.update);
 router.delete('/:id', auth, canEdit, stitching.remove);
 router.post('/:id/restore', auth, canEdit, stitching.restore);

@@ -2,8 +2,9 @@ const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
 const { userHasRole } = require('../services/userRoles.service');
 const {
-  STAGES, OPEN_STATUSES, EPSILON, isValidStage, nextStage,
-  effectiveAfterRate, statusSql, moneyError, qtyError,
+  STAGES, OPEN_STATUSES, EPSILON, isValidStage, nextStage, prevStage,
+  effectiveAfterRate, statusSql, moneyError, qtyError, revertReasonError,
+  challanError, hasChallan,
 } = require('../services/stitching.service');
 
 const padOrderNo = (id) => String(id).padStart(3, '0');
@@ -205,6 +206,21 @@ const outward = (row) => {
     lot_key: `${row.src}:${row.id}`,
     next_stage: nextStage(row.stage),
     can_forward: nextStage(row.stage) != null && Number(row.balance) > EPSILON,
+    // Where a send-back would return the metre to. Derived rather than joined
+    // because hop creation is forward-only, so an entry's parent is always one
+    // stage back — see prevStage's note. Null on a receipt, which is where
+    // material entered and so has no parent to go back to.
+    parent_stage: row.src === 'entry' ? prevStage(row.stage) : null,
+    // A hop can only be sent back while nothing hangs off it and it has not been
+    // closed out, so the correction can never strand material downstream.
+    can_revert: row.src === 'entry'
+      && Number(row.forwarded) <= EPSILON
+      && row.closed_at == null,
+    // A lot cannot be dispatched without a challan to dispatch it under. Reported
+    // rather than folded into can_forward so the button can be shown disabled
+    // with the reason on it — a control that silently vanishes teaches nobody
+    // why it went.
+    challan_missing: !hasChallan(row),
   };
 };
 
@@ -386,6 +402,25 @@ async function create(req, res, next) {
     const validationError = await validateEntryFields(req.body, { requireAll: true, targetStage });
     if (validationError) return res.status(400).json({ message: validationError });
 
+    // The challan documents the dispatch, and the dispatch IS this forward, so
+    // the form collects it here and it is saved onto the PARENT — the lot being
+    // sent — rather than onto the row about to be created. A body value
+    // overrides whatever the parent already had, which is what lets one form do
+    // the whole job instead of making the user set the challan elsewhere first.
+    const challanFromBody = req.body?.challan_no != null && String(req.body.challan_no).trim() !== ''
+      ? String(req.body.challan_no).trim()
+      : null;
+    const challanErr = challanError(challanFromBody);
+    if (challanErr) return res.status(400).json({ message: challanErr });
+
+    // The gate. Checked against what the parent WILL have, so supplying the
+    // challan in this request satisfies it in the same breath.
+    if (!challanFromBody && !hasChallan(parent)) {
+      return res.status(400).json({
+        message: `Add a challan number to this ${parent.stage} lot before sending it ahead`,
+      });
+    }
+
     const sentQty = Number(req.body.sent_qty);
     if (sentQty - Number(parent.balance) > EPSILON) {
       return res.status(400).json({
@@ -404,6 +439,18 @@ async function create(req, res, next) {
 
     const tx = await db.transaction('write');
     try {
+      // Stamp the dispatch challan onto the parent first, so the lot that moved
+      // and the row recording the movement commit together or not at all.
+      // TABLE_FOR_SRC is declared further down the file, which is fine: this runs
+      // per request, long after the module finished evaluating.
+      if (challanFromBody && challanFromBody !== parent.challan_no) {
+        await tx.execute({
+          sql: `UPDATE ${TABLE_FOR_SRC[parentSrc]} SET challan_no = ?,
+                  updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
+          args: [challanFromBody, req.user.id, parent.id],
+        });
+      }
+
       const { rows: inserted } = await tx.execute({
         sql: `INSERT INTO stitching_entries
                 (stage, origin_receipt_id, parent_receipt_id, parent_entry_id, party_name,
@@ -415,7 +462,10 @@ async function create(req, res, next) {
           parentSrc === 'receipt' ? parent.id : null,
           parentSrc === 'entry' ? parent.id : null,
           partyName,
-          trimOrNull(req.body.bill_no), trimOrNull(req.body.challan_no),
+          // challan_no is deliberately NULL on the new row: it belongs to the lot
+          // being sent, and this one has just arrived. It gets filled in when
+          // this lot is itself dispatched onward.
+          trimOrNull(req.body.bill_no), null,
           numOrNull(req.body.incoming_prefix_id), trimOrNull(req.body.incoming_no),
           sentQty, metre, processRate, afterRate, Number(req.body.checked_by),
           req.user.id, req.user.id,
@@ -607,7 +657,11 @@ async function restore(req, res, next) {
     const tx = await db.transaction('write');
     try {
       await tx.execute({
+        // revert_reason goes with it: a row that is live again is not retired,
+        // and a reason left behind on it would read as a lie. The audit entry
+        // keeps the reason permanently, so nothing is actually lost.
         sql: `UPDATE stitching_entries SET deleted_by = NULL, deleted_at = NULL,
+                revert_reason = NULL,
                 updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
         args: [req.user.id, id],
       });
@@ -635,6 +689,99 @@ function parseLotRef(req) {
   const { src, id } = req.params;
   if (!TABLE_FOR_SRC[src]) return [null, 'Lot type must be "receipt" or "entry"'];
   return [{ src, id: Number(id) }, null];
+}
+
+// POST /api/stitching/:src/:id/revert — send a wrongly recorded hop back to the
+// stage it came from.
+//
+// This is a CORRECTION, not rework: nothing physically moved, someone recorded a
+// forward against the wrong lot or stage. So the hop is retired rather than
+// rewritten, and the reason is mandatory — the whole value of the record is that
+// "why is there a retired hop here" stays answerable.
+//
+// The metre returns to the parent for free. `forwarded` only ever sums children
+// with deleted_at IS NULL, so retiring this row raises the parent's balance,
+// drops its status back to Pending or Partial, puts it back in its stage's open
+// count and makes it forwardable again — with no write against the parent at all.
+//
+// Forwarding it again afterwards is then an ordinary create(): nothing in that
+// path knows or cares that a retired sibling exists.
+async function revert(req, res, next) {
+  try {
+    const [ref, refErr] = parseLotRef(req);
+    if (refErr) return res.status(400).json({ message: refErr });
+
+    // A receipt is not a hop — it is where material entered the chain, and
+    // correcting it belongs on the PO detail page. Taking the src as part of the
+    // identity is also what stops a receipt id silently matching an unrelated
+    // entry, since the two tables number their rows independently.
+    if (ref.src !== 'entry') {
+      return res.status(400).json({
+        message: 'Only a forwarded lot can be sent back — this one was received directly on a PO, so correct it on the PO instead',
+      });
+    }
+
+    const reasonError = revertReasonError(req.body?.reason);
+    if (reasonError) return res.status(400).json({ message: reasonError });
+    const reason = String(req.body.reason).trim();
+
+    const { rows: existing } = await db.execute({
+      sql: `SELECT id, stage, sent_qty, incoming_no, closed_at
+            FROM stitching_entries WHERE id = ? AND deleted_at IS NULL`,
+      args: [ref.id],
+    });
+    if (!existing.length) return res.status(404).json({ message: 'Stitching entry not found' });
+    const entry = existing[0];
+
+    // Retiring a hop that has itself been forwarded would strand its children on
+    // material their parent no longer holds. Same guard, and same wording, as
+    // remove() — the chain has to come apart from the far end.
+    const { rows: childRows } = await db.execute({
+      sql: 'SELECT COUNT(*) AS n FROM stitching_entries WHERE parent_entry_id = ? AND deleted_at IS NULL',
+      args: [ref.id],
+    });
+    const children = Number(childRows[0]?.n) || 0;
+    if (children > 0) {
+      return res.status(400).json({
+        message: `Cannot send this back — ${children} lot(s) have been forwarded from it. Send those back first.`,
+      });
+    }
+
+    if (entry.closed_at) {
+      return res.status(400).json({
+        message: 'This lot has been closed — reopen it before sending it back',
+      });
+    }
+
+    const lot = await loadLot('entry', ref.id);
+    const target = prevStage(entry.stage);
+
+    const tx = await db.transaction('write');
+    try {
+      await tx.execute({
+        sql: `UPDATE stitching_entries
+                SET deleted_by = ?, deleted_at = datetime('now'), revert_reason = ?,
+                    updated_by = ?, updated_at = datetime('now')
+              WHERE id = ?`,
+        args: [req.user.id, reason, req.user.id, ref.id],
+      });
+      await logAction({
+        client: tx,
+        userId: req.user.id,
+        actionType: 'STITCHING_ENTRY_REVERT',
+        // The reason goes in the description so it outlives a later restore,
+        // which clears the column.
+        description: `Sent ${entry.sent_qty} back from ${entry.stage} to ${target} `
+          + `for ${describeLot(lot)} — ${reason}`,
+        entityType: 'stitching_entry',
+        entityId: ref.id,
+        entityRef: entry.incoming_no,
+      });
+      await tx.commit();
+    } catch (e) { await tx.rollback(); throw e; }
+
+    res.json({ id: ref.id, reverted: true, returned_to: target });
+  } catch (err) { next(err); }
 }
 
 // Shared by close and reopen: both only apply at the end of the chain, and both
@@ -692,6 +839,62 @@ async function setClosed(req, res, next, { closing }) {
 const close = (req, res, next) => setClosed(req, res, next, { closing: true });
 const reopen = (req, res, next) => setClosed(req, res, next, { closing: false });
 
+// PATCH /api/stitching/:src/:id/challan — set or clear the challan a lot is
+// dispatched under.
+//
+// Takes the src for the same reason close and reopen do: an origin lot is a PO
+// receipt and a downstream lot is a stitching_entries row, and they live in
+// different tables. This is the only path by which the Stitching page writes to
+// a receipt, and it exists because the challan moved off the outbound PO detail
+// page — Bill No already covered what a PO receipt needs — while origin lots
+// still have to be dispatchable from here.
+//
+// Clearing is allowed and is not an error: the only consequence is that the lot
+// stops being forwardable, which is create()'s gate doing its job.
+async function setChallan(req, res, next) {
+  try {
+    const [ref, refErr] = parseLotRef(req);
+    if (refErr) return res.status(400).json({ message: refErr });
+
+    const lot = await loadLot(ref.src, ref.id);
+    if (!lot) return res.status(404).json({ message: 'Lot not found' });
+
+    const err = challanError(req.body?.challan_no);
+    if (err) return res.status(400).json({ message: err });
+    const next_ = String(req.body?.challan_no ?? '').trim() || null;
+
+    if (next_ === (lot.challan_no || null)) {
+      return res.json(outward(await loadLot(ref.src, ref.id)));
+    }
+
+    const table = TABLE_FOR_SRC[ref.src];
+    const tx = await db.transaction('write');
+    try {
+      await tx.execute({
+        sql: `UPDATE ${table} SET challan_no = ?, updated_by = ?,
+                updated_at = datetime('now') WHERE id = ?`,
+        args: [next_, req.user.id, ref.id],
+      });
+      await logAction({
+        client: tx,
+        userId: req.user.id,
+        actionType: 'STITCHING_LOT_CHALLAN',
+        description: next_
+          ? `Set challan ${next_} on the ${lot.stage} lot for ${describeLot(lot)}`
+          : `Cleared the challan on the ${lot.stage} lot for ${describeLot(lot)}`,
+        // Receipts are audited against their PO line, the way setClosed and every
+        // other receipt action in this app already does it.
+        entityType: ref.src === 'entry' ? 'stitching_entry' : 'outbound_po_line',
+        entityId: ref.src === 'entry' ? ref.id : lot.line_id,
+        entityRef: lot.incoming_no,
+      });
+      await tx.commit();
+    } catch (e) { await tx.rollback(); throw e; }
+
+    res.json(outward(await loadLot(ref.src, ref.id)));
+  } catch (err) { next(err); }
+}
+
 // GET /api/stitching/journey/:src/:id — the full lineage of whatever lot this
 // belongs to, from the PO receipt it entered on down to every Packed leaf.
 //
@@ -720,6 +923,7 @@ async function journey(req, res, next) {
     // record, so they are fetched separately and folded back in marked.
     const { rows: removed } = await db.execute({
       sql: `SELECT e.id, e.stage, e.party_name, e.sent_qty, e.metre, e.deleted_at,
+                   e.revert_reason, e.created_at,
                    e.parent_receipt_id, e.parent_entry_id, du.name AS deleted_by_name
             FROM stitching_entries e
             LEFT JOIN users du ON du.id = e.deleted_by
@@ -740,9 +944,14 @@ async function journey(req, res, next) {
         metre: r.metre,
         parent_src: r.parent_receipt_id != null ? 'receipt' : 'entry',
         parent_id: r.parent_receipt_id ?? r.parent_entry_id,
+        created_at: r.created_at,
         deleted: true,
         deleted_at: r.deleted_at,
         deleted_by_name: r.deleted_by_name,
+        // Present only on a hop that was sent back as a correction. A retired row
+        // without one was a plain delete — the distinction is derived from these
+        // two columns rather than stored as a flag.
+        revert_reason: r.revert_reason,
       })),
     ];
 
@@ -753,6 +962,15 @@ async function journey(req, res, next) {
       const parentKey = `${n.parent_src}:${n.parent_id}`;
       if (!childrenOf.has(parentKey)) childrenOf.set(parentKey, []);
       childrenOf.get(parentKey).push(n);
+    }
+
+    // Retired hops are appended after every live row above, so without this a
+    // correction reads backwards: forward, send back, forward again, and the
+    // replacement would render above the retired hop it replaced. Sorting each
+    // parent's children by when they happened puts the story in order — the
+    // wrong hop with its reason, then the right one.
+    for (const siblings of childrenOf.values()) {
+      siblings.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || a.id - b.id);
     }
 
     // Depth-first from the origin, so a lot's own children follow it immediately
@@ -767,6 +985,10 @@ async function journey(req, res, next) {
         // actually arrived. Null on the origin, which was not sent by anyone.
         loss: node.sent_qty == null ? null
           : Math.round((Number(node.sent_qty) - Number(node.metre)) * 100) / 100,
+        // The challan belongs to the lot that was SENT, so on this hop it is the
+        // parent's. Resolved here so the view can print it on the arrow — where
+        // the dispatch actually happened — rather than on the node that arrived.
+        sent_under_challan: byKey.get(`${node.parent_src}:${node.parent_id}`)?.challan_no ?? null,
       });
       for (const child of childrenOf.get(node.lot_key) || []) walk(child, depth + 1);
     };
@@ -799,6 +1021,6 @@ async function journey(req, res, next) {
 
 module.exports = {
   list, listParties, stageCounts, journey,
-  create, update, remove, restore, close, reopen,
+  create, update, remove, restore, revert, close, reopen, setChallan,
   NONE_SELECTED,
 };

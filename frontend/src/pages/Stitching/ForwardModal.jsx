@@ -6,7 +6,10 @@ import { listUsersLite } from '../../api/users.api';
 import { listStitchingPrefixes } from '../../api/stitchingPrefixes.api';
 import { listStitchingParties, forwardStitchingLot } from '../../api/stitching.api';
 import { ROLES } from '../../utils/roles';
-import { defaultAfterRate, fmtNum, moneyError, qtyError, EPSILON } from '../../utils/stitching';
+import {
+  defaultAfterRate, fmtNum, moneyError, qtyError, EPSILON,
+  carriedIncomingNo, soleActivePrefix, challanError, CHALLAN_MAX,
+} from '../../utils/stitching';
 
 // Field chrome WITHOUT a width. inputCls keeps w-full for the single-control
 // fields; the Incoming No pair composes from inputBase and sizes its two halves
@@ -69,11 +72,35 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
         setCheckers(users || []);
         setPrefixes(pfx || []);
         setParties(party || []);
+
+        // Carry the incoming number forward: GRY123 offers 123 again under the
+        // next stage's prefix, so one suffix identifies the whole chain and
+        // searching it finds every hop. The prefix is only pre-picked when the
+        // stage has exactly one active option — guessing between several would
+        // be a wrong answer the user has to spot and undo.
+        //
+        // Safe to set here rather than guard against clobbering: this effect runs
+        // once per lot, before the user can have typed anything.
+        const suffix = carriedIncomingNo(lot);
+        const prefix = soleActivePrefix(pfx, lot?.next_stage);
+        const challan = String(lot?.challan_no ?? '');
+        if (suffix || prefix || challan) {
+          setForm(f => ({
+            ...f,
+            incoming_no: suffix || f.incoming_no,
+            incoming_prefix_id: prefix ? String(prefix.id) : f.incoming_prefix_id,
+            challan_no: challan || f.challan_no,
+          }));
+        }
       } catch {
         if (!cancelled) toast.error('Could not load the form options');
       }
     })();
     return () => { cancelled = true; };
+    // Keyed on the lot IDENTITY, not the lot object. The prefill reads several
+    // of its fields, but re-running whenever any of them changes would overwrite
+    // what the user has since typed -- once per lot is the whole point.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lot?.lot_key]);
 
   // Only prefixes belonging to the stage this lot is moving to — the server
@@ -96,6 +123,11 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
   // one the server would have returned.
   const fieldError = () => {
     if (!String(form.party_name || '').trim()) return 'Party Name is required';
+    const challanErr = challanError(form.challan_no);
+    if (challanErr) return challanErr;
+    if (!String(form.challan_no || '').trim()) {
+      return `Add a challan number to this ${lot.stage} lot before sending it ahead`;
+    }
     const sentErr = qtyError(form.sent_qty, 'Sent Metre');
     if (sentErr) return sentErr;
     if (Number(form.sent_qty) - Number(lot.balance) > EPSILON) {
@@ -246,8 +278,16 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
             <input value={form.bill_no} onChange={e => setField('bill_no', e.target.value)} className={inputCls} maxLength={50} />
           </Field>
 
-          <Field label="Challan No">
-            <input value={form.challan_no} onChange={e => setField('challan_no', e.target.value)} className={inputCls} maxLength={50} />
+          {/* The challan documents THIS dispatch, so it is saved onto the lot
+              being sent, not onto the row this form creates. Prefilled with
+              whatever that lot already carries. */}
+          <Field label="Challan No" required hint={`Saved on the ${lot.stage} lot being sent`}>
+            <input
+              value={form.challan_no}
+              onChange={e => setField('challan_no', e.target.value)}
+              className={inputCls}
+              maxLength={CHALLAN_MAX}
+            />
           </Field>
 
           <Field

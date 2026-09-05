@@ -55,7 +55,6 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
       checked_by: receipt.checked_by ?? '',
       process_rate: receipt.process_rate ?? '',
       after_rate: receipt.after_rate ?? '',
-      challan_no: receipt.challan_no ?? '',
       incoming_prefix_id: receipt.incoming_prefix_id ?? '',
     });
   }, [receipt, isAdd]);
@@ -97,7 +96,6 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
         incoming_no: String(form.incoming_no ?? '').trim() || null,
         process_rate: form.process_rate === '' ? null : Number(form.process_rate),
         after_rate: form.after_rate === '' ? null : Number(form.after_rate),
-        challan_no: String(form.challan_no ?? '').trim() || null,
         incoming_prefix_id: form.incoming_prefix_id || null,
       };
       if (isAdd) {
@@ -177,15 +175,6 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
             <input
               value={form.bill_no}
               onChange={e => setField('bill_no', e.target.value)}
-              className={inputCls}
-              maxLength={INCOMING_NO_MAX}
-            />
-          </Field>
-
-          <Field label="Challan No">
-            <input
-              value={form.challan_no}
-              onChange={e => setField('challan_no', e.target.value)}
               className={inputCls}
               maxLength={INCOMING_NO_MAX}
             />

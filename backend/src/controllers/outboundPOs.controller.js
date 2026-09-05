@@ -258,12 +258,6 @@ async function validateReceiptFields(body, { requireAll }) {
     if (err) return err;
   }
 
-  if (present('challan_no') && !blank(body?.challan_no)) {
-    const s = String(body.challan_no).trim();
-    if (!s) return 'Challan No cannot be blank';
-    if (s.length > INCOMING_NO_MAX) return `Challan No must be ${INCOMING_NO_MAX} characters or less`;
-  }
-
   if (present('incoming_prefix_id') && !blank(body?.incoming_prefix_id)) {
     const { rows } = await db.execute({
       sql: 'SELECT id, prefix, stage, is_active FROM stitching_prefixes WHERE id = ?',
@@ -363,7 +357,7 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
     const { rows: receipts } = await executor.execute({
       sql: `SELECT r.id, r.line_id, r.received_qty, r.received_rate, r.bill_no,
                    r.checked_by, r.incoming_no,
-                   r.process_rate, r.after_rate, r.challan_no, r.incoming_prefix_id,
+                   r.process_rate, r.after_rate, r.incoming_prefix_id,
                    sp.prefix AS incoming_prefix, sp.stage AS incoming_stage,
                    r.created_by, r.created_at, r.updated_by, r.updated_at, r.deleted_by, r.deleted_at,
                    cb.name AS created_by_name, ub.name AS updated_by_name, kb.name AS checked_by_name,
@@ -1031,8 +1025,6 @@ async function createReceipt(req, res, next) {
     const checkedBy = Number(req.body.checked_by);
     const incomingNo = req.body?.incoming_no != null
       ? (String(req.body.incoming_no).trim() || null) : null;
-    const challanNo = req.body?.challan_no != null
-      ? (String(req.body.challan_no).trim() || null) : null;
     const prefixId = req.body?.incoming_prefix_id != null && req.body.incoming_prefix_id !== ''
       ? Number(req.body.incoming_prefix_id) : null;
 
@@ -1052,10 +1044,10 @@ async function createReceipt(req, res, next) {
     try {
       const { rows: inserted } = await tx.execute({
         sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, checked_by, incoming_no,
-                process_rate, after_rate, challan_no, incoming_prefix_id, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                process_rate, after_rate, incoming_prefix_id, created_by, updated_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
         args: [lineId, receivedQty, receivedRate, billNo, checkedBy, incomingNo,
-          processRate, afterRate, challanNo, prefixId, req.user.id, req.user.id],
+          processRate, afterRate, prefixId, req.user.id, req.user.id],
       });
       await logAction({
         client: tx,
@@ -1082,7 +1074,7 @@ async function updateReceipt(req, res, next) {
 
     const { rows: receiptRows } = await db.execute({
       sql: `SELECT r.id, r.received_qty, r.received_rate, r.bill_no, r.checked_by, r.incoming_no,
-                   r.process_rate, r.after_rate, r.challan_no, r.incoming_prefix_id,
+                   r.process_rate, r.after_rate, r.incoming_prefix_id,
                    sp.stage AS incoming_stage,
                    l.category, l.item_name, l.variant
             FROM outbound_po_line_receipts r
@@ -1113,11 +1105,6 @@ async function updateReceipt(req, res, next) {
     if (has('incoming_no')) {
       nextIncomingNo = req.body.incoming_no != null
         ? (String(req.body.incoming_no).trim() || null) : null;
-    }
-    let nextChallanNo = receipt.challan_no;
-    if (has('challan_no')) {
-      nextChallanNo = req.body.challan_no != null
-        ? (String(req.body.challan_no).trim() || null) : null;
     }
     let nextProcessRate = receipt.process_rate;
     if (has('process_rate')) {
@@ -1177,13 +1164,18 @@ async function updateReceipt(req, res, next) {
       }
     }
 
+    // challan_no is deliberately absent from every receipt path here. The column
+    // still exists and is still written -- but by the Stitching page, which owns
+    // it now. A challan records material being SENT OUT to a processor, which is
+    // a stitching concept. What a PO receipt needs is the vendor's Bill No, and
+    // that is already here.
     const RECEIPT_FIELDS = ['received_qty', 'received_rate', 'bill_no', 'checked_by', 'incoming_no',
-      'process_rate', 'after_rate', 'challan_no', 'incoming_prefix_id'];
+      'process_rate', 'after_rate', 'incoming_prefix_id'];
     const changes = diffFields(receipt, {
       received_qty: nextQty, received_rate: nextRate, bill_no: nextBillNo,
       checked_by: nextCheckedBy, incoming_no: nextIncomingNo,
       process_rate: nextProcessRate, after_rate: nextAfterRate,
-      challan_no: nextChallanNo, incoming_prefix_id: nextPrefixId,
+      incoming_prefix_id: nextPrefixId,
     }, RECEIPT_FIELDS);
 
     const tx = await db.transaction('write');
@@ -1191,10 +1183,10 @@ async function updateReceipt(req, res, next) {
       if (changes.length) {
         await tx.execute({
           sql: `UPDATE outbound_po_line_receipts SET received_qty = ?, received_rate = ?, bill_no = ?,
-                  checked_by = ?, incoming_no = ?, process_rate = ?, after_rate = ?, challan_no = ?,
+                  checked_by = ?, incoming_no = ?, process_rate = ?, after_rate = ?,
                   incoming_prefix_id = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
           args: [nextQty, nextRate, nextBillNo, nextCheckedBy, nextIncomingNo,
-            nextProcessRate, nextAfterRate, nextChallanNo, nextPrefixId, req.user.id, receiptId],
+            nextProcessRate, nextAfterRate, nextPrefixId, req.user.id, receiptId],
         });
         await logAction({
           client: tx,

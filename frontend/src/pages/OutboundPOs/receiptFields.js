@@ -13,7 +13,7 @@ export const INCOMING_NO_MAX = 50;
 
 export const EMPTY_RECEIPT = {
   received_qty: '', received_rate: '', bill_no: '', incoming_no: '', checked_by: '',
-  process_rate: '', after_rate: '', challan_no: '', incoming_prefix_id: '',
+  process_rate: '', after_rate: '', incoming_prefix_id: '',
 };
 
 // Mirrors the server's receipt rules — including their ORDER, so the message

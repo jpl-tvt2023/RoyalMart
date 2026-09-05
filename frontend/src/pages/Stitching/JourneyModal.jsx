@@ -81,7 +81,17 @@ export default function JourneyModal({ src, id, onClose }) {
                       {n.loss > 0 && (
                         <span className="text-amber-600 font-medium">loss {metres(n.loss)}</span>
                       )}
-                      {prev && prev.depth === n.depth && (
+                      {/* The challan belongs to the lot that was SENT, so it goes
+                          on the arrow rather than on the node that arrived. */}
+                      {n.sent_under_challan && (
+                        <span className="text-gray-400">under challan {n.sent_under_challan}</span>
+                      )}
+                      {/* Genuinely a split only when both hops are live and share
+                          a parent. A retired hop followed by its replacement is a
+                          correction, and announcing it as a split would misread
+                          the record. */}
+                      {prev && !prev.deleted && !n.deleted
+                        && prev.parent_src === n.parent_src && prev.parent_id === n.parent_id && (
                         <span className="text-gray-400">· split from the same lot</span>
                       )}
                     </div>
@@ -116,7 +126,11 @@ export default function JourneyModal({ src, id, onClose }) {
 
                     {n.deleted ? (
                       <div className="mt-1 text-[11px] text-gray-400">
-                        removed by {n.deleted_by_name || 'unknown'} · {formatDateTime(n.deleted_at)}
+                        {n.revert_reason ? 'sent back' : 'removed'} by {n.deleted_by_name || 'unknown'}
+                        {' · '}{formatDateTime(n.deleted_at)}
+                        {n.revert_reason && (
+                          <span className="text-amber-600"> · {n.revert_reason}</span>
+                        )}
                       </div>
                     ) : (
                       <div className="mt-1 flex items-center gap-3 flex-wrap text-[11px] text-gray-500">
@@ -129,7 +143,6 @@ export default function JourneyModal({ src, id, onClose }) {
                           <span className="font-semibold text-[#003049]">{fmtNum(n.after_rate)}</span>
                         </span>
                         {n.bill_no && <span>bill {n.bill_no}</span>}
-                        {n.challan_no && <span>challan {n.challan_no}</span>}
                         {n.checked_by_name && <span>checked by {n.checked_by_name}</span>}
                         {n.closed_at && (
                           <span className="text-gray-400">

@@ -31,6 +31,22 @@ export async function reopenStitchingLot(src, id) {
   return data;
 }
 
+// The challan a lot is dispatched under. Takes the src because an origin lot is
+// a PO receipt and a downstream lot is a stitching entry -- and this is the only
+// path by which this page writes to a receipt.
+export async function setStitchingChallan(src, id, challanNo) {
+  const { data } = await api.patch(`/stitching/${src}/${id}/challan`, { challan_no: challanNo });
+  return data;
+}
+
+// Send a wrongly recorded hop back to the stage it came from. Takes the src for
+// the same reason, and because the server refuses a receipt outright — material
+// entered the chain there, so there is nothing behind it to go back to.
+export async function revertStitchingLot(src, id, reason) {
+  const { data } = await api.post(`/stitching/${src}/${id}/revert`, { reason });
+  return data;
+}
+
 export async function listStitchingParties() {
   const { data } = await api.get('/stitching/parties');
   return data;

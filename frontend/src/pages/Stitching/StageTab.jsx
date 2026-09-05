@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Link } from 'react-router-dom';
-import { Send, Trash2, ExternalLink, Route, PackageCheck, RotateCcw } from 'lucide-react';
+import { Send, Trash2, ExternalLink, Route, PackageCheck, RotateCcw, Undo2, FileText } from 'lucide-react';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
@@ -16,6 +16,8 @@ import { STATUSES, STATUS_COLORS, fmtNum } from '../../utils/stitching';
 import { formatDateTime } from '../../utils/formatters';
 import ForwardModal from './ForwardModal';
 import JourneyModal from './JourneyModal';
+import RevertModal from './RevertModal';
+import ChallanModal from './ChallanModal';
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
 // Density scales with the viewport, matching OutboundPODetail: tight enough for
@@ -44,6 +46,8 @@ export default function StageTab({ stage, onOpenCounts }) {
   const [deleting, setDeleting] = useState(false);
   const [journeyFor, setJourneyFor] = useState(null);
   const [closing, setClosing] = useState(null);
+  const [reverting, setReverting] = useState(null);
+  const [challanFor, setChallanFor] = useState(null);
   const [busyKey, setBusyKey] = useState(null);
 
   const load = useCallback(async () => {
@@ -206,7 +210,23 @@ export default function StageTab({ stage, onOpenCounts }) {
                   <td className={`${tdCls} text-gray-600`}>{fmtNum(r.rate)}</td>
                   <td className={`${tdCls} text-gray-600`}>{fmtNum(r.process_rate)}</td>
                   <td className={`${tdCls} font-medium text-[#003049]`}>{fmtNum(r.after_rate)}</td>
-                  <td className={`${tdCls} text-gray-600`}>{r.challan_no || '—'}</td>
+                  {/* Editable on both row kinds: an origin lot is a PO receipt,
+                      and this page is now the only place its challan can be set.
+                      A missing one is called out rather than left as a bare dash,
+                      because it is what stops the lot moving. */}
+                  <td className={tdCls}>
+                    <button
+                      type="button"
+                      onClick={() => setChallanFor(r)}
+                      title={r.challan_no ? 'Edit the challan' : 'Add a challan so this lot can be sent ahead'}
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 -mx-1.5 rounded text-xs hover:bg-gray-100 ${
+                        r.challan_no ? 'text-gray-600' : 'text-amber-600'
+                      }`}
+                    >
+                      <FileText size={12} className="shrink-0" />
+                      {r.challan_no || 'Add'}
+                    </button>
+                  </td>
                   <td className={`${tdCls} whitespace-nowrap`}>
                     {r.incoming_prefix || r.incoming_no
                       ? <span className="font-mono text-xs">{r.incoming_prefix || ''}{r.incoming_no || ''}</span>
@@ -219,8 +239,11 @@ export default function StageTab({ stage, onOpenCounts }) {
                         <button
                           type="button"
                           onClick={() => setForwarding(r)}
-                          title={`Send to ${r.next_stage}`}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-[#c1121f] hover:bg-red-50"
+                          disabled={r.challan_missing}
+                          title={r.challan_missing
+                            ? `Add a challan number to this ${r.stage} lot before sending it ahead`
+                            : `Send to ${r.next_stage}`}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-[#c1121f] hover:bg-red-50 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
                         >
                           <Send size={13} />Add Rec
                         </button>
@@ -247,6 +270,20 @@ export default function StageTab({ stage, onOpenCounts }) {
                           className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-40"
                         >
                           <RotateCcw size={13} />Reopen
+                        </button>
+                      )}
+                      {/* A correction, not rework: the hop was recorded against
+                          the wrong lot or stage. Only entries can go back — an
+                          origin lot is where material entered, so there is
+                          nothing behind it. */}
+                      {r.can_revert && (
+                        <button
+                          type="button"
+                          onClick={() => setReverting(r)}
+                          title={`Send back to ${r.parent_stage}`}
+                          className="p-1.5 rounded hover:bg-amber-50 text-amber-600"
+                        >
+                          <Undo2 size={14} />
                         </button>
                       )}
                       <button
@@ -330,6 +367,22 @@ export default function StageTab({ stage, onOpenCounts }) {
           lot={forwarding}
           onClose={() => setForwarding(null)}
           onSaved={() => { setForwarding(null); load(); }}
+        />
+      )}
+
+      {reverting && (
+        <RevertModal
+          lot={reverting}
+          onClose={() => setReverting(null)}
+          onSaved={load}
+        />
+      )}
+
+      {challanFor && (
+        <ChallanModal
+          lot={challanFor}
+          onClose={() => setChallanFor(null)}
+          onSaved={load}
         />
       )}
 
