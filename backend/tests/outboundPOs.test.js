@@ -1286,3 +1286,180 @@ describe('Outbound POs API', () => {
     });
   });
 });
+
+// As of migration 064 the Outbound Product List can list one (Category, Item
+// Name) pair under several unit metrics -- "Raw Material / Handkerchief - Bundle
+// Fabric" in both Taga and mtrs is the case this exists for. The packaging
+// catalog still records one metric per variant, which is the line's DEFAULT; the
+// PO line picks between the pair's listed metrics.
+describe('Outbound PO lines — unit metric selection', () => {
+  const disposableCategories = [];
+
+  const createOutboundProduct = (payload) =>
+    request(app).post('/api/configurations/outbound-products').set('Authorization', `Bearer ${token}`).send(payload);
+  const createPackagingProduct = (payload) =>
+    request(app).post('/api/packaging-raw-materials').set('Authorization', `Bearer ${token}`).send(payload);
+  const getPO = (id) =>
+    request(app).get(`/api/outbound-pos/${id}`).set('Authorization', `Bearer ${token}`);
+
+  // An article listed under two metrics, under a category unique to this test so
+  // cleanup can never touch the migration-seeded taxonomy the other outbound test
+  // files share -- same disposable-catalog convention as
+  // packagingRawMaterials.test.js. defaultMetric is what the packaging catalog
+  // records, i.e. what a line falls back to when the payload names none.
+  async function twoMetricArticle({ defaultMetric = 'Taga' } = {}) {
+    const category = `Cat ${uid()}`;
+    const item_name = `Item ${uid()}`;
+    disposableCategories.push(category);
+    await createOutboundProduct({ category, item_name, unit_metric: 'Taga' });
+    await createOutboundProduct({ category, item_name, unit_metric: 'mtrs' });
+    const variant = '75" Dark Color';
+    await createPackagingProduct({ category, item_name, variant, unit_metric: defaultMetric });
+    return { category, item_name, variant };
+  }
+
+  // A PO whose single line is this article, left approved so it can be PATCHed.
+  async function poForArticle(article, lineOverrides = {}) {
+    const vendor = await createVendor([article]);
+    const po = await createPO({
+      vendor_id: vendor.body.id,
+      approved_by: adminUserId,
+      approval_date: '2026-01-01',
+      lines: [lineFor(article, lineOverrides)],
+    });
+    expect(po.status).toBe(201);
+    const [lineId] = await lineIdsOf(po.body.id);
+    return { vendor: vendor.body, poId: po.body.id, lineId };
+  }
+
+  afterAll(async () => {
+    for (const category of disposableCategories) {
+      await db.execute({ sql: 'DELETE FROM packaging_raw_materials WHERE category = ?', args: [category] });
+      await db.execute({ sql: 'DELETE FROM outbound_products WHERE category = ?', args: [category] });
+    }
+  });
+
+  describe('the options a mapping publishes', () => {
+    test('a vendor article carries every metric its pair is listed under, plus the catalog default', async () => {
+      const article = await twoMetricArticle();
+      const vendor = await createVendor([article]);
+      const res = await request(app).get('/api/outbound-vendors').set('Authorization', `Bearer ${token}`);
+
+      const mapped = res.body
+        .find(v => v.id === vendor.body.id).articles
+        .find(a => a.category === article.category);
+      expect(mapped.unit_metric).toBe('Taga');
+      expect([...mapped.unit_metrics].sort()).toEqual(['Taga', 'mtrs'].sort());
+    });
+
+    test('a single-metric article publishes a one-element list', async () => {
+      const vendor = await createVendor(); // Raw Material / Caps, seeded as pcs
+      const res = await request(app).get('/api/outbound-vendors').set('Authorization', `Bearer ${token}`);
+      const mapped = res.body.find(v => v.id === vendor.body.id).articles[0];
+      expect(mapped.unit_metrics).toEqual([mapped.unit_metric]);
+    });
+  });
+
+  describe('POST /api/outbound-pos — create', () => {
+    test('stores the metric the payload picked', async () => {
+      const article = await twoMetricArticle();
+      const { poId } = await poForArticle(article, { unit_metric: 'mtrs' });
+      const po = await getPO(poId);
+      expect(po.body.lines[0].unit_metric).toBe('mtrs');
+    });
+
+    test("stores it in the master's casing, not the payload's", async () => {
+      const article = await twoMetricArticle();
+      const { poId } = await poForArticle(article, { unit_metric: 'MTRS' });
+      const po = await getPO(poId);
+      expect(po.body.lines[0].unit_metric).toBe('mtrs');
+    });
+
+    test('rejects a metric the pair is not listed under, naming the ones it is', async () => {
+      const article = await twoMetricArticle();
+      const vendor = await createVendor([article]);
+      const res = await createPO({
+        vendor_id: vendor.body.id,
+        lines: [lineFor(article), lineFor(article, { unit_metric: 'furlongs' })],
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toContain('Line 2');
+      expect(res.body.message).toContain('furlongs');
+      expect(res.body.message).toContain('Taga');
+      expect(res.body.message).toContain('mtrs');
+    });
+
+    test('omitting unit_metric still falls back to the catalog default', async () => {
+      // Regression guard: the field stays optional, so every caller that
+      // predates it — and the client, before an article is picked — keeps the
+      // exact behaviour it had when the server derived the metric alone.
+      const article = await twoMetricArticle({ defaultMetric: 'mtrs' });
+      const { poId } = await poForArticle(article);
+      const po = await getPO(poId);
+      expect(po.body.lines[0].unit_metric).toBe('mtrs');
+    });
+  });
+
+  describe('PATCH /api/outbound-pos/:id — update', () => {
+    test('the metric can be changed while the line is still Open, and the change is audited', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { unit_metric: 'Taga' });
+
+      const res = await patchPO(poId, {
+        lines: [{ id: lineId, line_no: 1, ...lineFor(article, { unit_metric: 'mtrs' }) }],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.lines[0].unit_metric).toBe('mtrs');
+
+      const audit = await auditFor('outbound_po_line', lineId);
+      const entry = audit.body.find(e => e.action_type === 'OUTBOUND_PO_LINE_UPDATE');
+      expect(entry).toBeTruthy();
+      expect(entry.changes.some(c => c.field === 'unit_metric' && c.new === 'mtrs')).toBe(true);
+    });
+
+    test('the metric is locked once the line has been received against', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      const receipt = await postReceipt(poId, lineId, { received_qty: 2 });
+      expect(receipt.status).toBe(201);
+
+      const res = await patchPO(poId, {
+        lines: [{ id: lineId, line_no: 1, ...lineFor(article, { qty: 5, unit_metric: 'mtrs' }) }],
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/unit metric cannot be changed/);
+
+      const po = await getPO(poId);
+      expect(po.body.lines[0].unit_metric).toBe('Taga');
+    });
+
+    test('a received line still accepts unrelated edits, as long as its metric is unchanged', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      expect((await postReceipt(poId, lineId, { received_qty: 2 })).status).toBe(201);
+
+      const res = await patchPO(poId, {
+        lines: [{ id: lineId, line_no: 1, ...lineFor(article, { qty: 9, unit_metric: 'Taga' }) }],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.lines[0]).toMatchObject({ qty: 9, unit_metric: 'Taga' });
+    });
+
+    test('a line keeps re-saving after its metric is retired from the master', async () => {
+      // Grandfathering: a taxonomy edit must never leave an existing PO stuck,
+      // the same guarantee validateLines gives article tuples.
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { unit_metric: 'mtrs' });
+      await db.execute({
+        sql: 'DELETE FROM outbound_products WHERE category = ? AND unit_metric = ?',
+        args: [article.category, 'mtrs'],
+      });
+
+      const res = await patchPO(poId, {
+        lines: [{ id: lineId, line_no: 1, ...lineFor(article, { qty: 4, unit_metric: 'mtrs' }) }],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.lines[0]).toMatchObject({ qty: 4, unit_metric: 'mtrs' });
+    });
+  });
+});
