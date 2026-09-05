@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { Send, Trash2, ExternalLink, Route, PackageCheck, RotateCcw, Undo2, FileText, Download } from 'lucide-react';
+import { Plus, Trash2, ExternalLink, Route, PackageCheck, RotateCcw, Undo2, Download } from 'lucide-react';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
@@ -13,12 +13,12 @@ import {
   listStitchingLots, listStitchingStageCounts, deleteStitchingLot,
   closeStitchingLot, reopenStitchingLot,
 } from '../../api/stitching.api';
-import { STATUSES, STATUS_COLORS, fmtNum, ALL_TAB } from '../../utils/stitching';
+import { STATUSES, STATUS_COLORS, fmtNum, fmtQty, EPSILON, ALL_TAB } from '../../utils/stitching';
 import { formatDateTime } from '../../utils/formatters';
-import ForwardModal from './ForwardModal';
 import JourneyModal from './JourneyModal';
-import RevertModal from './RevertModal';
 import ChallanModal from './ChallanModal';
+import ReceiveModal from './ReceiveModal';
+import RemoveChallanModal from './RemoveChallanModal';
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
 // Density scales with the viewport, matching OutboundPODetail: tight enough for
@@ -27,7 +27,7 @@ const thCls = 'px-2 py-2 xl:px-3 text-left text-xs font-semibold text-gray-500 u
 const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2';
 
 const EMPTY_FILTERS = {
-  party_name: '', incoming_no: '', bill_no: '', challan_no: '', po_order_no: '', status: '',
+  party_name: '', incoming_no: '', challan_no: '', po_order_no: '', status: '',
 };
 
 // Same shape the other export pages use (OutboundPOList, PackagingList,
@@ -59,7 +59,6 @@ const EXPORT_COLUMNS = [
   { key: 'rate', header: 'Rate' },
   { key: 'process_rate', header: 'Process Rate' },
   { key: 'after_rate', header: 'After Rate' },
-  { key: 'bill_no', header: 'Bill No' },
   { key: 'challan_no', header: 'Challan No' },
   { key: 'incoming_no', header: 'Incoming No' },
   { key: 'checked_by_name', header: 'Checked By' },
@@ -79,13 +78,13 @@ export default function StageTab({ stage, onOpenCounts }) {
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [forwarding, setForwarding] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [journeyFor, setJourneyFor] = useState(null);
   const [closing, setClosing] = useState(null);
-  const [reverting, setReverting] = useState(null);
   const [challanFor, setChallanFor] = useState(null);
+  const [receiving, setReceiving] = useState(null);
+  const [removing, setRemoving] = useState(null);
   const [busyKey, setBusyKey] = useState(null);
   const [downloading, setDownloading] = useState(false);
 
@@ -93,7 +92,7 @@ export default function StageTab({ stage, onOpenCounts }) {
   const isAll = stage === ALL_TAB;
   // Stage only earns a column when rows can differ — on a stage tab every row
   // would repeat the tab's own name.
-  const COLUMN_COUNT = isAll ? 15 : 14;
+  const COLUMN_COUNT = isAll ? 14 : 13;
 
   // Params are built once and reused by the export, so what downloads is exactly
   // what the filters describe.
@@ -158,7 +157,6 @@ export default function StageTab({ stage, onOpenCounts }) {
         rate: r.rate,
         process_rate: r.process_rate,
         after_rate: r.after_rate,
-        bill_no: r.bill_no || '',
         challan_no: r.challan_no || '',
         incoming_no: `${r.incoming_prefix || ''}${r.incoming_no || ''}`,
         checked_by_name: r.checked_by_name || '',
@@ -225,10 +223,9 @@ export default function StageTab({ stage, onOpenCounts }) {
   return (
     <>
       <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
           <input placeholder="Party Name" value={draft.party_name} onChange={e => setDraftField('party_name', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
           <input placeholder="Incoming No" value={draft.incoming_no} onChange={e => setDraftField('incoming_no', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
-          <input placeholder="Bill No" value={draft.bill_no} onChange={e => setDraftField('bill_no', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
           <input placeholder="Challan No" value={draft.challan_no} onChange={e => setDraftField('challan_no', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
           <input placeholder="PO No" value={draft.po_order_no} onChange={e => setDraftField('po_order_no', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
           <select value={draft.status} onChange={e => setDraftField('status', e.target.value)} className={inputCls}>
@@ -255,7 +252,6 @@ export default function StageTab({ stage, onOpenCounts }) {
                 <th className={thCls}>Sr</th>
                 {isAll && <th className={thCls}>Stage</th>}
                 <th className={thCls}>Party Name</th>
-                <th className={thCls}>Bill No</th>
                 <th className={thCls}>Article</th>
                 <th className={thCls}>Status</th>
                 <th className={thCls}>Qty</th>
@@ -279,153 +275,209 @@ export default function StageTab({ stage, onOpenCounts }) {
               ))}
 
               {!loading && rows.map((r, i) => (
-                <tr key={r.lot_key} className="hover:bg-gray-50/60">
-                  <td className={`${tdCls} text-gray-400`}>{srBase + i + 1}</td>
-                  {isAll && (
-                    <td className={`${tdCls} font-medium text-[#003049] whitespace-nowrap`}>{r.stage}</td>
-                  )}
-                  <td className={`${tdCls} font-medium text-[#003049] whitespace-nowrap`}>{r.party_name}</td>
-                  <td className={`${tdCls} text-gray-600`}>{r.bill_no || '—'}</td>
-                  <td className={tdCls}>
-                    <div className="text-[#003049] whitespace-nowrap">
-                      {r.item_name}{r.variant ? ` — ${r.variant}` : ''}
-                    </div>
-                    <div className="text-[11px] text-gray-400">
-                      PO {r.po_order_no}{r.unit_metric ? ` · ${r.unit_metric}` : ''}
-                    </div>
-                  </td>
-                  <td className={tdCls}>
-                    <Badge color={STATUS_COLORS[r.status] || 'gray'}>{r.status}</Badge>
-                  </td>
-                  <td className={`${tdCls} whitespace-nowrap`}>
-                    {fmtNum(r.metre)}
-                    {/* Sent > received means the difference was lost in processing. */}
-                    {r.sent_qty != null && Number(r.sent_qty) - Number(r.metre) > 0.005 && (
-                      <div className="text-[11px] text-amber-600">
-                        sent {fmtNum(r.sent_qty)} · loss {fmtNum(Number(r.sent_qty) - Number(r.metre))}
-                      </div>
+                <Fragment key={r.lot_key}>
+                  <tr className="hover:bg-gray-50/60">
+                    <td className={`${tdCls} text-gray-400`}>{srBase + i + 1}</td>
+                    {isAll && (
+                      <td className={`${tdCls} font-medium text-[#003049] whitespace-nowrap`}>{r.stage}</td>
                     )}
-                  </td>
-                  <td className={`${tdCls} font-semibold whitespace-nowrap ${Number(r.balance) > 0.005 ? 'text-amber-700' : 'text-gray-400'}`}>
-                    {fmtNum(r.balance)}
-                  </td>
-                  <td className={`${tdCls} text-gray-600`}>{fmtNum(r.rate)}</td>
-                  <td className={`${tdCls} text-gray-600`}>{fmtNum(r.process_rate)}</td>
-                  <td className={`${tdCls} font-medium text-[#003049]`}>{fmtNum(r.after_rate)}</td>
-                  {/* Editable on both row kinds: an origin lot is a PO receipt,
-                      and this page is now the only place its challan can be set.
-                      A missing one is called out rather than left as a bare dash,
-                      because it is what stops the lot moving. */}
-                  <td className={tdCls}>
-                    <button
-                      type="button"
-                      onClick={() => setChallanFor(r)}
-                      title={r.challan_no ? 'Edit the challan' : 'Add a challan so this lot can be sent ahead'}
-                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 -mx-1.5 rounded text-xs hover:bg-gray-100 ${
-                        r.challan_no ? 'text-gray-600' : 'text-amber-600'
-                      }`}
-                    >
-                      <FileText size={12} className="shrink-0" />
-                      {r.challan_no || 'Add'}
-                    </button>
-                  </td>
-                  <td className={`${tdCls} whitespace-nowrap`}>
-                    {r.incoming_prefix || r.incoming_no
-                      ? <span className="font-mono text-xs">{r.incoming_prefix || ''}{r.incoming_no || ''}</span>
-                      : <span className="text-gray-300">—</span>}
-                  </td>
-                  <td className={`${tdCls} text-gray-600 whitespace-nowrap`}>{r.checked_by_name || '—'}</td>
-                  <td className={tdCls}>
-                    <div className="flex items-center gap-1">
-                      {r.can_forward && (
+                    <td className={`${tdCls} font-medium text-[#003049] whitespace-nowrap`}>{r.party_name}</td>
+                    <td className={tdCls}>
+                      <div className="text-[#003049] whitespace-nowrap">
+                        {r.item_name}{r.variant ? ` — ${r.variant}` : ''}
+                      </div>
+                      <div className="text-[11px] text-gray-400">
+                        PO {r.po_order_no}{r.unit_metric ? ` · ${r.unit_metric}` : ''}
+                      </div>
+                    </td>
+                    <td className={tdCls}>
+                      <Badge color={STATUS_COLORS[r.status] || 'gray'}>{r.status}</Badge>
+                    </td>
+                    <td className={`${tdCls} whitespace-nowrap`}>
+                      {fmtNum(r.metre)}
+                      {/* Sent more than came back: the difference was lost in processing. */}
+                      {r.sent_qty != null && r.received_at
+                        && Number(r.sent_qty) - Number(r.metre) > EPSILON && (
+                        <div className="text-[11px] text-amber-600">
+                          sent {fmtNum(r.sent_qty)} · loss {fmtNum(Number(r.sent_qty) - Number(r.metre))}
+                        </div>
+                      )}
+                      {/* Nothing has arrived yet, so the quantity that matters is
+                          what went out. */}
+                      {!r.received_at && (
+                        <div className="text-[11px] text-amber-600">sent {fmtNum(r.sent_qty)}</div>
+                      )}
+                    </td>
+                    <td className={`${tdCls} font-semibold whitespace-nowrap ${Number(r.balance) > EPSILON ? 'text-amber-700' : 'text-gray-400'}`}>
+                      {fmtNum(r.balance)}
+                    </td>
+                    <td className={`${tdCls} text-gray-600`}>{fmtNum(r.rate)}</td>
+                    <td className={`${tdCls} text-gray-600`}>{fmtNum(r.process_rate)}</td>
+                    <td className={`${tdCls} font-medium text-[#003049]`}>{fmtNum(r.after_rate)}</td>
+                    {/* The challan this lot arrived under. Read-only: challans are
+                        records of their own now, added and withdrawn as such. */}
+                    <td className={`${tdCls} text-gray-600 whitespace-nowrap`}>{r.challan_no || '—'}</td>
+                    <td className={`${tdCls} whitespace-nowrap`}>
+                      {r.incoming_prefix || r.incoming_no
+                        ? <span className="font-mono text-xs">{r.incoming_prefix || ''}{r.incoming_no || ''}</span>
+                        : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className={`${tdCls} text-gray-600 whitespace-nowrap`}>{r.checked_by_name || '—'}</td>
+                    <td className={tdCls}>
+                      <div className="flex items-center gap-1">
+                        {/* This lot is itself a challan still out at a processor. */}
+                        {r.can_receive && (
+                          <button
+                            type="button"
+                            onClick={() => setReceiving(r)}
+                            title="Record what came back against this challan"
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-[#c1121f] hover:bg-red-50"
+                          >
+                            <PackageCheck size={13} />Receive
+                          </button>
+                        )}
+                        {r.stage === 'Packed' && r.received_at && !r.closed_at && (
+                          <button
+                            type="button"
+                            onClick={() => setClosing(r)}
+                            title="Mark this lot closed"
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-[#003049] hover:bg-gray-100"
+                          >
+                            <PackageCheck size={13} />Close
+                          </button>
+                        )}
+                        {r.stage === 'Packed' && r.closed_at && (
+                          <button
+                            type="button"
+                            onClick={() => reopen(r)}
+                            disabled={busyKey === r.lot_key}
+                            title={`Closed by ${r.closed_by_name || 'unknown'} · ${formatDateTime(r.closed_at)}`}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-40"
+                          >
+                            <RotateCcw size={13} />Reopen
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => setForwarding(r)}
-                          disabled={r.challan_missing}
-                          title={r.challan_missing
-                            ? `Add a challan number to this ${r.stage} lot before sending it ahead`
-                            : `Send to ${r.next_stage}`}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-[#c1121f] hover:bg-red-50 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                          onClick={() => setJourneyFor(r)}
+                          title="Trace this lot from the PO receipt to Packed"
+                          className="p-1.5 rounded hover:bg-gray-100 text-gray-500"
                         >
-                          <Send size={13} />Add Rec
+                          <Route size={14} />
                         </button>
-                      )}
-                      {/* Packed is the end of the chain, so instead of forwarding
-                          a lot there is closed once the goods leave. Both kinds of
-                          lot can be Packed, hence passing r.src. */}
-                      {r.stage === 'Packed' && !r.closed_at && (
+                        <HistoryButton
+                          entityType={r.src === 'entry' ? 'stitching_entry' : 'outbound_po_line'}
+                          entityId={r.src === 'entry' ? r.id : r.line_id}
+                          title={`History — ${r.item_name}${r.variant ? ` ${r.variant}` : ''}`}
+                        />
+                        {r.src === 'receipt' && (
+                          <Link
+                            to={`/outbound/purchase-orders/${r.po_id}`}
+                            title="Open the PO this lot arrived on"
+                            className="p-1.5 rounded hover:bg-gray-100 text-gray-500"
+                          >
+                            <ExternalLink size={14} />
+                          </Link>
+                        )}
+                        {r.src === 'entry' && (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDelete(r)}
+                            title="Remove this lot"
+                            className="p-1.5 rounded hover:bg-red-50 text-red-500"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+
+                  {/* Challans raised against this lot, nested beneath it the way
+                      receipts sit under a PO line. Each one is a dispatch: some
+                      of this lot out at a processor, or already back. */}
+                  {(r.challans || []).map(c => (
+                    <tr key={c.lot_key} className="bg-gray-50/40">
+                      <td className={tdCls} />
+                      <td className={tdCls} colSpan={COLUMN_COUNT - 2}>
+                        <div className="flex items-center gap-3 flex-wrap text-xs pl-4 border-l-2 border-gray-200">
+                          <span className="text-gray-400">Challan</span>
+                          <span className="font-mono text-[#003049]">{c.challan_no || '—'}</span>
+                          <span className="text-gray-500">{c.party_name}</span>
+                          <span className="text-gray-400">
+                            sent <span className="font-medium text-gray-700">{fmtQty(c.sent_qty, r.unit_metric)}</span>
+                          </span>
+                          {c.received_at ? (
+                            <span className="text-gray-400">
+                              received <span className="font-medium text-gray-700">{fmtQty(c.metre, r.unit_metric)}</span>
+                            </span>
+                          ) : null}
+                          <Badge color={STATUS_COLORS[c.status] || 'gray'}>{c.status}</Badge>
+                          <span className="font-mono text-[11px] text-gray-400">
+                            {c.incoming_prefix || ''}{c.incoming_no || ''}
+                          </span>
+                        </div>
+                      </td>
+                      <td className={tdCls}>
+                        <div className="flex items-center gap-1">
+                          {c.can_receive && (
+                            <button
+                              type="button"
+                              onClick={() => setReceiving(c)}
+                              title="Record what came back against this challan"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-[#c1121f] hover:bg-red-50"
+                            >
+                              <PackageCheck size={13} />Receive
+                            </button>
+                          )}
+                          {/* A correction: the challan was entered against the
+                              wrong lot, or never raised at all. Nothing travels
+                              anywhere -- the quantity stops counting as sent. */}
+                          {c.can_remove && (
+                            <button
+                              type="button"
+                              onClick={() => setRemoving(c)}
+                              title="Withdraw this challan — entered in error"
+                              className="p-1.5 rounded hover:bg-amber-50 text-amber-600"
+                            >
+                              <Undo2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+
+                  {/* A lot cannot reach the next stage except under a challan, so
+                      this is the only way forward -- and it is on the lot rather
+                      than behind an action menu for exactly that reason. */}
+                  {r.can_forward && r.received_at && (
+                    <tr className="bg-gray-50/40">
+                      <td className={tdCls} />
+                      <td className={tdCls} colSpan={COLUMN_COUNT - 1}>
                         <button
                           type="button"
-                          onClick={() => setClosing(r)}
-                          title="Mark this lot closed"
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-[#003049] hover:bg-gray-100"
+                          onClick={() => setChallanFor(r)}
+                          className="inline-flex items-center gap-1 ml-4 px-2 py-1 rounded text-xs text-[#c1121f] hover:bg-red-50"
                         >
-                          <PackageCheck size={13} />Close
+                          <Plus size={13} />Add Challan
+                          <span className="text-gray-400">
+                            · {fmtQty(r.balance, r.unit_metric)} left to send to {r.next_stage}
+                          </span>
                         </button>
-                      )}
-                      {r.stage === 'Packed' && r.closed_at && (
-                        <button
-                          type="button"
-                          onClick={() => reopen(r)}
-                          disabled={busyKey === r.lot_key}
-                          title={`Closed by ${r.closed_by_name || 'unknown'} · ${formatDateTime(r.closed_at)}`}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-40"
-                        >
-                          <RotateCcw size={13} />Reopen
-                        </button>
-                      )}
-                      {/* A correction, not rework: the hop was recorded against
-                          the wrong lot or stage. Only entries can go back — an
-                          origin lot is where material entered, so there is
-                          nothing behind it. */}
-                      {r.can_revert && (
-                        <button
-                          type="button"
-                          onClick={() => setReverting(r)}
-                          title={`Send back to ${r.parent_stage}`}
-                          className="p-1.5 rounded hover:bg-amber-50 text-amber-600"
-                        >
-                          <Undo2 size={14} />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setJourneyFor(r)}
-                        title="Trace this lot from the PO receipt to Packed"
-                        className="p-1.5 rounded hover:bg-gray-100 text-gray-500"
-                      >
-                        <Route size={14} />
-                      </button>
-                      {/* Only stage entries are deletable here — an origin lot is
-                          a PO receipt and is managed on the PO itself. */}
-                      {r.src === 'entry' && (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDelete(r)}
-                          title="Remove this lot"
-                          className="p-1.5 rounded hover:bg-red-50 text-red-500"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      )}
-                      {/* An origin lot IS a PO receipt — its history lives on the
-                          PO line, not on this row, so link to the PO rather than
-                          open a drawer keyed to the wrong entity. */}
-                      {r.src === 'entry' ? (
-                        <HistoryButton entityType="stitching_entry" entityId={r.id} title={`${r.stage} lot history`} />
-                      ) : (
-                        <Link
-                          to={`/outbound/purchase-orders/${r.po_id}`}
-                          title={`Open PO ${r.po_order_no}`}
-                          className="p-1.5 rounded hover:bg-gray-100 text-gray-500 inline-flex"
-                        >
-                          <ExternalLink size={14} />
-                        </Link>
-                      )}
-                    </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+
+              {!loading && !rows.length && (
+                <tr>
+                  <td colSpan={COLUMN_COUNT} className="px-3 py-8 text-center text-gray-400">
+                    No lots here yet
                   </td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>
@@ -464,26 +516,26 @@ export default function StageTab({ stage, onOpenCounts }) {
           : ''}
       />
 
-      {forwarding && (
-        <ForwardModal
-          lot={forwarding}
-          onClose={() => setForwarding(null)}
-          onSaved={() => { setForwarding(null); load(); }}
-        />
-      )}
-
-      {reverting && (
-        <RevertModal
-          lot={reverting}
-          onClose={() => setReverting(null)}
-          onSaved={load}
-        />
-      )}
-
       {challanFor && (
         <ChallanModal
           lot={challanFor}
           onClose={() => setChallanFor(null)}
+          onSaved={() => { setChallanFor(null); load(); }}
+        />
+      )}
+
+      {receiving && (
+        <ReceiveModal
+          challan={receiving}
+          onClose={() => setReceiving(null)}
+          onSaved={() => { setReceiving(null); load(); }}
+        />
+      )}
+
+      {removing && (
+        <RemoveChallanModal
+          challan={removing}
+          onClose={() => setRemoving(null)}
           onSaved={load}
         />
       )}

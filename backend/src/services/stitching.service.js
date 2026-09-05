@@ -22,6 +22,7 @@ const STAGES = ['Gray', 'Processed', 'Stitched', 'Packed'];
 const EPSILON = 0.005;
 
 const STATUS = {
+  IN_TRANSIT: 'In Transit',
   PENDING: 'Pending',
   PARTIAL: 'Partial',
   FORWARDED: 'Forwarded',
@@ -32,7 +33,7 @@ const STATUS = {
 // Outstanding work: a lot still holding metre at its stage, or finished goods
 // packed but not yet dispatched. Forwarded means the lot fully moved on, and
 // Closed means someone confirmed it is done with -- neither needs attention.
-const OPEN_STATUSES = [STATUS.PENDING, STATUS.PARTIAL, STATUS.IN_STOCK];
+const OPEN_STATUSES = [STATUS.IN_TRANSIT, STATUS.PENDING, STATUS.PARTIAL, STATUS.IN_STOCK];
 
 const isValidStage = (s) => STAGES.includes(s);
 
@@ -44,27 +45,27 @@ const nextStage = (stage) => {
   return i === -1 ? null : (STAGES[i + 1] || null);
 };
 
-// The stage a lot came FROM, or null at the head of the chain.
+// The stage a quantity CAME FROM, or null at the head of the chain.
 //
-// Safe as a stand-in for "what stage is my parent at" only because hop creation
-// is forward-only -- create() derives its target from nextStage(parent.stage)
+// Describes history only. Material flows one way -- Gray to Processed to
+// Stitched to Packed -- and nothing anywhere moves a lot to an earlier stage, so
+// this is never a destination. It is safe as a stand-in for "what stage is my
+// parent at" because create() derives its target from nextStage(parent.stage)
 // and never accepts a caller-supplied stage, so every entry sits exactly one
-// stage after its parent. A test pins that. If a backward hop is ever allowed
-// (rework, as opposed to the correction this was built for), this stops being
-// equivalent and the parent's stage has to be joined instead.
+// stage after its parent. A test pins that.
 const prevStage = (stage) => {
   const i = STAGES.indexOf(stage);
   return i <= 0 ? null : STAGES[i - 1];
 };
 
-// A send-back is a correction, so the reason is the whole point of the record --
-// "why is there a retired hop here" has to be answerable without asking anyone.
-// Hence required, unlike every other free-text field on this feature.
+// Withdrawing a challan is a correction, so the reason is the whole point of the
+// record -- "why is there a withdrawn challan here" has to be answerable without
+// asking anyone. Hence required, unlike every other free-text field here.
 const REVERT_REASON_MAX = 300;
 
 const revertReasonError = (value) => {
   const text = String(value ?? '').trim();
-  if (!text) return 'A reason is required to send this back';
+  if (!text) return 'A reason is required to withdraw this challan';
   if (text.length > REVERT_REASON_MAX) {
     return `Reason can be at most ${REVERT_REASON_MAX} characters`;
   }
@@ -94,7 +95,12 @@ const balanceOf = (metre, forwarded) => Number(metre || 0) - Number(forwarded ||
 // it, which is what records that the goods left the building. Before migration
 // 070 it returned Closed unconditionally, which made the status constant and
 // hid packed stock from any "what is outstanding" count.
-const computeStatus = ({ stage, metre, forwarded, closedAt }) => {
+const computeStatus = ({ stage, metre, forwarded, closedAt, receivedAt }) => {
+  // FIRST, and load bearing. A dispatched challan holds nothing until the goods
+  // come back, so its balance is 0 minus 0 -- which every branch below would
+  // read as Forwarded, the one status meaning "done with". Material sitting at a
+  // processor is the opposite of done.
+  if (!receivedAt) return STATUS.IN_TRANSIT;
   if (stage === 'Packed') return closedAt ? STATUS.CLOSED : STATUS.IN_STOCK;
   const balance = balanceOf(metre, forwarded);
   if (balance <= EPSILON) return STATUS.FORWARDED;
@@ -107,7 +113,8 @@ const computeStatus = ({ stage, metre, forwarded, closedAt }) => {
 // paging has to happen in the database — filtering afterwards would return short
 // pages. A parity test pins the two together, exactly as outboundPOFlags.js
 // does for its flag predicates.
-const statusSql = (stageCol, metreCol, forwardedCol, closedAtCol) => `CASE
+const statusSql = (stageCol, metreCol, forwardedCol, closedAtCol, receivedAtCol) => `CASE
+  WHEN ${receivedAtCol} IS NULL THEN '${STATUS.IN_TRANSIT}'
   WHEN ${stageCol} = 'Packed' THEN
     CASE WHEN ${closedAtCol} IS NOT NULL THEN '${STATUS.CLOSED}' ELSE '${STATUS.IN_STOCK}' END
   WHEN ${metreCol} - ${forwardedCol} <= ${EPSILON} THEN '${STATUS.FORWARDED}'

@@ -12,12 +12,26 @@ const A = (r) => r.set('Authorization', `Bearer ${token}`);
 
 const api = {
   listStage: (query = {}) => A(request(app).get('/api/stitching').query({ page_size: 'all', ...query })),
-  forward: (body) => A(request(app).post('/api/stitching'))
+  // The two halves of a move, now separate endpoints.
+  dispatch: (body) => A(request(app).post('/api/stitching'))
     .send('challan_no' in body ? body : { ...body, challan_no: `CH-${uid()}` }),
-  setChallan: (src, id, challan_no) =>
-    A(request(app).patch(`/api/stitching/${src}/${id}/challan`)).send({ challan_no }),
-  revert: (src, id, reason) =>
-    A(request(app).post(`/api/stitching/${src}/${id}/revert`)).send({ reason }),
+  receive: (id, body) => A(request(app).post(`/api/stitching/${id}/receive`)).send(body),
+  removeChallan: (id, reason) =>
+    A(request(app).post(`/api/stitching/${id}/remove`)).send({ reason }),
+
+  // Dispatch then receive in one call, so the many tests that only care about a
+  // lot ending up at the next stage stay readable. Returns whichever step
+  // failed, and otherwise the dispatch response -- same shape as the old
+  // one-shot endpoint returned.
+  forward: async (body) => {
+    const { metre, process_rate, after_rate, checked_by, ...dispatchBody } = body;
+    const created = await api.dispatch(dispatchBody);
+    if (created.status !== 201) return created;
+    const received = await api.receive(created.body.id, {
+      metre, process_rate, after_rate, checked_by,
+    });
+    return received.status === 200 ? created : received;
+  },
   patchLot: (id, body) => A(request(app).patch(`/api/stitching/${id}`)).send(body),
   deleteLot: (id) => A(request(app).delete(`/api/stitching/${id}`)),
   restoreLot: (id) => A(request(app).post(`/api/stitching/${id}/restore`)),
@@ -479,25 +493,28 @@ describe('Forwarding through the stages', () => {
     expect(res.body.stage).toBe('Processed');
   });
 
-  test('a prefix belonging to another stage is refused', async () => {
+  // A dispatch derives its own number, so a prefix in the body is ignored rather
+  // than refused -- see the Challans block. The stage guard still matters on an
+  // edit, where a prefix from the wrong stage would print a misleading number.
+  test('editing a lot to a prefix from another stage is refused', async () => {
     const { receiptId } = await grayLot();
-    const res = await api.forward({
+    const created = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'P',
       sent_qty: 10, metre: 10, checked_by: warehousePocId,
-      incoming_prefix_id: prefixes.Packed.id, incoming_no: 'X-1',
     });
+    const res = await api.patchLot(created.body.id, { incoming_prefix_id: prefixes.Packed.id });
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/belongs to the Packed stage/);
   });
 
-  test('the prefix for the target stage is accepted', async () => {
+  test('editing to the prefix for its own stage is accepted', async () => {
     const { receiptId } = await grayLot();
-    const res = await api.forward({
+    const created = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'P',
       sent_qty: 10, metre: 10, checked_by: warehousePocId,
-      incoming_prefix_id: prefixes.Processed.id, incoming_no: 'P-1',
     });
-    expect(res.status).toBe(201);
+    const res = await api.patchLot(created.body.id, { incoming_prefix_id: prefixes.Processed.id });
+    expect(res.status).toBe(200);
   });
 
   test.each([
@@ -1037,174 +1054,250 @@ describe('Journey view', () => {
   });
 });
 
-describe('Challan No -- owned by the lot being sent', () => {
-  const fwd = (receiptId, extra = {}) => api.forward({
-    parent_src: 'receipt', parent_id: receiptId, party_name: 'Dyeing House',
-    sent_qty: 60, metre: 58, process_rate: 7, checked_by: warehousePocId, ...extra,
-  });
-
+describe('Challans — dispatch recorded on its own', () => {
   const lotRow = async (stage, src, id) =>
     findLot((await api.listStage({ stage })).body.rows, src, id);
 
-  test('a lot with no challan cannot be sent ahead, and says so by stage', async () => {
+  const grayRow = async (receiptId) => lotRow('Gray', 'receipt', receiptId);
+
+  test('a challan takes its quantity out of the lot straight away', async () => {
     const { receiptId } = await grayLot({ qty: 100 });
-    const res = await fwd(receiptId, { challan_no: null });
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/challan number to this Gray lot/i);
-  });
-
-  test('challan_missing is reported on the row so the button can explain itself', async () => {
-    const { receiptId } = await grayLot({ qty: 100 });
-    expect((await lotRow('Gray', 'receipt', receiptId)).challan_missing).toBe(true);
-    await api.setChallan('receipt', receiptId, '4471');
-    expect((await lotRow('Gray', 'receipt', receiptId)).challan_missing).toBe(false);
-  });
-
-  test('setting a challan first makes the lot forwardable, clearing it blocks again', async () => {
-    const { receiptId } = await grayLot({ qty: 100 });
-    expect((await api.setChallan('receipt', receiptId, '  4471  ')).status).toBe(200);
-    expect((await lotRow('Gray', 'receipt', receiptId)).challan_no).toBe('4471');
-
-    expect((await fwd(receiptId, { challan_no: null, sent_qty: 10, metre: 10 })).status).toBe(201);
-
-    await api.setChallan('receipt', receiptId, '');
-    const blocked = await fwd(receiptId, { challan_no: null, sent_qty: 10, metre: 10 });
-    expect(blocked.status).toBe(400);
-    expect(blocked.body.message).toMatch(/challan number/i);
-  });
-
-  test('a challan sent with the forward lands on the PARENT, and the new lot starts blank', async () => {
-    const { receiptId } = await grayLot({ qty: 100 });
-    const res = await fwd(receiptId, { challan_no: 'CH-PARENT' });
-    expect(res.status).toBe(201);
-
-    expect((await lotRow('Gray', 'receipt', receiptId)).challan_no).toBe('CH-PARENT');
-    // The new lot has arrived, not been dispatched, so it has no challan yet.
-    expect((await lotRow('Processed', 'entry', res.body.id)).challan_no).toBeNull();
-  });
-
-  test('the challan can be set on a downstream entry too, which is what lets it move on', async () => {
-    const { receiptId } = await grayLot({ qty: 100 });
-    const child = await fwd(receiptId);
-    const blocked = await api.forward({
-      parent_src: 'entry', parent_id: child.body.id, party_name: 'Stitch Unit',
-      sent_qty: 50, metre: 50, checked_by: warehousePocId, challan_no: null,
+    const d = await api.dispatch({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dyeing House',
+      sent_qty: 40, challan_no: '12345',
     });
-    expect(blocked.status).toBe(400);
-    expect(blocked.body.message).toMatch(/challan number to this Processed lot/i);
+    expect(d.status).toBe(201);
+    expect(d.body.stage).toBe('Processed');
 
-    await api.setChallan('entry', child.body.id, 'CH-STC');
-    const ok = await api.forward({
-      parent_src: 'entry', parent_id: child.body.id, party_name: 'Stitch Unit',
-      sent_qty: 50, metre: 50, checked_by: warehousePocId, challan_no: null,
+    // 40 has left, 60 waits for instructions -- the user's own example.
+    const gray = await grayRow(receiptId);
+    expect(gray.balance).toBe(60);
+    expect(gray.status).toBe('Partial');
+  });
+
+  test('the dispatched challan is In Transit until the goods come back', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const d = await api.dispatch({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dyeing House',
+      sent_qty: 40, challan_no: '12345',
     });
-    expect(ok.status).toBe(201);
+    const row = await lotRow('Processed', 'entry', d.body.id);
+    expect(row.status).toBe('In Transit');
+    expect(row.metre).toBe(0);
+    expect(row.challan_no).toBe('12345');
+    expect(row.can_receive).toBe(true);
+    // Nothing has arrived, so there is nothing to send on.
+    expect(row.can_forward).toBe(false);
   });
 
-  // Free text by explicit decision, the same call already made for Incoming No.
-  // Pinned so it is not quietly tightened to digits-only later.
-  test('challan is free text, not digits-only', async () => {
-    const { receiptId } = await grayLot();
-    expect((await api.setChallan('receipt', receiptId, 'CH-2026/07')).status).toBe(200);
-    expect((await lotRow('Gray', 'receipt', receiptId)).challan_no).toBe('CH-2026/07');
+  test('In Transit counts as open work on its stage', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const before = (await api.counts()).body.counts.Processed;
+    await api.dispatch({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
+      sent_qty: 40, challan_no: 'C1',
+    });
+    expect((await api.counts()).body.counts.Processed).toBe(before + 1);
   });
 
-  test('challan is capped at 50 characters', async () => {
-    const { receiptId } = await grayLot();
-    const res = await api.setChallan('receipt', receiptId, 'x'.repeat(51));
+  test('receiving fills the row in and takes it out of transit', async () => {
+    const { receiptId } = await grayLot({ qty: 100, process_rate: 5 });
+    const d = await api.dispatch({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
+      sent_qty: 40, challan_no: 'C1',
+    });
+    const r = await api.receive(d.body.id, { metre: 38, process_rate: 7, checked_by: warehousePocId });
+    expect(r.status).toBe(200);
+
+    const row = await lotRow('Processed', 'entry', d.body.id);
+    expect(row.status).toBe('Pending');
+    expect(row.metre).toBe(38);
+    expect(row.sent_qty).toBe(40);
+    expect(row.rate).toBe(55);       // the Gray lot's after rate, carried in
+    expect(row.after_rate).toBe(62); // 55 + 7
+    expect(row.can_receive).toBe(false);
+  });
+
+  test('receiving twice is refused', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const d = await api.dispatch({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
+      sent_qty: 40, challan_no: 'C1',
+    });
+    await api.receive(d.body.id, { metre: 40, checked_by: warehousePocId });
+    const again = await api.receive(d.body.id, { metre: 40, checked_by: warehousePocId });
+    expect(again.status).toBe(400);
+    expect(again.body.message).toMatch(/already been received/i);
+  });
+
+  test('a lot that has not arrived cannot dispatch anything onward', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const d = await api.dispatch({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
+      sent_qty: 40, challan_no: 'C1',
+    });
+    const onward = await api.dispatch({
+      parent_src: 'entry', parent_id: d.body.id, party_name: 'Stitch',
+      sent_qty: 10, challan_no: 'C2',
+    });
+    expect(onward.status).toBe(400);
+    expect(onward.body.message).toMatch(/not been received yet/i);
+  });
+
+  test('a Packed challan cannot be closed before it arrives', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    let parent = { src: 'receipt', id: receiptId };
+    for (const party of ['Dye', 'Stitch']) {
+      const r = await api.forward({
+        parent_src: parent.src, parent_id: parent.id, party_name: party,
+        sent_qty: 100, metre: 100, checked_by: warehousePocId,
+      });
+      parent = { src: 'entry', id: r.body.id };
+    }
+    const packed = await api.dispatch({
+      parent_src: 'entry', parent_id: parent.id, party_name: 'Packer', sent_qty: 100, challan_no: 'CP',
+    });
+    const res = await api.close('entry', packed.body.id);
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/50 characters or less/);
+    expect(res.body.message).toMatch(/not been received yet/i);
   });
 
-  test('an unknown lot type is refused', async () => {
-    const { receiptId } = await grayLot();
-    const res = await api.setChallan('nonsense', receiptId, '1');
+  test('challan_no is required, free text, and capped', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const base = { parent_src: 'receipt', parent_id: receiptId, party_name: 'D', sent_qty: 10 };
+
+    const missing = await api.dispatch({ ...base, challan_no: '   ' });
+    expect(missing.status).toBe(400);
+    expect(missing.body.message).toMatch(/Challan No is required/i);
+
+    // Free text by explicit decision -- pinned so it is not tightened later.
+    const text = await api.dispatch({ ...base, challan_no: 'CH-2026/07' });
+    expect(text.status).toBe(201);
+
+    const long = await api.dispatch({ ...base, challan_no: 'x'.repeat(51) });
+    expect(long.status).toBe(400);
+    expect(long.body.message).toMatch(/50 characters or less/);
+  });
+
+  test('sending more than the lot has left is refused', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const res = await api.dispatch({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
+      sent_qty: 120, challan_no: 'C1',
+    });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/receipt.*entry/i);
+    expect(res.body.message).toMatch(/only 100 is left/);
   });
 
-  test('setting a challan on a receipt is audited against its PO line', async () => {
-    const { receiptId, lineId } = await grayLot();
-    await api.setChallan('receipt', receiptId, 'CH-AUDIT');
-    const audit = await A(request(app).get('/api/audit-logs')
-      .query({ entity_type: 'outbound_po_line', entity_id: lineId }));
-    const rows = audit.body.rows || audit.body;
-    const entry = rows.find(r => r.action_type === 'STITCHING_LOT_CHALLAN');
-    expect(entry).toBeTruthy();
-    expect(entry.description).toMatch(/CH-AUDIT/);
+  test('the incoming number is derived, not supplied', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const d = await api.dispatch({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'D', sent_qty: 10,
+      challan_no: 'C1',
+      // Both ignored: the stage decides the prefix and the number carries down.
+      incoming_prefix_id: prefixes.Packed.id, incoming_no: 'SPOOFED',
+    });
+    const row = await lotRow('Processed', 'entry', d.body.id);
+    expect(row.incoming_prefix).toBe('PRC');
+    expect(row.incoming_no).not.toBe('SPOOFED');
+  });
+
+  test('the challan lives on the dispatch row, not on the lot it came from', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const before = (await grayRow(receiptId)).challan_no;
+    const d = await api.dispatch({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
+      sent_qty: 10, challan_no: 'ON-THE-DISPATCH',
+    });
+    expect((await lotRow('Processed', 'entry', d.body.id)).challan_no).toBe('ON-THE-DISPATCH');
+    expect((await grayRow(receiptId)).challan_no).toBe(before);
+  });
+
+  test('a lot lists its own challans', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    await api.dispatch({ parent_src: 'receipt', parent_id: receiptId, party_name: 'A', sent_qty: 40, challan_no: 'C1' });
+    await api.dispatch({ parent_src: 'receipt', parent_id: receiptId, party_name: 'B', sent_qty: 30, challan_no: 'C2' });
+    const gray = await grayRow(receiptId);
+    expect(gray.challans.map(c => c.challan_no).sort()).toEqual(['C1', 'C2']);
+    expect(gray.balance).toBe(30);
   });
 });
 
-describe('Sending a hop back', () => {
-  const chain = async () => {
-    const { receiptId, lineId } = await grayLot({ qty: 100 });
-    const child = await api.forward({
+describe('Withdrawing a wrongly entered challan', () => {
+  const dispatched = async (qty = 100, sent = 40) => {
+    const { receiptId } = await grayLot({ qty });
+    const d = await api.dispatch({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'Dyeing House',
-      sent_qty: 100, metre: 98, process_rate: 7, checked_by: warehousePocId,
+      sent_qty: sent, challan_no: 'WRONG-1',
     });
-    return { receiptId, lineId, entryId: child.body.id };
+    return { receiptId, challanId: d.body.id };
   };
 
   const grayRow = async (receiptId) =>
     findLot((await api.listStage({ stage: 'Gray' })).body.rows, 'receipt', receiptId);
 
-  test('retiring a hop returns its metre to the parent and reopens it', async () => {
-    const { receiptId, entryId } = await chain();
-    expect((await grayRow(receiptId)).status).toBe('Forwarded');
+  test('withdrawing returns the quantity to the lot it was taken from', async () => {
+    const { receiptId, challanId } = await dispatched();
+    expect((await grayRow(receiptId)).balance).toBe(60);
 
-    const res = await api.revert('entry', entryId, 'recorded against the wrong lot');
+    const res = await api.removeChallan(challanId, 'entered against the wrong PO');
     expect(res.status).toBe(200);
-    expect(res.body.returned_to).toBe('Gray');
+    expect(res.body.removed).toBe(true);
 
     const gray = await grayRow(receiptId);
-    expect(gray.status).toBe('Pending');
     expect(gray.balance).toBe(100);
-
-    // Retired, not erased.
-    const processed = await api.listStage({ stage: 'Processed' });
-    expect(findLot(processed.body.rows, 'entry', entryId)).toBeUndefined();
+    expect(gray.status).toBe('Pending');
   });
 
-  test('the reason is required', async () => {
-    const { entryId } = await chain();
-    for (const bad of [undefined, '', '   ']) {
-      const res = await api.revert('entry', entryId, bad);
-      expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/reason is required/i);
+  // Nothing about this is a movement, so nothing in the response may name a
+  // stage as somewhere material went back to.
+  test('the response names no stage as a destination', async () => {
+    const { challanId } = await dispatched();
+    const res = await api.removeChallan(challanId, 'wrong PO');
+    const body = JSON.stringify(res.body);
+    for (const stage of ['Gray', 'Processed', 'Stitched', 'Packed']) {
+      expect(body).not.toContain(stage);
     }
   });
 
-  test('the reason is capped', async () => {
-    const { entryId } = await chain();
-    const res = await api.revert('entry', entryId, 'x'.repeat(301));
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/at most 300 characters/);
+  test('it works on a received challan too', async () => {
+    const { receiptId, challanId } = await dispatched();
+    await api.receive(challanId, { metre: 38, checked_by: warehousePocId });
+    expect((await api.removeChallan(challanId, 'wrong PO')).status).toBe(200);
+    expect((await grayRow(receiptId)).balance).toBe(100);
   });
 
-  test('a receipt cannot be sent back -- it is where material entered', async () => {
-    const { receiptId } = await chain();
-    const res = await api.revert('receipt', receiptId, 'nope');
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/received directly on a PO/i);
+  test('the reason is required and capped', async () => {
+    const { challanId } = await dispatched();
+    for (const bad of [undefined, '', '   ']) {
+      const res = await api.removeChallan(challanId, bad);
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/reason is required/i);
+    }
+    const long = await api.removeChallan(challanId, 'x'.repeat(301));
+    expect(long.status).toBe(400);
+    expect(long.body.message).toMatch(/at most 300 characters/);
   });
 
-  test('a hop with live children is refused, naming how many', async () => {
-    const { entryId } = await chain();
-    await api.setChallan('entry', entryId, 'CH-ON');
-    await api.forward({
-      parent_src: 'entry', parent_id: entryId, party_name: 'Stitch Unit',
-      sent_qty: 50, metre: 50, checked_by: warehousePocId, challan_no: null,
+  test('a challan with challans of its own is refused', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const first = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
+      sent_qty: 100, metre: 100, checked_by: warehousePocId,
     });
-    const res = await api.revert('entry', entryId, 'too late');
+    await api.dispatch({
+      parent_src: 'entry', parent_id: first.body.id, party_name: 'S', sent_qty: 50, challan_no: 'C2',
+    });
+    const res = await api.removeChallan(first.body.id, 'too late');
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/have been forwarded from it/);
+    expect(res.body.message).toMatch(/Withdraw those first/i);
   });
 
   test('a closed lot must be reopened first', async () => {
     const { receiptId } = await grayLot({ qty: 100 });
     let parent = { src: 'receipt', id: receiptId };
     let last;
-    for (const party of ['Dyeing House', 'Stitch Unit', 'Packer A']) {
+    for (const party of ['Dye', 'Stitch', 'Pack']) {
       const r = await api.forward({
         parent_src: parent.src, parent_id: parent.id, party_name: party,
         sent_qty: 100, metre: 100, checked_by: warehousePocId,
@@ -1212,94 +1305,104 @@ describe('Sending a hop back', () => {
       last = r.body.id;
       parent = { src: 'entry', id: last };
     }
-    expect((await api.close('entry', last)).status).toBe(200);
-    const res = await api.revert('entry', last, 'wrong');
+    await api.close('entry', last);
+    const res = await api.removeChallan(last, 'wrong');
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/reopen it before sending it back/i);
+    expect(res.body.message).toMatch(/reopen it/i);
 
     await api.reopen('entry', last);
-    expect((await api.revert('entry', last, 'wrong')).status).toBe(200);
+    expect((await api.removeChallan(last, 'wrong')).status).toBe(200);
+  });
+
+  test('an unknown challan is a 404', async () => {
+    const res = await api.removeChallan(99999999, 'nope');
+    expect(res.status).toBe(404);
   });
 
   test('it is audited with the reason, which survives a restore', async () => {
-    const { entryId } = await chain();
-    await api.revert('entry', entryId, 'wrong party');
+    const { challanId } = await dispatched();
+    await api.removeChallan(challanId, 'wrong PO entirely');
     const audit = await A(request(app).get('/api/audit-logs')
-      .query({ entity_type: 'stitching_entry', entity_id: entryId }));
+      .query({ entity_type: 'stitching_entry', entity_id: challanId }));
     const rows = audit.body.rows || audit.body;
     const entry = rows.find(r => r.action_type === 'STITCHING_ENTRY_REVERT');
     expect(entry).toBeTruthy();
-    expect(entry.description).toMatch(/wrong party/);
+    expect(entry.description).toMatch(/wrong PO entirely/);
+    expect(entry.description).toMatch(/Withdrew challan/);
 
-    await api.restoreLot(entryId);
+    await api.restoreLot(challanId);
     const after = await A(request(app).get('/api/audit-logs')
-      .query({ entity_type: 'stitching_entry', entity_id: entryId }));
-    const stillThere = (after.body.rows || after.body)
-      .find(r => r.action_type === 'STITCHING_ENTRY_REVERT');
-    expect(stillThere.description).toMatch(/wrong party/);
+      .query({ entity_type: 'stitching_entry', entity_id: challanId }));
+    expect((after.body.rows || after.body)
+      .find(r => r.action_type === 'STITCHING_ENTRY_REVERT').description)
+      .toMatch(/wrong PO entirely/);
   });
 
-  test('restoring clears the reason and re-consumes the balance', async () => {
-    const { receiptId, entryId } = await chain();
-    await api.revert('entry', entryId, 'mistake');
-    expect((await api.restoreLot(entryId)).status).toBe(200);
-    expect((await grayRow(receiptId)).balance).toBe(0);
+  test('restoring clears the reason and takes the quantity out again', async () => {
+    const { receiptId, challanId } = await dispatched();
+    await api.removeChallan(challanId, 'mistake');
+    expect((await api.restoreLot(challanId)).status).toBe(200);
+    expect((await grayRow(receiptId)).balance).toBe(60);
 
     const journey = await api.journey('receipt', receiptId);
-    const node = journey.body.nodes.find(n => n.src === 'entry' && n.id === entryId);
+    const node = journey.body.nodes.find(n => n.src === 'entry' && n.id === challanId);
     expect(node.deleted).toBeFalsy();
     expect(node.revert_reason).toBeFalsy();
   });
 
-  test('forwarding again after a send-back works, and the journey keeps both in order', async () => {
-    const { receiptId, entryId } = await chain();
-    await api.revert('entry', entryId, 'wrong processor');
+  test('re-entering it against the right lot afterwards is an ordinary dispatch', async () => {
+    const { receiptId, challanId } = await dispatched();
+    await api.removeChallan(challanId, 'wrong PO');
 
-    // An ordinary forward -- nothing on that path knows a retired sibling exists.
-    const again = await api.forward({
+    const again = await api.dispatch({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'Right Processor',
-      sent_qty: 100, metre: 97, process_rate: 7, checked_by: warehousePocId,
+      sent_qty: 40, challan_no: 'WRONG-1',
     });
     expect(again.status).toBe(201);
-    expect((await grayRow(receiptId)).status).toBe('Forwarded');
+    expect((await grayRow(receiptId)).balance).toBe(60);
 
     const journey = await api.journey('receipt', receiptId);
     const ids = journey.body.nodes.filter(n => n.src === 'entry').map(n => n.id);
-    // The retired hop happened first, so it must READ first.
-    expect(ids).toEqual([entryId, again.body.id]);
+    expect(ids).toEqual([challanId, again.body.id]);
+    const withdrawn = journey.body.nodes.find(n => n.id === challanId && n.src === 'entry');
+    expect(withdrawn.deleted).toBe(true);
+    expect(withdrawn.revert_reason).toBe('wrong PO');
+  });
+});
 
-    const retired = journey.body.nodes.find(n => n.id === entryId && n.src === 'entry');
-    expect(retired.deleted).toBe(true);
-    expect(retired.revert_reason).toBe('wrong processor');
+describe('Material only ever flows forward', () => {
+  const { STAGES } = require('../src/services/stitching.service');
 
-    // And now the metre is spoken for, so the retired hop cannot come back.
-    const restore = await api.restoreLot(entryId);
-    expect(restore.status).toBe(400);
-    expect(restore.body.message).toMatch(/is left on the source/i);
+  test('a dispatch always lands on the next stage, never an earlier one', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    let parent = { src: 'receipt', id: receiptId };
+    const seen = [];
+    for (let i = 0; i < STAGES.length - 1; i += 1) {
+      const r = await api.forward({
+        parent_src: parent.src, parent_id: parent.id, party_name: `P${i}`,
+        sent_qty: 100, metre: 100, checked_by: warehousePocId,
+      });
+      seen.push(r.body.stage);
+      parent = { src: 'entry', id: r.body.id };
+    }
+    expect(seen).toEqual(STAGES.slice(1));
   });
 
-  // Without this the view has no way to know whether a chain is metres of fabric
-  // or pieces of packaging, and it used to guess metres.
-  test('the journey summary carries the line unit', async () => {
+  test('no endpoint accepts a stage, so none can move a lot backwards', async () => {
     const { receiptId } = await grayLot({ qty: 100 });
-    const journey = await api.journey('receipt', receiptId);
-    expect(journey.status).toBe(200);
-    expect(journey.body.summary).toHaveProperty('unit_metric');
-    const row = findLot((await api.listStage({ stage: 'Gray' })).body.rows, 'receipt', receiptId);
-    expect(journey.body.summary.unit_metric).toBe(row.unit_metric);
-  });
-
-  test('the journey names the challan the lot was sent under, on the hop', async () => {
-    const { receiptId } = await grayLot({ qty: 100 });
-    const child = await api.forward({
-      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dyeing House',
-      sent_qty: 100, metre: 98, checked_by: warehousePocId, challan_no: 'CH-JRN',
+    const d = await api.dispatch({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
+      sent_qty: 40, challan_no: 'C1', stage: 'Gray',
     });
-    const journey = await api.journey('receipt', receiptId);
-    const origin = journey.body.nodes.find(n => n.src === 'receipt');
-    const hop = journey.body.nodes.find(n => n.id === child.body.id && n.src === 'entry');
-    expect(origin.sent_under_challan).toBeNull();
-    expect(hop.sent_under_challan).toBe('CH-JRN');
+    expect(d.status).toBe(201);
+    // The supplied stage is ignored: the target is a function of the parent.
+    expect(d.body.stage).toBe('Processed');
+
+    const patched = await api.patchLot(d.body.id, { stage: 'Gray' });
+    const row = findLot((await api.listStage({ stage: 'Processed' })).body.rows, 'entry', d.body.id);
+    expect([200, 400]).toContain(patched.status);
+    expect(row).toBeTruthy();
+    expect(row.stage).toBe('Processed');
   });
 });
 
@@ -1324,7 +1427,10 @@ describe('prevStage', () => {
     });
     const row = findLot((await api.listStage({ stage: 'Processed' })).body.rows,
       'entry', child.body.id);
-    expect(row.parent_stage).toBe('Gray');
+    // parent_src/parent_id say where a quantity CAME FROM. There is deliberately
+    // no parent_stage: naming a stage on a row invites reading it as somewhere
+    // material can go back to.
+    expect(row.parent_stage).toBeUndefined();
     expect(row.parent_src).toBe('receipt');
     expect(row.parent_id).toBe(receiptId);
   });
@@ -1384,6 +1490,8 @@ describe('Chain-order sorting for the All view', () => {
 
 describe('Status SQL/JS parity', () => {
   const svc = require('../src/services/stitching.service');
+  // Any non-null stamp: the branch only tests presence.
+  const RECEIVED = '2026-09-05 10:00:00';
 
   test.each([
     ['Gray', 100, 0, 'Pending'],
@@ -1394,7 +1502,22 @@ describe('Status SQL/JS parity', () => {
     ['Packed', 50, 0, 'In Stock'],
     ['Packed', 50, 50, 'In Stock'],
   ])('%s lot of %s with %s forwarded is %s', (stage, metre, forwarded, expected) => {
-    expect(svc.computeStatus({ stage, metre, forwarded })).toBe(expected);
+    expect(svc.computeStatus({ stage, metre, forwarded, receivedAt: RECEIVED })).toBe(expected);
+  });
+
+  // The branch that has to come first. A dispatched challan holds nothing, so
+  // every balance rule below would call it Forwarded -- the one status meaning
+  // "done with" -- when it is the opposite: goods sitting at a processor.
+  test.each([
+    ['Gray', 100, 0],
+    ['Processed', 0, 0],
+    ['Packed', 0, 0],
+  ])('an unreceived %s challan is In Transit whatever its balance', (stage, metre, forwarded) => {
+    expect(svc.computeStatus({ stage, metre, forwarded, receivedAt: null })).toBe('In Transit');
+  });
+
+  test('In Transit counts as open work', () => {
+    expect(svc.OPEN_STATUSES).toContain('In Transit');
   });
 
   // Packed is the only stage where closed_at changes the answer, and the only
@@ -1403,7 +1526,7 @@ describe('Status SQL/JS parity', () => {
     [null, 'In Stock'],
     ['2026-09-05 10:00:00', 'Closed'],
   ])('a Packed lot with closedAt %s is %s', (closedAt, expected) => {
-    expect(svc.computeStatus({ stage: 'Packed', metre: 50, forwarded: 0, closedAt })).toBe(expected);
+    expect(svc.computeStatus({ stage: 'Packed', metre: 50, forwarded: 0, closedAt, receivedAt: RECEIVED })).toBe(expected);
   });
 
   test('every row the API returns agrees with computeStatus', async () => {
@@ -1416,7 +1539,8 @@ describe('Status SQL/JS parity', () => {
     expect(res.body.rows.length).toBeGreaterThan(0);
     for (const r of res.body.rows) {
       expect(r.status).toBe(svc.computeStatus({
-        stage: r.stage, metre: r.metre, forwarded: r.forwarded, closedAt: r.closed_at,
+        stage: r.stage, metre: r.metre, forwarded: r.forwarded,
+        closedAt: r.closed_at, receivedAt: r.received_at,
       }));
     }
   });
@@ -1435,8 +1559,11 @@ describe('Audit logging', () => {
     const audit = await auditFor('stitching_entry', res.body.id);
     const rows = audit.body.rows || audit.body;
     expect(rows.length).toBeGreaterThan(0);
-    expect(rows[0].action_type).toBe('STITCHING_ENTRY_CREATE');
-    expect(rows[0].description).toMatch(/Audited Co/);
+    const created = rows.find(r => r.action_type === 'STITCHING_ENTRY_CREATE');
+    expect(created).toBeTruthy();
+    expect(created.description).toMatch(/Audited Co/);
+    // Dispatch and receipt are separate acts, so both are recorded.
+    expect(rows.find(r => r.action_type === 'STITCHING_ENTRY_RECEIVE')).toBeTruthy();
   });
 
   test('an edit records the individual field changes', async () => {

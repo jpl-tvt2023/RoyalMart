@@ -12,13 +12,15 @@ export const STAGES = ['Gray', 'Processed', 'Stitched', 'Packed'];
 export const ALL_TAB = 'All';
 export const STAGE_TABS = [...STAGES, ALL_TAB];
 
-export const STATUSES = ['Pending', 'Partial', 'Forwarded', 'In Stock', 'Closed'];
+export const STATUSES = ['In Transit', 'Pending', 'Partial', 'Forwarded', 'In Stock', 'Closed'];
 
-// Outstanding work: still holding metre, or packed but not yet dispatched.
-// Twin of OPEN_STATUSES in the backend service, keep the two in step.
-export const OPEN_STATUSES = ['Pending', 'Partial', 'In Stock'];
+// Outstanding work: out at a processor, still holding stock, or packed but not
+// yet dispatched. Twin of OPEN_STATUSES in the backend service, keep in step.
+export const OPEN_STATUSES = ['In Transit', 'Pending', 'Partial', 'In Stock'];
 
 export const STATUS_COLORS = {
+  // Dispatched under a challan, nothing back yet.
+  'In Transit': 'yellow',
   Pending: 'blue',
   Partial: 'yellow',
   Forwarded: 'green',
@@ -31,8 +33,8 @@ export const nextStage = (stage) => {
   return i === -1 ? null : (STAGES[i + 1] || null);
 };
 
-// Twin of prevStage on the server. The stage a hop came from, which is where a
-// send-back returns its metre. Null at the head of the chain.
+// Twin of prevStage on the server. The stage a quantity came FROM — history,
+// never a destination. Material only ever flows forward.
 export const prevStage = (stage) => {
   const i = STAGES.indexOf(stage);
   return i <= 0 ? null : STAGES[i - 1];
@@ -83,8 +85,8 @@ export function qtyError(value, label) {
 //
 // Challan is FREE TEXT by explicit decision -- the user was asked whether
 // "numerical" should mean digits-only and chose free text, as with Incoming No.
-// Do not add a digits-only rule without asking again. Blank is not an error: it
-// just means the lot cannot be sent ahead.
+// Do not add a digits-only rule without asking again. Blank is checked by the
+// dispatch form, which requires one, rather than here.
 export const CHALLAN_MAX = 50;
 
 export const challanError = (value) => {
@@ -97,7 +99,7 @@ export const REVERT_REASON_MAX = 300;
 
 export const revertReasonError = (value) => {
   const text = String(value ?? '').trim();
-  if (!text) return 'A reason is required to send this back';
+  if (!text) return 'A reason is required to withdraw this challan';
   if (text.length > REVERT_REASON_MAX) return `Reason can be at most ${REVERT_REASON_MAX} characters`;
   return null;
 };
