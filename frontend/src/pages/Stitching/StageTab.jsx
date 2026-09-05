@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Link } from 'react-router-dom';
-import { Send, Trash2, ExternalLink } from 'lucide-react';
+import { Send, Trash2, ExternalLink, Route, PackageCheck, RotateCcw } from 'lucide-react';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { useSessionState } from '../../hooks/useSessionState';
-import { listStitchingLots, deleteStitchingLot } from '../../api/stitching.api';
+import {
+  listStitchingLots, listStitchingStageCounts, deleteStitchingLot,
+  closeStitchingLot, reopenStitchingLot,
+} from '../../api/stitching.api';
 import { STATUSES, STATUS_COLORS, fmtNum } from '../../utils/stitching';
+import { formatDateTime } from '../../utils/formatters';
 import ForwardModal from './ForwardModal';
+import JourneyModal from './JourneyModal';
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
 // Density scales with the viewport, matching OutboundPODetail: tight enough for
@@ -22,7 +27,7 @@ const EMPTY_FILTERS = {
   party_name: '', incoming_no: '', bill_no: '', challan_no: '', po_order_no: '', status: '',
 };
 
-export default function StageTab({ stage }) {
+export default function StageTab({ stage, onOpenCounts }) {
   const pageSizeKey = 'stitching.pageSize';
   const [filters, setFilters] = useSessionState(`stitching.filters.${stage}`, EMPTY_FILTERS);
   // Draft is what the inputs hold; `filters` is what has actually been searched.
@@ -37,6 +42,9 @@ export default function StageTab({ stage }) {
   const [forwarding, setForwarding] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [journeyFor, setJourneyFor] = useState(null);
+  const [closing, setClosing] = useState(null);
+  const [busyKey, setBusyKey] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -45,9 +53,16 @@ export default function StageTab({ stage }) {
       for (const [k, v] of Object.entries(filters)) {
         if (String(v || '').trim()) params[k] = String(v).trim();
       }
-      const data = await listStitchingLots(params);
+      // The badges are scoped by the same filters as the table, so they are
+      // fetched alongside it rather than on their own schedule — same split
+      // OutboundPOList uses with load() + loadItemCounts().
+      const [data, counts] = await Promise.all([
+        listStitchingLots(params),
+        listStitchingStageCounts(params),
+      ]);
       setRows(data.rows || []);
       setTotal(data.total || 0);
+      onOpenCounts?.(counts.counts || {});
     } catch (err) {
       toast.error(err.response?.data?.message || 'Could not load lots');
       setRows([]);
@@ -55,7 +70,7 @@ export default function StageTab({ stage }) {
     } finally {
       setLoading(false);
     }
-  }, [stage, page, pageSize, filters]);
+  }, [stage, page, pageSize, filters, onOpenCounts]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -75,6 +90,35 @@ export default function StageTab({ stage }) {
       toast.error(err.response?.data?.message || 'Could not remove this lot');
     } finally {
       setDeleting(false);
+    }
+  };
+
+  // Closing is confirmed because it is the record that goods left the building;
+  // reopening is not, since it only undoes that and is itself audited.
+  const handleClose = async () => {
+    setBusyKey(closing.lot_key);
+    try {
+      await closeStitchingLot(closing.src, closing.id);
+      toast.success('Lot closed');
+      setClosing(null);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Could not close this lot');
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const reopen = async (r) => {
+    setBusyKey(r.lot_key);
+    try {
+      await reopenStitchingLot(r.src, r.id);
+      toast.success('Lot reopened');
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Could not reopen this lot');
+    } finally {
+      setBusyKey(null);
     }
   };
 
@@ -181,6 +225,38 @@ export default function StageTab({ stage }) {
                           <Send size={13} />Add Rec
                         </button>
                       )}
+                      {/* Packed is the end of the chain, so instead of forwarding
+                          a lot there is closed once the goods leave. Both kinds of
+                          lot can be Packed, hence passing r.src. */}
+                      {r.stage === 'Packed' && !r.closed_at && (
+                        <button
+                          type="button"
+                          onClick={() => setClosing(r)}
+                          title="Mark this lot closed"
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-[#003049] hover:bg-gray-100"
+                        >
+                          <PackageCheck size={13} />Close
+                        </button>
+                      )}
+                      {r.stage === 'Packed' && r.closed_at && (
+                        <button
+                          type="button"
+                          onClick={() => reopen(r)}
+                          disabled={busyKey === r.lot_key}
+                          title={`Closed by ${r.closed_by_name || 'unknown'} · ${formatDateTime(r.closed_at)}`}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-40"
+                        >
+                          <RotateCcw size={13} />Reopen
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setJourneyFor(r)}
+                        title="Trace this lot from the PO receipt to Packed"
+                        className="p-1.5 rounded hover:bg-gray-100 text-gray-500"
+                      >
+                        <Route size={14} />
+                      </button>
                       {/* Only stage entries are deletable here — an origin lot is
                           a PO receipt and is managed on the PO itself. */}
                       {r.src === 'entry' && (
@@ -232,6 +308,22 @@ export default function StageTab({ stage }) {
           onPageSizeChange={(s) => { setPageSize(s); persistPageSize(pageSizeKey, s); setPage(1); }}
         />
       </div>
+
+      {journeyFor && (
+        <JourneyModal src={journeyFor.src} id={journeyFor.id} onClose={() => setJourneyFor(null)} />
+      )}
+
+      <ConfirmDialog
+        isOpen={!!closing}
+        onClose={() => setClosing(null)}
+        onConfirm={handleClose}
+        loading={busyKey === closing?.lot_key}
+        confirmLabel="Close lot"
+        title="Close this lot?"
+        message={closing
+          ? `Marks the ${fmtNum(closing.metre)} m at ${closing.party_name} as dispatched. It stops counting as open stock, and can be reopened if that was wrong.`
+          : ''}
+      />
 
       {forwarding && (
         <ForwardModal

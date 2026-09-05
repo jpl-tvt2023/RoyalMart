@@ -3,7 +3,7 @@
 // A "lot" is a quantity of material sitting at one processing stage. It enters
 // the chain as an outbound PO receipt whose incoming-number prefix declares the
 // stage it was bought at, then moves forward one stage at a time until it
-// reaches Packed. Reaching Packed IS the close -- there is no separate action.
+// reaches Packed, where it sits as finished stock until someone closes it.
 //
 // Both kinds of lot (a receipt at its entry stage, a stitching_entries row at a
 // later stage) answer the same questions -- what stage, how much is left, what
@@ -25,8 +25,14 @@ const STATUS = {
   PENDING: 'Pending',
   PARTIAL: 'Partial',
   FORWARDED: 'Forwarded',
+  IN_STOCK: 'In Stock',
   CLOSED: 'Closed',
 };
+
+// Outstanding work: a lot still holding metre at its stage, or finished goods
+// packed but not yet dispatched. Forwarded means the lot fully moved on, and
+// Closed means someone confirmed it is done with -- neither needs attention.
+const OPEN_STATUSES = [STATUS.PENDING, STATUS.PARTIAL, STATUS.IN_STOCK];
 
 const isValidStage = (s) => STAGES.includes(s);
 
@@ -55,8 +61,14 @@ const balanceOf = (metre, forwarded) => Number(metre || 0) - Number(forwarded ||
 
 // Mirrors computeLineStatus in outboundPOs.controller.js in spirit: a small pure
 // function over quantities, never a user-supplied value.
-const computeStatus = ({ stage, metre, forwarded }) => {
-  if (stage === 'Packed') return STATUS.CLOSED;
+//
+// Packed is the end of the chain, so balance is meaningless there -- a Packed lot
+// has nowhere to forward to. It reads In Stock until someone explicitly closes
+// it, which is what records that the goods left the building. Before migration
+// 070 it returned Closed unconditionally, which made the status constant and
+// hid packed stock from any "what is outstanding" count.
+const computeStatus = ({ stage, metre, forwarded, closedAt }) => {
+  if (stage === 'Packed') return closedAt ? STATUS.CLOSED : STATUS.IN_STOCK;
   const balance = balanceOf(metre, forwarded);
   if (balance <= EPSILON) return STATUS.FORWARDED;
   if (Number(forwarded || 0) > EPSILON) return STATUS.PARTIAL;
@@ -68,8 +80,9 @@ const computeStatus = ({ stage, metre, forwarded }) => {
 // paging has to happen in the database — filtering afterwards would return short
 // pages. A parity test pins the two together, exactly as outboundPOFlags.js
 // does for its flag predicates.
-const statusSql = (stageCol, metreCol, forwardedCol) => `CASE
-  WHEN ${stageCol} = 'Packed' THEN '${STATUS.CLOSED}'
+const statusSql = (stageCol, metreCol, forwardedCol, closedAtCol) => `CASE
+  WHEN ${stageCol} = 'Packed' THEN
+    CASE WHEN ${closedAtCol} IS NOT NULL THEN '${STATUS.CLOSED}' ELSE '${STATUS.IN_STOCK}' END
   WHEN ${metreCol} - ${forwardedCol} <= ${EPSILON} THEN '${STATUS.FORWARDED}'
   WHEN ${forwardedCol} > ${EPSILON} THEN '${STATUS.PARTIAL}'
   ELSE '${STATUS.PENDING}'
@@ -109,7 +122,7 @@ const qtyError = (value, label) => {
 };
 
 module.exports = {
-  STAGES, STATUS, EPSILON,
+  STAGES, STATUS, OPEN_STATUSES, EPSILON,
   isValidStage, nextStage,
   effectiveAfterRate, balanceOf, computeStatus, statusSql,
   moneyError, qtyError,

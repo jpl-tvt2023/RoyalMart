@@ -62,26 +62,30 @@ export function withDerivedAfterRate(draft, field, value) {
   return next;
 }
 
-// Prefix options grouped by stage. The option text is the bare code so the
-// COLLAPSED select stays narrow — a <select> can only ever show the selected
-// option's own text, so putting the stage in an <optgroup> label is the only way
-// to keep the closed control short and still say what each code means when open.
+// Prefix options as a flat list, each reading "GRY · Gray".
+//
+// These were briefly grouped under <optgroup> stage headings, which existed only
+// to keep the COLLAPSED select narrow enough to sit in a table cell. That select
+// is gone — the table shows read-only text now and the picker lives in a modal
+// with room to spare — so the grouping just turned four choices into eight rows,
+// each single option carrying its own heading. Flat is shorter and says the same
+// thing.
+//
+// Sorted by stage in process order rather than alphabetically, so the list reads
+// Gray → Processed → Stitched → Packed the way the material actually moves.
 //
 // A receipt can keep a prefix that has since been deactivated, so the stored one
-// is appended under its own heading or the dropdown would silently blank a real
-// recorded value.
-export function prefixGroupsFor(prefixes, prefixId, prefixLabel) {
+// is appended and marked, or the dropdown would silently blank a real recorded
+// value.
+export function prefixOptionsFor(prefixes, prefixId, prefixLabel) {
   const active = (prefixes || []).filter(p => p.is_active);
-  const groups = STAGES
-    .map(stage => ({
-      stage,
-      options: active.filter(p => p.stage === stage).map(p => ({ value: p.id, label: p.prefix })),
-    }))
-    .filter(g => g.options.length);
+  const opts = STAGES.flatMap(stage => active
+    .filter(p => p.stage === stage)
+    .map(p => ({ value: p.id, label: `${p.prefix} · ${stage}` })));
   if (prefixId && !active.some(p => String(p.id) === String(prefixId))) {
-    groups.push({ stage: 'Inactive', options: [{ value: prefixId, label: prefixLabel || 'Unknown' }] });
+    opts.push({ value: prefixId, label: `${prefixLabel || 'Unknown'} (inactive)` });
   }
-  return groups;
+  return opts;
 }
 
 // If a receipt's stored checker isn't in the live Warehouse_POC list (tagged

@@ -4,12 +4,17 @@
 
 export const STAGES = ['Gray', 'Processed', 'Stitched', 'Packed'];
 
-export const STATUSES = ['Pending', 'Partial', 'Forwarded', 'Closed'];
+export const STATUSES = ['Pending', 'Partial', 'Forwarded', 'In Stock', 'Closed'];
+
+// Outstanding work: still holding metre, or packed but not yet dispatched.
+// Twin of OPEN_STATUSES in the backend service, keep the two in step.
+export const OPEN_STATUSES = ['Pending', 'Partial', 'In Stock'];
 
 export const STATUS_COLORS = {
   Pending: 'blue',
   Partial: 'yellow',
   Forwarded: 'green',
+  'In Stock': 'purple',
   Closed: 'navy',
 };
 

@@ -5,6 +5,32 @@ export async function listStitchingLots(params) {
   return data;
 }
 
+// Open-lot count per stage, for the tab badges. Takes the same filter params as
+// the list so the badges answer "how many open lots would I see on that tab".
+export async function listStitchingStageCounts(params) {
+  const { data } = await api.get('/stitching/stage-counts', { params });
+  return data;
+}
+
+// The full lineage of whatever chain this lot belongs to, already flattened into
+// render order with a depth on each node.
+export async function getStitchingJourney(src, id) {
+  const { data } = await api.get(`/stitching/journey/${src}/${id}`);
+  return data;
+}
+
+// Close/reopen take the lot type too: a Packed lot may be a forwarded entry or a
+// receipt bought straight at that stage, and they live in different tables.
+export async function closeStitchingLot(src, id) {
+  const { data } = await api.post(`/stitching/${src}/${id}/close`);
+  return data;
+}
+
+export async function reopenStitchingLot(src, id) {
+  const { data } = await api.post(`/stitching/${src}/${id}/reopen`);
+  return data;
+}
+
 export async function listStitchingParties() {
   const { data } = await api.get('/stitching/parties');
   return data;

@@ -20,6 +20,10 @@ const api = {
   createPrefix: (body) => A(request(app).post('/api/configurations/stitching-prefixes')).send(body),
   patchPrefix: (id, body) => A(request(app).patch(`/api/configurations/stitching-prefixes/${id}`)).send(body),
   deletePrefix: (id) => A(request(app).delete(`/api/configurations/stitching-prefixes/${id}`)),
+  counts: (query = {}) => A(request(app).get('/api/stitching/stage-counts').query(query)),
+  journey: (src, id) => A(request(app).get(`/api/stitching/journey/${src}/${id}`)),
+  close: (src, id) => A(request(app).post(`/api/stitching/${src}/${id}/close`)),
+  reopen: (src, id) => A(request(app).post(`/api/stitching/${src}/${id}/reopen`)),
 };
 
 // Build a vendor + PO + line, then return the ids a receipt needs.
@@ -429,7 +433,7 @@ describe('Forwarding through the stages', () => {
     const lot = findLot(packed.body.rows, 'entry', f3.body.id);
     expect(lot.rate).toBe(65);       // 50 + 5 + 7 + 3
     expect(lot.after_rate).toBe(67); // + 2
-    expect(lot.status).toBe('Closed');
+    expect(lot.status).toBe('In Stock');
     expect(lot.can_forward).toBe(false);
     // The article survives three hops because origin_receipt_id is carried down.
     expect(lot.item_name).toBe('Caps');
@@ -729,6 +733,299 @@ describe('Listing, filtering and sorting', () => {
 // The SQL CASE in stitching.service.js drives filtering and paging, the JS
 // function labels rows; this pins them together the way the outbound PO flag
 // parity test does for its predicates.
+describe('Closing a Packed lot', () => {
+  // Walk a Gray lot all the way to Packed and hand back the leaf.
+  async function packedLot() {
+    const { receiptId } = await grayLot({ qty: 100 });
+    let parent = { src: 'receipt', id: receiptId };
+    for (const _ of ['Processed', 'Stitched', 'Packed']) {
+      const res = await api.forward({
+        parent_src: parent.src, parent_id: parent.id, party_name: 'P',
+        sent_qty: 100, metre: 100, checked_by: warehousePocId,
+      });
+      parent = { src: 'entry', id: res.body.id };
+    }
+    return parent;
+  }
+
+  test('a lot that reaches Packed is In Stock, not Closed', async () => {
+    const lot = await packedLot();
+    const packed = await api.listStage({ stage: 'Packed' });
+    expect(findLot(packed.body.rows, 'entry', lot.id).status).toBe('In Stock');
+  });
+
+  test('closing it makes it Closed, and reopening restores In Stock', async () => {
+    const lot = await packedLot();
+
+    const closed = await api.close('entry', lot.id);
+    expect(closed.status).toBe(200);
+    expect(closed.body.status).toBe('Closed');
+    expect(closed.body.closed_by_name).toBeTruthy();
+    expect(closed.body.closed_at).toBeTruthy();
+
+    const reopened = await api.reopen('entry', lot.id);
+    expect(reopened.status).toBe(200);
+    expect(reopened.body.status).toBe('In Stock');
+    expect(reopened.body.closed_at).toBeNull();
+  });
+
+  // The case migration 070's second pair of columns exists for: a lot can reach
+  // Packed without ever being a stitching_entries row.
+  test('a receipt bought straight at the Packed stage closes identically', async () => {
+    const { poId, lineId } = await setupLine();
+    const receipt = await postReceipt(poId, lineId, {
+      incoming_no: `K-${uid()}`, incoming_prefix_id: prefixes.Packed.id,
+    });
+
+    let packed = await api.listStage({ stage: 'Packed' });
+    expect(findLot(packed.body.rows, 'receipt', receipt.body.id).status).toBe('In Stock');
+
+    const closed = await api.close('receipt', receipt.body.id);
+    expect(closed.status).toBe(200);
+    expect(closed.body.status).toBe('Closed');
+
+    packed = await api.listStage({ stage: 'Packed' });
+    expect(findLot(packed.body.rows, 'receipt', receipt.body.id).status).toBe('Closed');
+  });
+
+  test('a lot short of Packed cannot be closed, and the message names its stage', async () => {
+    const { receiptId } = await grayLot();
+    const res = await api.close('receipt', receiptId);
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/Only a Packed lot can be closed — this one is Gray/);
+  });
+
+  test('double-closing is refused rather than rewriting the attribution', async () => {
+    const lot = await packedLot();
+    await api.close('entry', lot.id);
+    const again = await api.close('entry', lot.id);
+    expect(again.status).toBe(400);
+    expect(again.body.message).toMatch(/already closed/);
+  });
+
+  test('reopening a lot that is not closed is refused', async () => {
+    const lot = await packedLot();
+    const res = await api.reopen('entry', lot.id);
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/not closed/);
+  });
+
+  test('an unknown lot type is a 400', async () => {
+    const res = await api.close('nonsense', 1);
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/receipt.*entry/);
+  });
+
+  test('closing writes an audit entry', async () => {
+    const lot = await packedLot();
+    await api.close('entry', lot.id);
+    const audit = await A(request(app).get('/api/audit-logs')
+      .query({ entity_type: 'stitching_entry', entity_id: lot.id }));
+    const rows = audit.body.rows || audit.body;
+    expect(rows.some(r => r.action_type === 'STITCHING_LOT_CLOSE')).toBe(true);
+  });
+});
+
+describe('Open-lot counts per stage', () => {
+  test('every stage is reported, including zero', async () => {
+    const res = await api.counts();
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body.counts).sort()).toEqual(['Gray', 'Packed', 'Processed', 'Stitched']);
+    for (const v of Object.values(res.body.counts)) expect(typeof v).toBe('number');
+  });
+
+  test('a Pending lot counts, and stops counting once fully forwarded', async () => {
+    const party = `Counted ${uid()}`;
+    const { receiptId } = await grayLot({ qty: 100 });
+    // Scope by party so other suites' rows cannot perturb the numbers. The origin
+    // lot's party is the vendor, so filter the Gray side by its own name.
+    const before = await api.counts();
+    const grayBefore = before.body.counts.Gray;
+
+    const fwd = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: party,
+      sent_qty: 100, metre: 100, checked_by: warehousePocId,
+    });
+
+    const after = await api.counts();
+    // Forwarded lots are not open, so Gray drops by exactly the one we moved.
+    expect(after.body.counts.Gray).toBe(grayBefore - 1);
+    // …and the child is now open at Processed.
+    const scoped = await api.counts({ party_name: party });
+    expect(scoped.body.counts.Processed).toBe(1);
+    expect(scoped.body.counts.Gray).toBe(0);
+
+    // Deleting the child hands the metre back, so Gray becomes open again.
+    await api.deleteLot(fwd.body.id);
+    const restored = await api.counts();
+    expect(restored.body.counts.Gray).toBe(grayBefore);
+  });
+
+  test('a part-forwarded lot still counts as open', async () => {
+    const party = `Partial ${uid()}`;
+    const { receiptId } = await grayLot({ qty: 100 });
+    await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: party,
+      sent_qty: 40, metre: 40, checked_by: warehousePocId,
+    });
+    const gray = await api.listStage({ stage: 'Gray' });
+    expect(findLot(gray.body.rows, 'receipt', receiptId).status).toBe('Partial');
+
+    const scoped = await api.counts({ party_name: party });
+    expect(scoped.body.counts.Processed).toBe(1);
+  });
+
+  test('a Packed lot counts while In Stock and stops once closed', async () => {
+    // An origin lot's party is its PO vendor, and setupLine mints a unique one,
+    // so filtering by that name isolates this test from every other row.
+    const { poId, lineId, vendorName } = await setupLine();
+    const receipt = await postReceipt(poId, lineId, {
+      incoming_no: `K-${uid()}`, incoming_prefix_id: prefixes.Packed.id,
+    });
+
+    expect((await api.counts({ party_name: vendorName })).body.counts.Packed).toBe(1);
+
+    await api.close('receipt', receipt.body.id);
+    expect((await api.counts({ party_name: vendorName })).body.counts.Packed).toBe(0);
+  });
+
+  test('filters narrow the counts', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const party = `Narrow ${uid()}`;
+    await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: party,
+      sent_qty: 10, metre: 10, checked_by: warehousePocId,
+    });
+    const mine = await api.counts({ party_name: party });
+    expect(mine.body.counts.Processed).toBe(1);
+
+    const nobody = await api.counts({ party_name: `absent ${uid()}` });
+    expect(Object.values(nobody.body.counts).every(n => n === 0)).toBe(true);
+  });
+
+  // The count is about open lots by definition, so a status filter aimed at the
+  // table must not compound with it and silently zero every badge.
+  test('an active status filter is ignored', async () => {
+    const party = `Ignored ${uid()}`;
+    const { receiptId } = await grayLot({ qty: 100 });
+    await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: party,
+      sent_qty: 10, metre: 10, checked_by: warehousePocId,
+    });
+    const withFilter = await api.counts({ party_name: party, status: 'Closed' });
+    expect(withFilter.body.counts.Processed).toBe(1);
+  });
+
+  test('a soft-deleted lot stops counting', async () => {
+    const party = `Deleted ${uid()}`;
+    const { receiptId } = await grayLot({ qty: 100 });
+    const fwd = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: party,
+      sent_qty: 10, metre: 10, checked_by: warehousePocId,
+    });
+    expect((await api.counts({ party_name: party })).body.counts.Processed).toBe(1);
+    await api.deleteLot(fwd.body.id);
+    expect((await api.counts({ party_name: party })).body.counts.Processed).toBe(0);
+  });
+});
+
+describe('Journey view', () => {
+  // Gray 100 -> Processed 58 (sent 60, loss 2) -> Stitched 57 (sent 58, loss 1)
+  async function chain() {
+    const { receiptId, poId } = await grayLot({ qty: 100, process_rate: 5 });
+    const mid = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye House',
+      sent_qty: 60, metre: 58, process_rate: 7, checked_by: warehousePocId,
+    });
+    const leaf = await api.forward({
+      parent_src: 'entry', parent_id: mid.body.id, party_name: 'Stitch Unit',
+      sent_qty: 58, metre: 57, process_rate: 3, checked_by: warehousePocId,
+    });
+    return { receiptId, poId, midId: mid.body.id, leafId: leaf.body.id };
+  }
+
+  test('the same chain comes back from any node in it', async () => {
+    const { receiptId, midId, leafId } = await chain();
+    const fromOrigin = await api.journey('receipt', receiptId);
+    const fromMiddle = await api.journey('entry', midId);
+    const fromLeaf = await api.journey('entry', leafId);
+
+    expect(fromOrigin.status).toBe(200);
+    const keys = r => r.body.nodes.map(n => n.lot_key);
+    expect(keys(fromMiddle)).toEqual(keys(fromOrigin));
+    expect(keys(fromLeaf)).toEqual(keys(fromOrigin));
+    expect(keys(fromOrigin)).toHaveLength(3);
+  });
+
+  test('nodes come back in walk order with the right depth and stages', async () => {
+    const { receiptId } = await chain();
+    const { body } = await api.journey('receipt', receiptId);
+    expect(body.nodes.map(n => n.stage)).toEqual(['Gray', 'Processed', 'Stitched']);
+    expect(body.nodes.map(n => n.depth)).toEqual([0, 1, 2]);
+  });
+
+  test('loss is per hop, and null on the origin nobody sent', async () => {
+    const { receiptId } = await chain();
+    const { body } = await api.journey('receipt', receiptId);
+    expect(body.nodes.map(n => n.loss)).toEqual([null, 2, 1]);
+  });
+
+  test('the rate builds up along the chain', async () => {
+    const { receiptId } = await chain();
+    const { body } = await api.journey('receipt', receiptId);
+    expect(body.nodes.map(n => n.after_rate)).toEqual([55, 62, 65]);
+  });
+
+  test('the anchor is marked, and only the anchor', async () => {
+    const { receiptId, midId } = await chain();
+    const { body } = await api.journey('entry', midId);
+    expect(body.nodes.filter(n => n.is_anchor)).toHaveLength(1);
+    expect(body.nodes.find(n => n.is_anchor).id).toBe(midId);
+    expect(body.anchor).toEqual({ src: 'entry', id: midId });
+  });
+
+  test('a split lot returns both branches under the same parent', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    for (const qty of [30, 40]) {
+      await api.forward({
+        parent_src: 'receipt', parent_id: receiptId, party_name: `Split ${qty}`,
+        sent_qty: qty, metre: qty, checked_by: warehousePocId,
+      });
+    }
+    const { body } = await api.journey('receipt', receiptId);
+    expect(body.nodes).toHaveLength(3);
+    expect(body.nodes.map(n => n.depth)).toEqual([0, 1, 1]);
+    expect(body.nodes.filter(n => n.depth === 1).map(n => n.metre).sort((a, b) => a - b))
+      .toEqual([30, 40]);
+  });
+
+  test('the summary totals agree with the hops', async () => {
+    const { receiptId } = await chain();
+    const { body } = await api.journey('receipt', receiptId);
+    expect(body.summary.origin_metre).toBe(100);
+    expect(body.summary.origin_rate).toBe(50);
+    expect(body.summary.total_loss).toBe(3);
+    expect(body.summary.article).toBe('Caps');
+  });
+
+  test('a deleted hop is still in the record, marked', async () => {
+    const { receiptId, leafId } = await chain();
+    await api.deleteLot(leafId);
+    const { body } = await api.journey('receipt', receiptId);
+    const removed = body.nodes.find(n => n.id === leafId && n.src === 'entry');
+    expect(removed).toBeTruthy();
+    expect(removed.deleted).toBe(true);
+    expect(removed.deleted_by_name).toBeTruthy();
+    // …and it stops contributing to the live totals.
+    expect(body.summary.total_loss).toBe(2);
+  });
+
+  test('an unknown lot is a 404 and a bad type a 400', async () => {
+    expect((await api.journey('entry', 999999)).status).toBe(404);
+    expect((await api.journey('nonsense', 1)).status).toBe(400);
+  });
+});
+
 describe('Status SQL/JS parity', () => {
   const svc = require('../src/services/stitching.service');
 
@@ -738,10 +1035,19 @@ describe('Status SQL/JS parity', () => {
     ['Gray', 100, 100, 'Forwarded'],
     ['Gray', 100, 99.999, 'Forwarded'],
     ['Processed', 50, 0, 'Pending'],
-    ['Packed', 50, 0, 'Closed'],
-    ['Packed', 50, 50, 'Closed'],
+    ['Packed', 50, 0, 'In Stock'],
+    ['Packed', 50, 50, 'In Stock'],
   ])('%s lot of %s with %s forwarded is %s', (stage, metre, forwarded, expected) => {
     expect(svc.computeStatus({ stage, metre, forwarded })).toBe(expected);
+  });
+
+  // Packed is the only stage where closed_at changes the answer, and the only
+  // one where balance does not.
+  test.each([
+    [null, 'In Stock'],
+    ['2026-09-05 10:00:00', 'Closed'],
+  ])('a Packed lot with closedAt %s is %s', (closedAt, expected) => {
+    expect(svc.computeStatus({ stage: 'Packed', metre: 50, forwarded: 0, closedAt })).toBe(expected);
   });
 
   test('every row the API returns agrees with computeStatus', async () => {
@@ -753,7 +1059,9 @@ describe('Status SQL/JS parity', () => {
     const res = await api.listStage();
     expect(res.body.rows.length).toBeGreaterThan(0);
     for (const r of res.body.rows) {
-      expect(r.status).toBe(svc.computeStatus({ stage: r.stage, metre: r.metre, forwarded: r.forwarded }));
+      expect(r.status).toBe(svc.computeStatus({
+        stage: r.stage, metre: r.metre, forwarded: r.forwarded, closedAt: r.closed_at,
+      }));
     }
   });
 });

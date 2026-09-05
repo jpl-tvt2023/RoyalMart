@@ -2,7 +2,7 @@ const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
 const { userHasRole } = require('../services/userRoles.service');
 const {
-  STAGES, EPSILON, isValidStage, nextStage,
+  STAGES, OPEN_STATUSES, EPSILON, isValidStage, nextStage,
   effectiveAfterRate, statusSql, moneyError, qtyError,
 } = require('../services/stitching.service');
 
@@ -65,13 +65,14 @@ function buildOrderBy(query) {
 const LOTS_CTE = `
 WITH lots AS (
   SELECT
-    'receipt' AS src, r.id AS id, sp.stage AS stage,
+    'receipt' AS src, r.id AS id, r.line_id AS line_id, sp.stage AS stage,
     v.name AS party_name, r.bill_no AS bill_no, r.challan_no AS challan_no,
     sp.id AS incoming_prefix_id, sp.prefix AS incoming_prefix, r.incoming_no AS incoming_no,
     r.received_qty AS metre,
     r.received_rate AS rate, r.process_rate AS process_rate,
     COALESCE(r.after_rate, r.received_rate + COALESCE(r.process_rate, 0)) AS after_rate,
     r.checked_by AS checked_by, kb.name AS checked_by_name,
+    r.closed_at AS closed_at, r.closed_by AS closed_by, clb.name AS closed_by_name,
     r.id AS origin_receipt_id, NULL AS parent_src, NULL AS parent_id,
     COALESCE((SELECT SUM(c.sent_qty) FROM stitching_entries c
                WHERE c.parent_receipt_id = r.id AND c.deleted_at IS NULL), 0) AS forwarded,
@@ -87,12 +88,13 @@ WITH lots AS (
   JOIN outbound_vendors v ON v.id = p.vendor_id
   LEFT JOIN users kb ON kb.id = r.checked_by
   LEFT JOIN users ub ON ub.id = r.updated_by
+  LEFT JOIN users clb ON clb.id = r.closed_by
   WHERE r.deleted_at IS NULL
 
   UNION ALL
 
   SELECT
-    'entry' AS src, e.id AS id, e.stage AS stage,
+    'entry' AS src, e.id AS id, orr.line_id AS line_id, e.stage AS stage,
     e.party_name AS party_name, e.bill_no AS bill_no, e.challan_no AS challan_no,
     sp.id AS incoming_prefix_id, sp.prefix AS incoming_prefix, e.incoming_no AS incoming_no,
     e.metre AS metre,
@@ -103,6 +105,7 @@ WITH lots AS (
     e.process_rate AS process_rate,
     COALESCE(e.after_rate, 0) AS after_rate,
     e.checked_by AS checked_by, kb.name AS checked_by_name,
+    e.closed_at AS closed_at, e.closed_by AS closed_by, clb.name AS closed_by_name,
     e.origin_receipt_id AS origin_receipt_id,
     CASE WHEN e.parent_receipt_id IS NOT NULL THEN 'receipt' ELSE 'entry' END AS parent_src,
     COALESCE(e.parent_receipt_id, e.parent_entry_id) AS parent_id,
@@ -123,6 +126,7 @@ WITH lots AS (
   LEFT JOIN stitching_entries pe ON pe.id = e.parent_entry_id
   LEFT JOIN users kb ON kb.id = e.checked_by
   LEFT JOIN users ub ON ub.id = e.updated_by
+  LEFT JOIN users clb ON clb.id = e.closed_by
   WHERE e.deleted_at IS NULL
 )`;
 
@@ -131,21 +135,29 @@ WITH lots AS (
 const LOT_SELECT = `
   SELECT lots.*,
          metre - forwarded AS balance,
-         ${statusSql('stage', 'metre', 'forwarded')} AS status,
+         ${statusSql('stage', 'metre', 'forwarded', 'closed_at')} AS status,
          COALESCE(incoming_prefix, '') || COALESCE(incoming_no, '') AS full_incoming_no
   FROM lots`;
 
-function buildWhere(query) {
+// Shared by list() and stageCounts() so the two can never disagree about what a
+// filter means. excludeStage omits the stage condition even when present, since
+// counting is inherently across stages; excludeStatus omits the status one,
+// because a count of open lots must not be narrowed by whatever the user happens
+// to have picked in the status dropdown. Mirrors buildListWhere's
+// excludeItemName in outboundPOs.controller.js.
+function buildWhere(query, { excludeStage = false, excludeStatus = false } = {}) {
   const where = [];
   const args = [];
 
-  if (query.stage) {
+  if (query.stage && !excludeStage) {
     where.push('stage = ?');
     args.push(query.stage);
   }
 
   const statuses = String(query.status || '').split(',').map(s => s.trim()).filter(Boolean);
-  if (statuses.includes(NONE_SELECTED)) {
+  if (excludeStatus) {
+    // nothing — the caller supplies its own status condition
+  } else if (statuses.includes(NONE_SELECTED)) {
     where.push('1 = 0');
   } else if (statuses.length) {
     where.push(`status IN (${statuses.map(() => '?').join(',')})`);
@@ -220,6 +232,35 @@ async function list(req, res, next) {
     });
 
     res.json({ rows: rows.map(outward), total, page, page_size: pageSize ?? 'all' });
+  } catch (err) { next(err); }
+}
+
+// GET /api/stitching/stage-counts — open-lot count per stage, for the tab badges.
+//
+// Scoped by every OTHER active filter (stage and status excluded), so each badge
+// answers "how many open lots would I see if I clicked that tab". Same contract
+// as getItemNameCounts in outboundPOs.controller.js.
+//
+// Reuses LOTS_CTE/LOT_SELECT untouched, so a badge can never disagree with the
+// table beneath it. `status` is a LOT_SELECT alias, hence the filter sits in an
+// outer query over the subselect — the shape list()'s own count query uses.
+async function stageCounts(req, res, next) {
+  try {
+    const { clause, args } = buildWhere(req.query, { excludeStage: true, excludeStatus: true });
+    const placeholders = OPEN_STATUSES.map(() => '?').join(',');
+    const { rows } = await db.execute({
+      sql: `${LOTS_CTE}
+            SELECT stage, COUNT(*) AS n
+            FROM (${LOT_SELECT} ${clause})
+            WHERE status IN (${placeholders})
+            GROUP BY stage`,
+      args: [...args, ...OPEN_STATUSES],
+    });
+    // Every stage present even at zero, so the client never has to guess whether
+    // a missing key means none or means the query failed.
+    const counts = Object.fromEntries(STAGES.map(s => [s, 0]));
+    for (const r of rows) counts[r.stage] = Number(r.n) || 0;
+    res.json({ counts });
   } catch (err) { next(err); }
 }
 
@@ -585,4 +626,179 @@ async function restore(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, listParties, create, update, remove, restore, NONE_SELECTED };
+// Which table a lot lives in. Both kinds can reach Packed — forwarded through
+// the chain, or bought directly at that stage — so close/reopen and the journey
+// all take the src as part of the identity.
+const TABLE_FOR_SRC = { receipt: 'outbound_po_line_receipts', entry: 'stitching_entries' };
+
+function parseLotRef(req) {
+  const { src, id } = req.params;
+  if (!TABLE_FOR_SRC[src]) return [null, 'Lot type must be "receipt" or "entry"'];
+  return [{ src, id: Number(id) }, null];
+}
+
+// Shared by close and reopen: both only apply at the end of the chain, and both
+// refuse a no-op rather than silently succeeding — a double-click must not
+// rewrite who closed a lot or when.
+async function setClosed(req, res, next, { closing }) {
+  try {
+    const [ref, refErr] = parseLotRef(req);
+    if (refErr) return res.status(400).json({ message: refErr });
+
+    const lot = await loadLot(ref.src, ref.id);
+    if (!lot) return res.status(404).json({ message: 'Lot not found' });
+    if (lot.stage !== 'Packed') {
+      return res.status(400).json({
+        message: `Only a Packed lot can be ${closing ? 'closed' : 'reopened'} — this one is ${lot.stage}`,
+      });
+    }
+    if (closing && lot.closed_at) {
+      return res.status(400).json({ message: 'This lot is already closed' });
+    }
+    if (!closing && !lot.closed_at) {
+      return res.status(400).json({ message: 'This lot is not closed' });
+    }
+
+    const table = TABLE_FOR_SRC[ref.src];
+    const tx = await db.transaction('write');
+    try {
+      await tx.execute({
+        sql: closing
+          ? `UPDATE ${table} SET closed_at = datetime('now'), closed_by = ?,
+               updated_by = ?, updated_at = datetime('now') WHERE id = ?`
+          : `UPDATE ${table} SET closed_at = NULL, closed_by = NULL,
+               updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
+        args: closing ? [req.user.id, req.user.id, ref.id] : [req.user.id, ref.id],
+      });
+      await logAction({
+        client: tx,
+        userId: req.user.id,
+        actionType: closing ? 'STITCHING_LOT_CLOSE' : 'STITCHING_LOT_REOPEN',
+        description: `${closing ? 'Closed' : 'Reopened'} Packed lot of ${lot.metre} `
+          + `at ${lot.party_name} for ${describeLot(lot)}`,
+        // Receipts are audited against their PO line, the way every other receipt
+        // action in this app already is.
+        entityType: ref.src === 'entry' ? 'stitching_entry' : 'outbound_po_line',
+        entityId: ref.src === 'entry' ? ref.id : lot.line_id,
+        entityRef: lot.incoming_no,
+      });
+      await tx.commit();
+    } catch (e) { await tx.rollback(); throw e; }
+
+    res.json(outward(await loadLot(ref.src, ref.id)));
+  } catch (err) { next(err); }
+}
+
+const close = (req, res, next) => setClosed(req, res, next, { closing: true });
+const reopen = (req, res, next) => setClosed(req, res, next, { closing: false });
+
+// GET /api/stitching/journey/:src/:id — the full lineage of whatever lot this
+// belongs to, from the PO receipt it entered on down to every Packed leaf.
+//
+// The lineage is a TREE, not a line: a lot can be split across several forwards
+// (send 30, then 30, then 40), so each node can have siblings. One query pulls
+// the origin receipt plus every entry sharing its origin_receipt_id — at most a
+// handful of rows, four levels deep — and the tree is assembled here.
+//
+// The response is already flattened into render order with a depth on each node,
+// so the component stays dumb and the ordering rule lives in exactly one place.
+async function journey(req, res, next) {
+  try {
+    const [ref, refErr] = parseLotRef(req);
+    if (refErr) return res.status(400).json({ message: refErr });
+
+    const anchor = await loadLot(ref.src, ref.id);
+    if (!anchor) return res.status(404).json({ message: 'Lot not found' });
+
+    const originId = anchor.origin_receipt_id;
+    const { rows } = await db.execute({
+      sql: `${LOTS_CTE} ${LOT_SELECT} WHERE origin_receipt_id = ? ORDER BY created_at, id`,
+      args: [originId],
+    });
+
+    // Deleted lots are excluded by LOTS_CTE, but the point of this view is the
+    // record, so they are fetched separately and folded back in marked.
+    const { rows: removed } = await db.execute({
+      sql: `SELECT e.id, e.stage, e.party_name, e.sent_qty, e.metre, e.deleted_at,
+                   e.parent_receipt_id, e.parent_entry_id, du.name AS deleted_by_name
+            FROM stitching_entries e
+            LEFT JOIN users du ON du.id = e.deleted_by
+            WHERE e.origin_receipt_id = ? AND e.deleted_at IS NOT NULL
+            ORDER BY e.created_at, e.id`,
+      args: [originId],
+    });
+
+    const nodes = [
+      ...rows.map(r => ({ ...outward(r), deleted: false })),
+      ...removed.map(r => ({
+        src: 'entry',
+        id: r.id,
+        lot_key: `entry:${r.id}`,
+        stage: r.stage,
+        party_name: r.party_name,
+        sent_qty: r.sent_qty,
+        metre: r.metre,
+        parent_src: r.parent_receipt_id != null ? 'receipt' : 'entry',
+        parent_id: r.parent_receipt_id ?? r.parent_entry_id,
+        deleted: true,
+        deleted_at: r.deleted_at,
+        deleted_by_name: r.deleted_by_name,
+      })),
+    ];
+
+    const byKey = new Map(nodes.map(n => [n.lot_key, n]));
+    const childrenOf = new Map();
+    for (const n of nodes) {
+      if (n.parent_id == null) continue;
+      const parentKey = `${n.parent_src}:${n.parent_id}`;
+      if (!childrenOf.has(parentKey)) childrenOf.set(parentKey, []);
+      childrenOf.get(parentKey).push(n);
+    }
+
+    // Depth-first from the origin, so a lot's own children follow it immediately
+    // and a split reads as an indented pair rather than two distant rows.
+    const flat = [];
+    const walk = (node, depth) => {
+      flat.push({
+        ...node,
+        depth,
+        is_anchor: node.src === ref.src && node.id === ref.id,
+        // Only meaningful on a downstream hop: what the parent sent minus what
+        // actually arrived. Null on the origin, which was not sent by anyone.
+        loss: node.sent_qty == null ? null
+          : Math.round((Number(node.sent_qty) - Number(node.metre)) * 100) / 100,
+      });
+      for (const child of childrenOf.get(node.lot_key) || []) walk(child, depth + 1);
+    };
+    const root = byKey.get(`receipt:${originId}`);
+    if (root) walk(root, 0);
+    // A chain whose origin receipt lost its prefix drops out of LOTS_CTE, which
+    // would otherwise silently return nothing. Fall back to the anchor's subtree
+    // so the view degrades to a partial record rather than an empty one.
+    else for (const n of nodes.filter(x => !byKey.has(`${x.parent_src}:${x.parent_id}`))) walk(n, 0);
+
+    const live = flat.filter(n => !n.deleted);
+    const packed = live.filter(n => n.stage === 'Packed');
+    res.json({
+      anchor: { src: ref.src, id: ref.id },
+      nodes: flat,
+      summary: {
+        article: anchor.item_name,
+        variant: anchor.variant,
+        po_order_no: anchor.po_order_no,
+        origin_incoming_no: root ? `${root.incoming_prefix || ''}${root.incoming_no || ''}` : null,
+        origin_metre: root ? Number(root.metre) : null,
+        origin_rate: root ? Number(root.rate) : null,
+        packed_metre: packed.reduce((s, n) => s + Number(n.metre || 0), 0),
+        final_rate: packed.length ? Math.max(...packed.map(n => Number(n.after_rate || 0))) : null,
+        total_loss: Math.round(live.reduce((s, n) => s + (n.loss || 0), 0) * 100) / 100,
+      },
+    });
+  } catch (err) { next(err); }
+}
+
+module.exports = {
+  list, listParties, stageCounts, journey,
+  create, update, remove, restore, close, reopen,
+  NONE_SELECTED,
+};

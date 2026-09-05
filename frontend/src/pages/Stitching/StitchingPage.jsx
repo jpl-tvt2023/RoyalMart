@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import AppShell from '../../components/layout/AppShell';
 import { useSessionState } from '../../hooks/useSessionState';
 import { STAGES } from '../../utils/stitching';
@@ -15,6 +16,12 @@ export default function StitchingPage() {
   // A session holding a stage name from an earlier layout would otherwise render
   // no body and highlight no tab.
   const tab = STAGES.includes(storedTab) ? storedTab : 'Gray';
+
+  // Open-lot counts, reported up by whichever StageTab is mounted — it owns the
+  // filters the counts are scoped by, so it is the only thing that can ask for
+  // them correctly. Reset on a tab switch so a stale set never briefly labels
+  // the new tab's filters.
+  const [openCounts, setOpenCounts] = useState({});
 
   return (
     <AppShell>
@@ -34,13 +41,16 @@ export default function StitchingPage() {
             }`}
           >
             {s}
+            {/* Hidden at zero: a silent tab is precisely the signal that
+                nothing there needs doing. */}
+            {openCounts[s] > 0 && <span className="ml-1 text-gray-400">({openCounts[s]})</span>}
           </button>
         ))}
       </div>
 
       {/* Keyed so switching stages remounts rather than reusing the previous
           stage's loaded rows, filters and page — same trick ProcurementPage uses. */}
-      <StageTab key={tab} stage={tab} />
+      <StageTab key={tab} stage={tab} onOpenCounts={setOpenCounts} />
     </AppShell>
   );
 }

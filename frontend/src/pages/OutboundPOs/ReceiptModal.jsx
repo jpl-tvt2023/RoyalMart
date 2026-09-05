@@ -8,16 +8,16 @@ import { addOutboundPOLineReceipt, updateOutboundPOLineReceipt } from '../../api
 import { ROLES } from '../../utils/roles';
 import {
   EMPTY_RECEIPT, INCOMING_NO_MAX,
-  receiptFieldError, withDerivedAfterRate, prefixGroupsFor, checkerOptionsFor,
+  receiptFieldError, withDerivedAfterRate, prefixOptionsFor, checkerOptionsFor,
 } from './receiptFields';
 
 const inputBase = 'px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
 const inputCls = `w-full ${inputBase}`;
 const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
 
-function Field({ label, required, children, hint }) {
+function Field({ label, required, children, hint, className = '' }) {
   return (
-    <div>
+    <div className={className}>
       <label className={labelCls}>
         {label}{required && <span className="text-red-500"> *</span>}
       </label>
@@ -205,18 +205,24 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
             </select>
           </Field>
 
-          <Field label="Incoming No" hint="The prefix records the stage these goods arrived at">
+          {/* Full width: it is two controls in one field, and squeezing them into
+              half the grid left the number box too small to read. */}
+          <Field
+            label="Incoming No"
+            hint="The prefix records the stage these goods arrived at"
+            className="sm:col-span-2"
+          >
             <div className="flex gap-2">
+              {/* Wide enough for "GRY · Gray" — the modal has the room the table
+                  cell did not, so the stage can sit in the option text. */}
               <select
                 value={form.incoming_prefix_id || ''}
                 onChange={e => setField('incoming_prefix_id', e.target.value)}
-                className={`${inputBase} w-24 shrink-0`}
+                className={`${inputBase} w-40 shrink-0`}
               >
-                <option value="">—</option>
-                {prefixGroupsFor(prefixes, receipt?.incoming_prefix_id, receipt?.incoming_prefix).map(g => (
-                  <optgroup key={g.stage} label={g.stage}>
-                    {g.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </optgroup>
+                <option value="">Prefix…</option>
+                {prefixOptionsFor(prefixes, receipt?.incoming_prefix_id, receipt?.incoming_prefix).map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
               </select>
               <input
