@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import AppShell from '../../components/layout/AppShell';
 import { useSessionState } from '../../hooks/useSessionState';
-import { STAGES } from '../../utils/stitching';
+import { STAGES, ALL_TAB, STAGE_TABS } from '../../utils/stitching';
 import StageTab from './StageTab';
 
 const SUBTITLES = {
@@ -9,13 +9,22 @@ const SUBTITLES = {
   Processed: 'Fabric back from the processing house',
   Stitched: 'Fabric back from the stitching unit',
   Packed: 'Finished and closed — the end of the chain',
+  [ALL_TAB]: 'Every stage in one list — filter by PO No to follow a single chain',
 };
+
+// stage-counts reports per stage, so All has to add them up itself.
+const countFor = (tab, counts) => (
+  tab === ALL_TAB
+    ? STAGES.reduce((sum, s) => sum + (Number(counts[s]) || 0), 0)
+    : Number(counts[tab]) || 0
+);
 
 export default function StitchingPage() {
   const [storedTab, setTab] = useSessionState('stitching.tab', 'Gray');
   // A session holding a stage name from an earlier layout would otherwise render
-  // no body and highlight no tab.
-  const tab = STAGES.includes(storedTab) ? storedTab : 'Gray';
+  // no body and highlight no tab. Validated against STAGE_TABS, not STAGES, or a
+  // session left on All would silently snap back to Gray.
+  const tab = STAGE_TABS.includes(storedTab) ? storedTab : 'Gray';
 
   // Open-lot counts, reported up by whichever StageTab is mounted — it owns the
   // filters the counts are scoped by, so it is the only thing that can ask for
@@ -31,7 +40,7 @@ export default function StitchingPage() {
       </div>
 
       <div className="flex gap-1 mb-4 border-b border-gray-200">
-        {STAGES.map(s => (
+        {STAGE_TABS.map(s => (
           <button
             key={s}
             type="button"
@@ -42,8 +51,11 @@ export default function StitchingPage() {
           >
             {s}
             {/* Hidden at zero: a silent tab is precisely the signal that
-                nothing there needs doing. */}
-            {openCounts[s] > 0 && <span className="ml-1 text-gray-400">({openCounts[s]})</span>}
+                nothing there needs doing. All carries the total, since the
+                counts come back per stage and it spans every one of them. */}
+            {countFor(s, openCounts) > 0 && (
+              <span className="ml-1 text-gray-400">({countFor(s, openCounts)})</span>
+            )}
           </button>
         ))}
       </div>

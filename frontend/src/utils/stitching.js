@@ -4,6 +4,14 @@
 
 export const STAGES = ['Gray', 'Processed', 'Stitched', 'Packed'];
 
+// "All" is a VIEW, not a stage, so it is deliberately kept out of STAGES —
+// nextStage/prevStage walk that list and the DB CHECK constraints mirror it, so
+// a fifth member there would corrupt the chain rather than add a tab. It sits
+// last: the stage tabs are the daily work, All is for following one PO through
+// every stage at once.
+export const ALL_TAB = 'All';
+export const STAGE_TABS = [...STAGES, ALL_TAB];
+
 export const STATUSES = ['Pending', 'Partial', 'Forwarded', 'In Stock', 'Closed'];
 
 // Outstanding work: still holding metre, or packed but not yet dispatched.
@@ -103,6 +111,16 @@ export const defaultAfterRate = (rate, processRate) => {
 
 // Trailing zeros are noise in a table; 62.5 reads better than 62.50.
 export const fmtNum = (v) => (v == null || v === '' ? '—' : String(Math.round(Number(v) * 100) / 100));
+
+// A quantity with its unit attached. The unit comes from the PO line, because
+// this page carries fabric measured in metres AND packaging bought by the piece
+// -- printing "5 m" against 5 corrugated boxes is simply false. Falls back to a
+// bare number rather than inventing a unit.
+export const fmtQty = (value, unit) => {
+  const n = fmtNum(value);
+  if (n === '—') return n;
+  return unit ? `${n} ${unit}` : n;
+};
 
 export const fullIncomingNo = (row) =>
   `${row.incoming_prefix || ''}${row.incoming_no || ''}` || null;

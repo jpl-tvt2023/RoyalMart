@@ -3,11 +3,8 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/ui/Modal';
 import Badge from '../../components/ui/Badge';
 import { getStitchingJourney } from '../../api/stitching.api';
-import { STATUS_COLORS, fmtNum } from '../../utils/stitching';
+import { STATUS_COLORS, fmtNum, fmtQty } from '../../utils/stitching';
 import { formatDateTime } from '../../utils/formatters';
-
-// A number that reads as a quantity, with the unit attached once.
-const metres = (v) => `${fmtNum(v)} m`;
 
 /**
  * The full lineage of a lot — the PO receipt it entered on, then every stage it
@@ -38,6 +35,9 @@ export default function JourneyModal({ src, id, onClose }) {
   }, [src, id]);
 
   const s = data?.summary;
+  // Unit comes from the PO line the chain descends from, not from an assumption
+  // that everything here is fabric.
+  const metres = (v) => fmtQty(v, s?.unit_metric);
 
   return (
     <Modal isOpen onClose={onClose} title="Journey" size="xl">

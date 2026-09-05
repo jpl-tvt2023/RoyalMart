@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Link } from 'react-router-dom';
-import { Send, Trash2, ExternalLink, Route, PackageCheck, RotateCcw, Undo2, FileText } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { Send, Trash2, ExternalLink, Route, PackageCheck, RotateCcw, Undo2, FileText, Download } from 'lucide-react';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
@@ -12,7 +13,7 @@ import {
   listStitchingLots, listStitchingStageCounts, deleteStitchingLot,
   closeStitchingLot, reopenStitchingLot,
 } from '../../api/stitching.api';
-import { STATUSES, STATUS_COLORS, fmtNum } from '../../utils/stitching';
+import { STATUSES, STATUS_COLORS, fmtNum, ALL_TAB } from '../../utils/stitching';
 import { formatDateTime } from '../../utils/formatters';
 import ForwardModal from './ForwardModal';
 import JourneyModal from './JourneyModal';
@@ -28,6 +29,43 @@ const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2';
 const EMPTY_FILTERS = {
   party_name: '', incoming_no: '', bill_no: '', challan_no: '', po_order_no: '', status: '',
 };
+
+// Same shape the other export pages use (OutboundPOList, PackagingList,
+// OutboundVendorsPage). `columns` is [{ key, header }]; values come straight off
+// the flattened row.
+function downloadRows(filename, columns, rows) {
+  const header = columns.map(c => c.header);
+  const data = rows.map(r => columns.map(c => (r[c.key] == null ? '' : r[c.key])));
+  const ws = XLSX.utils.aoa_to_sheet([header, ...data]);
+  ws['!cols'] = header.map(() => ({ wch: 18 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Export');
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
+  XLSX.writeFile(wb, `${filename}-${stamp}.xlsx`);
+}
+
+// Stage is included even on a single-stage tab: a saved file outlives the tab it
+// came from.
+const EXPORT_COLUMNS = [
+  { key: 'stage', header: 'Stage' },
+  { key: 'party_name', header: 'Party Name' },
+  { key: 'item_name', header: 'Article' },
+  { key: 'variant', header: 'Variant' },
+  { key: 'po_order_no', header: 'PO' },
+  { key: 'status', header: 'Status' },
+  { key: 'metre', header: 'Qty' },
+  { key: 'balance', header: 'Balance' },
+  { key: 'unit_metric', header: 'Unit' },
+  { key: 'rate', header: 'Rate' },
+  { key: 'process_rate', header: 'Process Rate' },
+  { key: 'after_rate', header: 'After Rate' },
+  { key: 'bill_no', header: 'Bill No' },
+  { key: 'challan_no', header: 'Challan No' },
+  { key: 'incoming_no', header: 'Incoming No' },
+  { key: 'checked_by_name', header: 'Checked By' },
+  { key: 'updated_by_name', header: 'Updated By' },
+  { key: 'updated_at', header: 'Updated At' },
+];
 
 export default function StageTab({ stage, onOpenCounts }) {
   const pageSizeKey = 'stitching.pageSize';
@@ -49,14 +87,35 @@ export default function StageTab({ stage, onOpenCounts }) {
   const [reverting, setReverting] = useState(null);
   const [challanFor, setChallanFor] = useState(null);
   const [busyKey, setBusyKey] = useState(null);
+  const [downloading, setDownloading] = useState(false);
+
+  // "All" is a view across every stage, not a stage the server knows about.
+  const isAll = stage === ALL_TAB;
+  // Stage only earns a column when rows can differ — on a stage tab every row
+  // would repeat the tab's own name.
+  const COLUMN_COUNT = isAll ? 15 : 14;
+
+  // Params are built once and reused by the export, so what downloads is exactly
+  // what the filters describe.
+  const buildParams = useCallback(() => {
+    // On All the stage key is OMITTED rather than sent empty: the server treats
+    // an absent stage as "every stage", but validates one that is present.
+    // Chain order matters here and nowhere else — the point of the tab is
+    // following one PO from Gray to Packed, which the default updated_at sort
+    // interleaves by edit time.
+    const params = isAll
+      ? { sort_by: 'po_stage', sort_dir: 'asc' }
+      : { stage };
+    for (const [k, v] of Object.entries(filters)) {
+      if (String(v || '').trim()) params[k] = String(v).trim();
+    }
+    return params;
+  }, [isAll, stage, filters]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = { stage, page, page_size: pageSize };
-      for (const [k, v] of Object.entries(filters)) {
-        if (String(v || '').trim()) params[k] = String(v).trim();
-      }
+      const params = { ...buildParams(), page, page_size: pageSize };
       // The badges are scoped by the same filters as the table, so they are
       // fetched alongside it rather than on their own schedule — same split
       // OutboundPOList uses with load() + loadItemCounts().
@@ -74,9 +133,43 @@ export default function StageTab({ stage, onOpenCounts }) {
     } finally {
       setLoading(false);
     }
-  }, [stage, page, pageSize, filters, onOpenCounts]);
+  }, [buildParams, page, pageSize, onOpenCounts]);
 
   useEffect(() => { load(); }, [load]);
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      // page_size 'all' is what makes this the whole filtered set rather than
+      // the page on screen — the thing that was actually asked for.
+      const res = await listStitchingLots({ ...buildParams(), page: 1, page_size: 'all' });
+      const exportRows = (res.rows || []).map(r => ({
+        stage: r.stage,
+        party_name: r.party_name || '',
+        item_name: r.item_name || '',
+        variant: r.variant || '',
+        po_order_no: r.po_order_no || '',
+        status: r.status,
+        // Numbers stay numbers, with the unit in its own column. A spreadsheet
+        // exists to sum this, which "5 pcs" in the cell would prevent.
+        metre: r.metre,
+        balance: r.balance,
+        unit_metric: r.unit_metric || '',
+        rate: r.rate,
+        process_rate: r.process_rate,
+        after_rate: r.after_rate,
+        bill_no: r.bill_no || '',
+        challan_no: r.challan_no || '',
+        incoming_no: `${r.incoming_prefix || ''}${r.incoming_no || ''}`,
+        checked_by_name: r.checked_by_name || '',
+        updated_by_name: r.updated_by_name || '',
+        updated_at: r.updated_at || '',
+      }));
+      downloadRows(`stitching-${String(stage).toLowerCase()}`, EXPORT_COLUMNS, exportRows);
+    } catch {
+      toast.error('Failed to export');
+    } finally { setDownloading(false); }
+  };
 
   const applyFilters = () => { setFilters(draft); setPage(1); };
   const clearFilters = () => { setDraft(EMPTY_FILTERS); setFilters(EMPTY_FILTERS); setPage(1); };
@@ -144,6 +237,11 @@ export default function StageTab({ stage, onOpenCounts }) {
           </select>
         </div>
         <div className="flex justify-end gap-2 mt-3">
+          {/* Beside Clear/Search so it reads as "act on these filters" — it
+              exports the whole filtered set, not the page on screen. */}
+          <Button type="button" variant="ghost" size="sm" onClick={handleDownload} loading={downloading}>
+            <Download size={14} />Download XLSX
+          </Button>
           <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>Clear</Button>
           <Button type="button" size="sm" onClick={applyFilters}>Search</Button>
         </div>
@@ -155,11 +253,12 @@ export default function StageTab({ stage, onOpenCounts }) {
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className={thCls}>Sr</th>
+                {isAll && <th className={thCls}>Stage</th>}
                 <th className={thCls}>Party Name</th>
                 <th className={thCls}>Bill No</th>
                 <th className={thCls}>Article</th>
                 <th className={thCls}>Status</th>
-                <th className={thCls}>Metre</th>
+                <th className={thCls}>Qty</th>
                 <th className={thCls}>Balance</th>
                 <th className={thCls}>Rate</th>
                 <th className={thCls}>Process Rate</th>
@@ -173,7 +272,7 @@ export default function StageTab({ stage, onOpenCounts }) {
             <tbody className="divide-y divide-gray-100">
               {loading && [...Array(5)].map((_, i) => (
                 <tr key={`sk-${i}`}>
-                  {[...Array(14)].map((__, j) => (
+                  {[...Array(COLUMN_COUNT)].map((__, j) => (
                     <td key={j} className="px-3 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td>
                   ))}
                 </tr>
@@ -182,6 +281,9 @@ export default function StageTab({ stage, onOpenCounts }) {
               {!loading && rows.map((r, i) => (
                 <tr key={r.lot_key} className="hover:bg-gray-50/60">
                   <td className={`${tdCls} text-gray-400`}>{srBase + i + 1}</td>
+                  {isAll && (
+                    <td className={`${tdCls} font-medium text-[#003049] whitespace-nowrap`}>{r.stage}</td>
+                  )}
                   <td className={`${tdCls} font-medium text-[#003049] whitespace-nowrap`}>{r.party_name}</td>
                   <td className={`${tdCls} text-gray-600`}>{r.bill_no || '—'}</td>
                   <td className={tdCls}>

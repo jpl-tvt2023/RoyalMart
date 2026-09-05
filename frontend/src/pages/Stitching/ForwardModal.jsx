@@ -8,7 +8,7 @@ import { listStitchingParties, forwardStitchingLot } from '../../api/stitching.a
 import { ROLES } from '../../utils/roles';
 import {
   defaultAfterRate, fmtNum, moneyError, qtyError, EPSILON,
-  carriedIncomingNo, soleActivePrefix, challanError, CHALLAN_MAX,
+  carriedIncomingNo, soleActivePrefix, challanError, CHALLAN_MAX, fmtQty,
 } from '../../utils/stitching';
 
 // Field chrome WITHOUT a width. inputCls keeps w-full for the single-control
@@ -110,6 +110,17 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
     [prefixes, lot?.next_stage],
   );
 
+  // Same rule the prefill uses, so what is shown and what is submitted can never
+  // disagree about whether the stage left a choice.
+  const soleStagePrefix = useMemo(
+    () => soleActivePrefix(prefixes, lot?.next_stage),
+    [prefixes, lot?.next_stage],
+  );
+
+  // Metres for fabric, pieces for packaging — it comes from the PO line, and
+  // guessing was what made the journey print "5 m" against corrugated boxes.
+  const unit = lot?.unit_metric;
+
   const setField = (k, v) => setForm(f => {
     const nextForm = { ...f, [k]: v };
     if (k === 'after_rate') return nextForm;
@@ -128,12 +139,12 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
     if (!String(form.challan_no || '').trim()) {
       return `Add a challan number to this ${lot.stage} lot before sending it ahead`;
     }
-    const sentErr = qtyError(form.sent_qty, 'Sent Metre');
+    const sentErr = qtyError(form.sent_qty, 'Sent Qty');
     if (sentErr) return sentErr;
     if (Number(form.sent_qty) - Number(lot.balance) > EPSILON) {
       return `Cannot send ${form.sent_qty} — only ${fmtNum(lot.balance)} is left on this lot`;
     }
-    const metreErr = qtyError(form.metre, 'Received Metre');
+    const metreErr = qtyError(form.metre, 'Received Qty');
     if (metreErr) return metreErr;
     const procErr = moneyError(form.process_rate, 'Process Rate');
     if (procErr) return procErr;
@@ -193,10 +204,23 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
           </div>
           <div className="text-gray-600 text-xs mt-1">
             Available <span className="font-semibold text-[#003049]">{fmtNum(lot.balance)}</span>
-            {' of '}{fmtNum(lot.metre)} · carried-in rate{' '}
+            {' of '}{fmtQty(lot.metre, unit)} · carried-in rate{' '}
             <span className="font-semibold text-[#003049]">{fmtNum(lot.after_rate)}</span>
           </div>
         </div>
+
+        {/* On its own, directly under the lot it belongs to. It is the one field
+            here that writes back to the SOURCE lot rather than to the row this
+            form creates, so it must not sit in a row of lookalike boxes beside
+            Bill No, which does the opposite. */}
+        <Field label="Challan No" required hint={`Saved on the ${lot.stage} lot being sent`}>
+          <input
+            value={form.challan_no}
+            onChange={e => setField('challan_no', e.target.value)}
+            className={inputCls}
+            maxLength={CHALLAN_MAX}
+          />
+        </Field>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Party Name" required hint="Who is doing this stage">
@@ -225,7 +249,9 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
             </select>
           </Field>
 
-          <Field label="Sent Metre" required hint={`At most ${fmtNum(lot.balance)}`}>
+          {/* "Qty", not "Metre": this page carries fabric sold by the metre and
+              packaging sold by the piece, and the unit comes from the PO line. */}
+          <Field label="Sent Qty" required hint={`At most ${fmtQty(lot.balance, unit)}`}>
             <input
               type="number" min={0.01} step="0.01" max={lot.balance}
               value={form.sent_qty}
@@ -236,9 +262,9 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
           </Field>
 
           <Field
-            label="Received Metre"
+            label="Received Qty"
             required
-            hint={shrinkage != null && shrinkage > 0 ? `Loss of ${fmtNum(shrinkage)}` : 'What actually came back'}
+            hint={shrinkage != null && shrinkage > 0 ? `Loss of ${fmtQty(shrinkage, unit)}` : 'What actually came back'}
           >
             <input
               type="number" min={0.01} step="0.01"
@@ -274,20 +300,11 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
             />
           </Field>
 
-          <Field label="Bill No">
+          {/* The counterpart hint to Challan No's. Without it these two read as
+              alternatives, when in fact they land on opposite ends of the move:
+              the challan goes out with the material, the bill comes back with it. */}
+          <Field label="Bill No" hint={`Saved on the new ${lot.next_stage} lot`}>
             <input value={form.bill_no} onChange={e => setField('bill_no', e.target.value)} className={inputCls} maxLength={50} />
-          </Field>
-
-          {/* The challan documents THIS dispatch, so it is saved onto the lot
-              being sent, not onto the row this form creates. Prefilled with
-              whatever that lot already carries. */}
-          <Field label="Challan No" required hint={`Saved on the ${lot.stage} lot being sent`}>
-            <input
-              value={form.challan_no}
-              onChange={e => setField('challan_no', e.target.value)}
-              className={inputCls}
-              maxLength={CHALLAN_MAX}
-            />
           </Field>
 
           <Field
@@ -295,16 +312,28 @@ export default function ForwardModal({ lot, onClose, onSaved }) {
             hint={stagePrefixes.length ? undefined : `No active ${lot.next_stage} prefix — add one in Admin → Purchase Config`}
           >
             <div className="flex gap-2">
-              {/* Already filtered to the one target stage, so plain options are
-                  right here — no optgroup needed as on the PO detail page. */}
-              <select
-                value={form.incoming_prefix_id}
-                onChange={e => setField('incoming_prefix_id', e.target.value)}
-                className={`${inputBase} w-28 shrink-0`}
-              >
-                <option value="">Prefix</option>
-                {stagePrefixes.map(p => <option key={p.id} value={p.id}>{p.prefix}</option>)}
-              </select>
+              {/* The stage decides the prefix, so when it leaves no choice this
+                  is a fact to state, not a question to ask. Rendering it as text
+                  also removes the empty option, which was the only way to create
+                  a Processed lot carrying no prefix at all.
+                  A select comes back the moment a stage has two active prefixes. */}
+              {soleStagePrefix ? (
+                <div
+                  className={`${inputBase} w-28 shrink-0 bg-gray-50 text-gray-600 font-mono`}
+                  title={`Every lot sent to ${lot.next_stage} carries this prefix`}
+                >
+                  {soleStagePrefix.prefix}
+                </div>
+              ) : (
+                <select
+                  value={form.incoming_prefix_id}
+                  onChange={e => setField('incoming_prefix_id', e.target.value)}
+                  className={`${inputBase} w-28 shrink-0`}
+                >
+                  <option value="">Prefix</option>
+                  {stagePrefixes.map(p => <option key={p.id} value={p.id}>{p.prefix}</option>)}
+                </select>
+              )}
               <input
                 value={form.incoming_no}
                 onChange={e => setField('incoming_no', e.target.value)}

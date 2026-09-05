@@ -502,8 +502,8 @@ describe('Forwarding through the stages', () => {
 
   test.each([
     [{ party_name: '' }, /Party Name is required/],
-    [{ sent_qty: 0 }, /Sent Metre must be a number > 0/],
-    [{ metre: -5 }, /Received Metre must be a number > 0/],
+    [{ sent_qty: 0 }, /Sent Qty must be a number > 0/],
+    [{ metre: -5 }, /Received Qty must be a number > 0/],
     [{ process_rate: 1.005 }, /at most 2 decimal places/],
   ])('rejects %j', async (override, matcher) => {
     const { receiptId } = await grayLot();
@@ -1278,6 +1278,17 @@ describe('Sending a hop back', () => {
     expect(restore.body.message).toMatch(/is left on the source/i);
   });
 
+  // Without this the view has no way to know whether a chain is metres of fabric
+  // or pieces of packaging, and it used to guess metres.
+  test('the journey summary carries the line unit', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const journey = await api.journey('receipt', receiptId);
+    expect(journey.status).toBe(200);
+    expect(journey.body.summary).toHaveProperty('unit_metric');
+    const row = findLot((await api.listStage({ stage: 'Gray' })).body.rows, 'receipt', receiptId);
+    expect(journey.body.summary.unit_metric).toBe(row.unit_metric);
+  });
+
   test('the journey names the challan the lot was sent under, on the hop', async () => {
     const { receiptId } = await grayLot({ qty: 100 });
     const child = await api.forward({
@@ -1316,6 +1327,58 @@ describe('prevStage', () => {
     expect(row.parent_stage).toBe('Gray');
     expect(row.parent_src).toBe('receipt');
     expect(row.parent_id).toBe(receiptId);
+  });
+});
+
+describe('Chain-order sorting for the All view', () => {
+  // Walks one lot the whole way, so a single PO holds all four stages.
+  const fullChain = async () => {
+    const { receiptId, poId } = await grayLot({ qty: 100 });
+    let parent = { src: 'receipt', id: receiptId };
+    for (const party of ['Dyeing House', 'Stitch Unit', 'Packer A']) {
+      const r = await api.forward({
+        parent_src: parent.src, parent_id: parent.id, party_name: party,
+        sent_qty: 100, metre: 100, checked_by: warehousePocId,
+      });
+      parent = { src: 'entry', id: r.body.id };
+    }
+    return { receiptId, poId };
+  };
+
+  test('omitting stage returns every stage of the chain', async () => {
+    const { poId } = await fullChain();
+    const res = await api.listStage({ po_order_no: String(poId) });
+    expect(res.status).toBe(200);
+    expect(res.body.rows.map(r => r.stage).sort())
+      .toEqual(['Gray', 'Packed', 'Processed', 'Stitched']);
+  });
+
+  // The assertion that fails if anyone "simplifies" po_stage to a plain stage
+  // sort: alphabetically Packed comes SECOND, which would put the end of the
+  // chain immediately after its start.
+  test('po_stage orders by the chain, not alphabetically', async () => {
+    const { poId } = await fullChain();
+    const res = await api.listStage({
+      po_order_no: String(poId), sort_by: 'po_stage', sort_dir: 'asc',
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.rows.map(r => r.stage))
+      .toEqual(['Gray', 'Processed', 'Stitched', 'Packed']);
+  });
+
+  test('lots from different POs group by PO before stage', async () => {
+    const a = await fullChain();
+    const b = await fullChain();
+    const res = await api.listStage({ sort_by: 'po_stage', sort_dir: 'asc', page_size: 'all' });
+    const ids = res.body.rows.map(r => r.po_id).filter(id => id === a.poId || id === b.poId);
+    // Every row of the lower PO comes before any row of the higher one.
+    const [lo, hi] = [a.poId, b.poId].sort((x, y) => x - y);
+    expect(ids).toEqual([...ids.filter(i => i === lo), ...ids.filter(i => i === hi)]);
+  });
+
+  test('an unknown sort key falls back rather than erroring', async () => {
+    const res = await api.listStage({ sort_by: 'nonsense' });
+    expect(res.status).toBe(200);
   });
 });
 

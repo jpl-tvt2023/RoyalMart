@@ -1,9 +1,25 @@
 import { describe, test, expect } from 'vitest';
 import {
-  STAGES, nextStage, prevStage,
+  STAGES, STAGE_TABS, ALL_TAB, nextStage, prevStage,
   carriedIncomingNo, soleActivePrefix,
-  challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX,
+  challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX, fmtQty,
 } from '../stitching';
+
+describe('STAGE_TABS', () => {
+  test('is the stages in chain order with All appended', () => {
+    expect(STAGE_TABS).toEqual([...STAGES, ALL_TAB]);
+    expect(STAGE_TABS[STAGE_TABS.length - 1]).toBe(ALL_TAB);
+  });
+
+  // The guard that matters: STAGES is the domain chain that nextStage/prevStage
+  // walk and the DB CHECK constraints mirror. "All" is a view and must never
+  // leak into it.
+  test('All is not a stage', () => {
+    expect(STAGES).not.toContain(ALL_TAB);
+    expect(nextStage(ALL_TAB)).toBeNull();
+    expect(prevStage(ALL_TAB)).toBeNull();
+  });
+});
 
 describe('prevStage', () => {
   test('is the inverse of nextStage, and null at the head of the chain', () => {
@@ -75,5 +91,28 @@ describe('revertReasonError', () => {
   test('is capped', () => {
     expect(revertReasonError('x'.repeat(REVERT_REASON_MAX))).toBeNull();
     expect(revertReasonError('x'.repeat(REVERT_REASON_MAX + 1))).toMatch(/at most 300/);
+  });
+});
+
+describe('fmtQty', () => {
+  // This page carries fabric sold by the metre and packaging sold by the piece,
+  // so the unit comes from the PO line. Hardcoding "m" is what printed "5 m"
+  // against corrugated boxes.
+  test('attaches whatever unit the line uses', () => {
+    expect(fmtQty(5, 'pcs')).toBe('5 pcs');
+    expect(fmtQty(62.5, 'metre')).toBe('62.5 metre');
+  });
+
+  test('falls back to a bare number rather than inventing a unit', () => {
+    expect(fmtQty(5, null)).toBe('5');
+    expect(fmtQty(5, '')).toBe('5');
+    expect(fmtQty(5, undefined)).toBe('5');
+  });
+
+  test('keeps fmtNum behaviour -- rounding, and the placeholder for nothing', () => {
+    expect(fmtQty(62.499, 'pcs')).toBe('62.5 pcs');
+    // The em-dash placeholder must not pick up a unit.
+    expect(fmtQty(null, 'pcs')).toBe('—');
+    expect(fmtQty('', 'pcs')).toBe('—');
   });
 });

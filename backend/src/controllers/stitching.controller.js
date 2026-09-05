@@ -19,6 +19,14 @@ const PAGE_SIZES = [10, 25, 50, 100];
 // everything unticked means "match nothing", which an absent param cannot say.
 const NONE_SELECTED = '__none_selected__';
 
+// Position in the processing chain, for ordering. A plain `stage` sort would be
+// ALPHABETICAL — Gray, Packed, Processed, Stitched — which puts the end of the
+// chain second and makes a lot's history unreadable. Built from STAGES so adding
+// a stage cannot leave the ordering behind.
+const STAGE_ORDER_SQL = `CASE stage${
+  STAGES.map((s, i) => ` WHEN '${s}' THEN ${i + 1}`).join('')
+} END`;
+
 const SORT_COLUMNS = {
   id: 'id',
   party_name: 'party_name',
@@ -29,6 +37,10 @@ const SORT_COLUMNS = {
   after_rate: 'after_rate',
   status: 'status',
   updated_at: 'updated_at',
+  // What the All tab asks for: one PO's lots together, reading Gray to Packed.
+  // The whole point of that tab is following a single PO through the chain, and
+  // the default updated_at order interleaves the stages by edit time instead.
+  po_stage: ['po_id', STAGE_ORDER_SQL],
 };
 
 function buildPagination(query) {
@@ -42,8 +54,13 @@ function buildPagination(query) {
 function buildOrderBy(query) {
   const col = SORT_COLUMNS[query.sort_by] || 'updated_at';
   const dir = String(query.sort_dir).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // A sort key may be several expressions (po_stage is "PO, then chain
+  // position"). The direction goes on EACH of them: appending it once would
+  // leave the leading terms on SQLite's default ASC, so a descending sort would
+  // silently only reverse its last column.
+  const terms = Array.isArray(col) ? col : [col];
   // id is the tiebreaker so paging stays stable when rows share a timestamp.
-  return `ORDER BY ${col} ${dir}, id DESC`;
+  return `ORDER BY ${terms.map(t => `${t} ${dir}`).join(', ')}, id DESC`;
 }
 
 // Every lot on the Stitching page, both kinds, shaped identically.
@@ -322,11 +339,11 @@ async function validateEntryFields(body, { requireAll, targetStage }) {
   }
 
   if (requireAll || present('sent_qty')) {
-    const err = qtyError(body?.sent_qty, 'Sent Metre');
+    const err = qtyError(body?.sent_qty, 'Sent Qty');
     if (err) return err;
   }
   if (requireAll || present('metre')) {
-    const err = qtyError(body?.metre, 'Received Metre');
+    const err = qtyError(body?.metre, 'Received Qty');
     if (err) return err;
   }
 
@@ -524,7 +541,7 @@ async function update(req, res, next) {
     }
     if (has('metre') && lot && nextMetre < Number(lot.forwarded) - EPSILON) {
       return res.status(400).json({
-        message: `Received Metre cannot be less than ${lot.forwarded}, already forwarded from this lot`,
+        message: `Received Qty cannot be less than ${lot.forwarded}, already forwarded from this lot`,
       });
     }
 
@@ -1007,6 +1024,10 @@ async function journey(req, res, next) {
       summary: {
         article: anchor.item_name,
         variant: anchor.variant,
+        // The whole chain descends from one PO line, so one unit covers every
+        // node. Without this the view had no choice but to guess, and it guessed
+        // metres -- wrong for anything bought by the piece.
+        unit_metric: anchor.unit_metric,
         po_order_no: anchor.po_order_no,
         origin_incoming_no: root ? `${root.incoming_prefix || ''}${root.incoming_no || ''}` : null,
         origin_metre: root ? Number(root.metre) : null,
