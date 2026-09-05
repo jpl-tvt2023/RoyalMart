@@ -6,6 +6,7 @@ const vendors = require('../controllers/vendors.controller');
 const categories = require('../controllers/categories.controller');
 const companies = require('../controllers/companies.controller');
 const outboundProducts = require('../controllers/outboundProducts.controller');
+const stitchingPrefixes = require('../controllers/stitchingPrefixes.controller');
 
 const canView  = allowRoles(...ALL_ROLES);
 // Master data is editable by any logged-in user; every change is audited.
@@ -41,6 +42,16 @@ router.get('/outbound-products',        auth, canView,      outboundProducts.lis
 router.post('/outbound-products',       auth, canAdminOnly, outboundProducts.create);
 router.patch('/outbound-products/:id',  auth, canAdminOnly, outboundProducts.update);
 router.delete('/outbound-products/:id', auth, canAdminOnly, outboundProducts.remove);
+
+// Stitching incoming-number prefixes — each declares the stage a lot was
+// received at, which is what routes it to a tab on the Stitching page. Also on
+// Admin -> Purchase Config, so writes are Admin/Owner only. The GET stays open:
+// the outbound PO receipt row and the Stitching forward form both need it for
+// their prefix dropdowns.
+router.get('/stitching-prefixes',        auth, canView,      stitchingPrefixes.list);
+router.post('/stitching-prefixes',       auth, canAdminOnly, stitchingPrefixes.create);
+router.patch('/stitching-prefixes/:id',  auth, canAdminOnly, stitchingPrefixes.update);
+router.delete('/stitching-prefixes/:id', auth, canAdminOnly, stitchingPrefixes.remove);
 
 // Vendors master
 router.get('/vendors',        auth, canView,  vendors.list);

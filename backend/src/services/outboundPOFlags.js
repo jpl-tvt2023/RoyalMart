@@ -49,6 +49,22 @@ const FLAGS = {
     sql: "r.incoming_no IS NULL OR TRIM(r.incoming_no) = ''",
     js: (r) => r.incoming_no == null || String(r.incoming_no).trim() === '',
   },
+  missing_incoming_stage: {
+    label: 'Missing Incoming Stage',
+    short: 'No Stage',
+    color: 'yellow',
+    // A receipt whose incoming number predates the prefix scheme. It has a
+    // number but no prefix, so nothing says which processing stage the goods
+    // arrived at, and the lot cannot appear on any Stitching tab. Deliberately
+    // NOT folded into missing_incoming_no: that one means "nobody recorded the
+    // gate number", this one means "the number is there, the stage is not", and
+    // they are fixed by different people. Receipts with no incoming number at
+    // all already raise missing_incoming_no and are excluded here so a single
+    // omission does not light up two flags.
+    sql: "r.incoming_no IS NOT NULL AND TRIM(r.incoming_no) <> '' AND r.incoming_prefix_id IS NULL",
+    js: (r) => r.incoming_no != null && String(r.incoming_no).trim() !== ''
+      && r.incoming_prefix_id == null,
+  },
   not_approved: {
     label: 'Not Approved',
     short: 'Not Appr',

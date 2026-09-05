@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, ClipboardList, Package, Truck, ClipboardCheck, Timer,
   Tag, Settings, Users, SlidersHorizontal,
-  ShoppingCart, PackageSearch, PackageOpen, Send, Store, Building2, Boxes,
+  ShoppingCart, PackageSearch, PackageOpen, Send, Store, Building2, Boxes, Scissors,
 } from 'lucide-react';
 
 export const ROLES = {
@@ -96,6 +96,13 @@ export const NAV = [
         path: '/outbound/purchase-orders',
         icon: ShoppingCart,
         description: 'Purchase orders to outbound vendors',
+        roles: ALL_ROLES,
+      },
+      {
+        label: 'Stitching',
+        path: '/outbound/stitching',
+        icon: Scissors,
+        description: 'Stage-wise fabric tracking, Gray through Packed',
         roles: ALL_ROLES,
       },
     ],

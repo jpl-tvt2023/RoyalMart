@@ -6,6 +6,7 @@ const {
   FLAG_KEYS, RECEIPT_FLAG_KEYS, poFlagExists, lineFlagExists, receiptFlags, pickFlags, flagSelect,
 } = require('../services/outboundPOFlags');
 const { pairKey, unitMetricsByPair } = require('../services/outboundProducts.service');
+const { effectiveAfterRate, moneyError, EPSILON } = require('../services/stitching.service');
 
 const VALID_STATUSES = ['Open', 'Partially Received', 'Closed'];
 
@@ -243,7 +244,74 @@ async function validateReceiptFields(body, { requireAll }) {
     if (s.length > INCOMING_NO_MAX) return `Incoming No must be ${INCOMING_NO_MAX} characters or less`;
   }
 
+  // Everything below is new to the Stitching work and deliberately appended
+  // AFTER the existing rules: several tests assert on the FIRST error a body
+  // with multiple omissions produces, and that ordering is the contract.
+
+  // Optional, and 0 is a real answer — a Gray lot has had nothing done to it.
+  if (present('process_rate')) {
+    const err = moneyError(body.process_rate, 'Process Rate');
+    if (err) return err;
+  }
+  if (present('after_rate')) {
+    const err = moneyError(body.after_rate, 'After Rate');
+    if (err) return err;
+  }
+
+  if (present('challan_no') && !blank(body?.challan_no)) {
+    const s = String(body.challan_no).trim();
+    if (!s) return 'Challan No cannot be blank';
+    if (s.length > INCOMING_NO_MAX) return `Challan No must be ${INCOMING_NO_MAX} characters or less`;
+  }
+
+  if (present('incoming_prefix_id') && !blank(body?.incoming_prefix_id)) {
+    const { rows } = await db.execute({
+      sql: 'SELECT id, prefix, stage, is_active FROM stitching_prefixes WHERE id = ?',
+      args: [body.incoming_prefix_id],
+    });
+    if (!rows.length) return 'Incoming No prefix not found';
+    // An inactive prefix stays valid on the receipts that already carry it (the
+    // list endpoint still resolves it for display), but must not be attached to
+    // anything new — otherwise deactivating a code would do nothing at all.
+    if (!rows[0].is_active) return `Incoming No prefix "${rows[0].prefix}" is inactive`;
+  }
+
   return null;
+}
+
+// A prefix with no number behind it names a stage for goods that have no gate
+// reference at all — it would print as a bare "GRY" and put a phantom lot on the
+// Stitching page, so it is refused.
+//
+// The reverse is deliberately ALLOWED. A number with no prefix is exactly the
+// state every receipt written before this feature is in, and the state a user is
+// in when they have the gate slip but the stage has not been decided. Forcing a
+// prefix here would make it impossible to record what is actually known, and
+// would leave the missing_incoming_stage flag with nothing to ever report. That
+// flag is the mechanism instead: the gap stays visible on the PO and the lot
+// simply does not appear on a Stitching tab until someone assigns a stage.
+//
+// Checked separately from validateReceiptFields because a PATCH may supply
+// either half alone, and the answer then depends on what is already stored.
+function incomingPairError(nextIncomingNo, nextPrefixId) {
+  const hasNo = nextIncomingNo != null && String(nextIncomingNo).trim() !== '';
+  const hasPrefix = nextPrefixId != null && nextPrefixId !== '';
+  if (hasPrefix && !hasNo) return 'Incoming No is required when a prefix is selected';
+  return null;
+}
+
+// Metres already forwarded out of a receipt onto the Stitching page. A receipt
+// cannot be deleted or shrunk below this, or the lots downstream of it would be
+// accounting for material their source no longer claims to have.
+async function forwardedFromReceipt(receiptId, client) {
+  const executor = client || db;
+  const { rows } = await executor.execute({
+    sql: `SELECT COALESCE(SUM(sent_qty), 0) AS sent, COUNT(*) AS n
+          FROM stitching_entries
+          WHERE parent_receipt_id = ? AND deleted_at IS NULL`,
+    args: [receiptId],
+  });
+  return { sent: Number(rows[0]?.sent) || 0, count: Number(rows[0]?.n) || 0 };
 }
 
 // Validates an optional user-reference field (e.g. approved_by): '' / null
@@ -295,12 +363,20 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
     const { rows: receipts } = await executor.execute({
       sql: `SELECT r.id, r.line_id, r.received_qty, r.received_rate, r.bill_no,
                    r.checked_by, r.incoming_no,
+                   r.process_rate, r.after_rate, r.challan_no, r.incoming_prefix_id,
+                   sp.prefix AS incoming_prefix, sp.stage AS incoming_stage,
                    r.created_by, r.created_at, r.updated_by, r.updated_at, r.deleted_by, r.deleted_at,
-                   cb.name AS created_by_name, ub.name AS updated_by_name, kb.name AS checked_by_name
+                   cb.name AS created_by_name, ub.name AS updated_by_name, kb.name AS checked_by_name,
+                   -- Lots already forwarded onto the Stitching page. The detail
+                   -- page uses it to explain why delete/edit is refused, rather
+                   -- than only surfacing the error after a round trip.
+                   (SELECT COUNT(*) FROM stitching_entries se
+                     WHERE se.parent_receipt_id = r.id AND se.deleted_at IS NULL) AS stitching_children
             FROM outbound_po_line_receipts r
             LEFT JOIN users cb ON cb.id = r.created_by
             LEFT JOIN users ub ON ub.id = r.updated_by
             LEFT JOIN users kb ON kb.id = r.checked_by
+            LEFT JOIN stitching_prefixes sp ON sp.id = r.incoming_prefix_id
             WHERE r.line_id IN (${rPlaceholders}) ${receiptDeletedClause}
             ORDER BY r.line_id, r.created_at, r.id`,
       args: lineIds,
@@ -955,13 +1031,31 @@ async function createReceipt(req, res, next) {
     const checkedBy = Number(req.body.checked_by);
     const incomingNo = req.body?.incoming_no != null
       ? (String(req.body.incoming_no).trim() || null) : null;
+    const challanNo = req.body?.challan_no != null
+      ? (String(req.body.challan_no).trim() || null) : null;
+    const prefixId = req.body?.incoming_prefix_id != null && req.body.incoming_prefix_id !== ''
+      ? Number(req.body.incoming_prefix_id) : null;
+
+    const pairError = incomingPairError(incomingNo, prefixId);
+    if (pairError) return res.status(400).json({ message: pairError });
+
+    const processRate = req.body?.process_rate != null && req.body.process_rate !== ''
+      ? Number(req.body.process_rate) : null;
+    // The client pre-fills After Rate as Billed + Process and lets the user
+    // overwrite it, so the value is stored rather than derived. Filling the same
+    // default here keeps a client that omits it in step with one that does not.
+    const afterRate = req.body?.after_rate != null && req.body.after_rate !== ''
+      ? Number(req.body.after_rate)
+      : effectiveAfterRate(receivedRate, processRate, null);
 
     const tx = await db.transaction('write');
     try {
       const { rows: inserted } = await tx.execute({
-        sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, checked_by, incoming_no, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-        args: [lineId, receivedQty, receivedRate, billNo, checkedBy, incomingNo, req.user.id, req.user.id],
+        sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, checked_by, incoming_no,
+                process_rate, after_rate, challan_no, incoming_prefix_id, created_by, updated_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        args: [lineId, receivedQty, receivedRate, billNo, checkedBy, incomingNo,
+          processRate, afterRate, challanNo, prefixId, req.user.id, req.user.id],
       });
       await logAction({
         client: tx,
@@ -988,9 +1082,12 @@ async function updateReceipt(req, res, next) {
 
     const { rows: receiptRows } = await db.execute({
       sql: `SELECT r.id, r.received_qty, r.received_rate, r.bill_no, r.checked_by, r.incoming_no,
+                   r.process_rate, r.after_rate, r.challan_no, r.incoming_prefix_id,
+                   sp.stage AS incoming_stage,
                    l.category, l.item_name, l.variant
             FROM outbound_po_line_receipts r
             JOIN outbound_po_lines l ON l.id = r.line_id
+            LEFT JOIN stitching_prefixes sp ON sp.id = r.incoming_prefix_id
             WHERE r.id = ? AND r.line_id = ? AND l.po_id = ? AND r.deleted_at IS NULL`,
       args: [receiptId, lineId, id],
     });
@@ -1017,11 +1114,76 @@ async function updateReceipt(req, res, next) {
       nextIncomingNo = req.body.incoming_no != null
         ? (String(req.body.incoming_no).trim() || null) : null;
     }
+    let nextChallanNo = receipt.challan_no;
+    if (has('challan_no')) {
+      nextChallanNo = req.body.challan_no != null
+        ? (String(req.body.challan_no).trim() || null) : null;
+    }
+    let nextProcessRate = receipt.process_rate;
+    if (has('process_rate')) {
+      nextProcessRate = req.body.process_rate != null && req.body.process_rate !== ''
+        ? Number(req.body.process_rate) : null;
+    }
+    let nextPrefixId = receipt.incoming_prefix_id;
+    if (has('incoming_prefix_id')) {
+      nextPrefixId = req.body.incoming_prefix_id != null && req.body.incoming_prefix_id !== ''
+        ? Number(req.body.incoming_prefix_id) : null;
+    }
 
-    const RECEIPT_FIELDS = ['received_qty', 'received_rate', 'bill_no', 'checked_by', 'incoming_no'];
+    // After Rate follows Billed + Process whenever the user has not pinned it
+    // themselves. Without this, editing Process Rate on an existing receipt
+    // would leave a stale After Rate behind and quietly misprice everything
+    // downstream of it on the Stitching page.
+    let nextAfterRate = receipt.after_rate;
+    if (has('after_rate')) {
+      nextAfterRate = req.body.after_rate != null && req.body.after_rate !== ''
+        ? Number(req.body.after_rate) : null;
+    } else if (has('received_rate') || has('process_rate')) {
+      const wasDefault = receipt.after_rate == null
+        || Math.abs(receipt.after_rate - effectiveAfterRate(receipt.received_rate, receipt.process_rate, null)) <= EPSILON;
+      if (wasDefault) nextAfterRate = effectiveAfterRate(nextRate, nextProcessRate, null);
+    }
+    if (nextAfterRate == null) nextAfterRate = effectiveAfterRate(nextRate, nextProcessRate, null);
+
+    const pairError = incomingPairError(nextIncomingNo, nextPrefixId);
+    if (pairError) return res.status(400).json({ message: pairError });
+
+    // Guards against re-cutting the ground under lots already forwarded on the
+    // Stitching page. Both are only reachable once something has been forwarded,
+    // so an ordinary receipt edit never sees them.
+    if (has('incoming_prefix_id') && nextPrefixId !== receipt.incoming_prefix_id) {
+      const { count } = await forwardedFromReceipt(receiptId);
+      if (count > 0) {
+        const { rows: stageRows } = await db.execute({
+          sql: 'SELECT stage FROM stitching_prefixes WHERE id = ?',
+          args: [nextPrefixId],
+        });
+        // Swapping to another prefix for the SAME stage is harmless — the lot
+        // stays on the tab it is on, and its children stay valid.
+        if (stageRows[0]?.stage !== receipt.incoming_stage) {
+          return res.status(400).json({
+            message: `Cannot change the receipt's stage — ${count} lot(s) have already been forwarded from it on the Stitching page. `
+              + 'Remove those first.',
+          });
+        }
+      }
+    }
+    if (has('received_qty')) {
+      const { sent } = await forwardedFromReceipt(receiptId);
+      if (sent - nextQty > EPSILON) {
+        return res.status(400).json({
+          message: `Received Qty cannot be less than ${sent}, already forwarded from this receipt on the Stitching page`,
+        });
+      }
+    }
+
+    const RECEIPT_FIELDS = ['received_qty', 'received_rate', 'bill_no', 'checked_by', 'incoming_no',
+      'process_rate', 'after_rate', 'challan_no', 'incoming_prefix_id'];
     const changes = diffFields(receipt, {
       received_qty: nextQty, received_rate: nextRate, bill_no: nextBillNo,
       checked_by: nextCheckedBy, incoming_no: nextIncomingNo,
+      process_rate: nextProcessRate, after_rate: nextAfterRate,
+      challan_no: nextChallanNo, incoming_prefix_id: nextPrefixId,
     }, RECEIPT_FIELDS);
 
     const tx = await db.transaction('write');
@@ -1029,8 +1191,10 @@ async function updateReceipt(req, res, next) {
       if (changes.length) {
         await tx.execute({
           sql: `UPDATE outbound_po_line_receipts SET received_qty = ?, received_rate = ?, bill_no = ?,
-                  checked_by = ?, incoming_no = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
-          args: [nextQty, nextRate, nextBillNo, nextCheckedBy, nextIncomingNo, req.user.id, receiptId],
+                  checked_by = ?, incoming_no = ?, process_rate = ?, after_rate = ?, challan_no = ?,
+                  incoming_prefix_id = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
+          args: [nextQty, nextRate, nextBillNo, nextCheckedBy, nextIncomingNo,
+            nextProcessRate, nextAfterRate, nextChallanNo, nextPrefixId, req.user.id, receiptId],
         });
         await logAction({
           client: tx,
@@ -1066,6 +1230,17 @@ async function deleteReceipt(req, res, next) {
     });
     if (!receiptRows.length) return res.status(404).json({ message: 'Receipt not found' });
     const receipt = receiptRows[0];
+
+    // Deleting the source of a forwarded lot would orphan every stage
+    // downstream of it. Same guard idiom as referencingVendorNames() in
+    // packagingRawMaterials.controller.js — refuse, and name what is in the way.
+    const { count: forwardedCount } = await forwardedFromReceipt(receiptId);
+    if (forwardedCount > 0) {
+      return res.status(400).json({
+        message: `Cannot delete this receipt — ${forwardedCount} lot(s) have been forwarded from it on the Stitching page. `
+          + 'Remove those first.',
+      });
+    }
 
     const tx = await db.transaction('write');
     try {

@@ -7,6 +7,7 @@ let adminUserId;
 let activeCompanyId;
 let inactiveCompanyId;
 let warehousePocId;
+let grayPrefixId;
 let uidCounter = 0;
 const uid = () => `${Date.now()}-${uidCounter++}`;
 
@@ -104,6 +105,12 @@ beforeAll(async () => {
     args: [adminUserId],
   });
   warehousePocId = adminUserId;
+
+  // Receipts that pin a stage use the Gray prefix seeded by migration 067.
+  // Without one, a receipt carrying an incoming_no raises missing_incoming_stage,
+  // which would show up in tests that are really about a different flag.
+  const prefixes = await db.execute("SELECT id FROM stitching_prefixes WHERE stage = 'Gray' LIMIT 1");
+  grayPrefixId = prefixes.rows[0].id;
 
   const active = await request(app)
     .post('/api/configurations/companies')
@@ -1099,7 +1106,7 @@ describe('Outbound POs API', () => {
 
     test('a billed rate differing from the agreed rate flags the line and the PO', async () => {
       const { poId, lineId } = await setupLine({ rate: 10 });
-      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 12, incoming_no: 'IN-1' });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: grayPrefixId });
       const detail = await getPO(poId);
       expect(detail.body.lines[0].flags).toContain('rate_mismatch');
       const list = await listPOs({ order_no: String(poId) });
@@ -1108,7 +1115,7 @@ describe('Outbound POs API', () => {
 
     test('a matching billed rate raises no flag', async () => {
       const { poId, lineId } = await setupLine({ rate: 10 });
-      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10, incoming_no: 'IN-1' });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: grayPrefixId });
       const detail = await getPO(poId);
       expect(detail.body.lines[0].flags).toEqual([]);
     });
@@ -1117,14 +1124,14 @@ describe('Outbound POs API', () => {
     // rate is stored as 0 and must never raise a mismatch.
     test('a blank agreed rate never raises a rate mismatch', async () => {
       const { poId, lineId } = await setupLine({ rate: 0 });
-      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 12, incoming_no: 'IN-1' });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: grayPrefixId });
       const detail = await getPO(poId);
       expect(detail.body.lines[0].flags).not.toContain('rate_mismatch');
     });
 
     test('float round-trip noise does not raise a mismatch', async () => {
       const { poId, lineId } = await setupLine({ rate: 10.1 });
-      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10.1, incoming_no: 'IN-1' });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10.1, incoming_no: 'IN-1', incoming_prefix_id: grayPrefixId });
       const detail = await getPO(poId);
       expect(detail.body.lines[0].flags).not.toContain('rate_mismatch');
     });
@@ -1135,6 +1142,50 @@ describe('Outbound POs API', () => {
       const detail = await getPO(poId);
       expect(detail.body.lines[0].flags).toContain('missing_incoming_no');
       expect(detail.body.lines[0].receipts[0].flags).toContain('missing_incoming_no');
+    });
+
+    test('an incoming number with no stage prefix raises missing_incoming_stage', async () => {
+      const { poId, lineId } = await setupLine();
+      await postReceipt(poId, lineId, { received_qty: 1, incoming_no: 'LEGACY-1' });
+      const detail = await getPO(poId);
+      const receipt = detail.body.lines[0].receipts[0];
+      expect(receipt.flags).toContain('missing_incoming_stage');
+      // One omission, one flag — a number IS present, so the other one is wrong.
+      expect(receipt.flags).not.toContain('missing_incoming_no');
+      expect(detail.body.lines[0].flags).toContain('missing_incoming_stage');
+    });
+
+    test('no incoming number at all raises only missing_incoming_no, not both', async () => {
+      const { poId, lineId } = await setupLine();
+      await postReceipt(poId, lineId, { received_qty: 1 });
+      const detail = await getPO(poId);
+      expect(detail.body.lines[0].receipts[0].flags).not.toContain('missing_incoming_stage');
+    });
+
+    test('assigning a prefix clears missing_incoming_stage', async () => {
+      const { poId, lineId } = await setupLine();
+      const created = await postReceipt(poId, lineId, { received_qty: 1, incoming_no: 'LEGACY-2' });
+      await request(app)
+        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ incoming_prefix_id: grayPrefixId });
+      const detail = await getPO(poId);
+      expect(detail.body.lines[0].receipts[0].flags).not.toContain('missing_incoming_stage');
+      expect(detail.body.lines[0].receipts[0].incoming_prefix).toBeTruthy();
+    });
+
+    test('?flag=missing_incoming_stage returns only POs with an unstaged incoming number', async () => {
+      const staged = await setupLine();
+      await postReceipt(staged.poId, staged.lineId, {
+        received_qty: 1, incoming_no: 'IN-STAGED', incoming_prefix_id: grayPrefixId,
+      });
+      const unstaged = await setupLine();
+      await postReceipt(unstaged.poId, unstaged.lineId, { received_qty: 1, incoming_no: 'IN-UNSTAGED' });
+
+      const list = await listPOs({ flag: 'missing_incoming_stage', page_size: 'all' });
+      const ids = list.body.rows.map(r => r.id);
+      expect(ids).toContain(unstaged.poId);
+      expect(ids).not.toContain(staged.poId);
     });
 
     // The test that would catch a regression from derived to stored flags.
@@ -1156,7 +1207,11 @@ describe('Outbound POs API', () => {
       const dirty = await setupLine();
       await postReceipt(dirty.poId, dirty.lineId, { received_qty: 1 }); // no incoming_no
       const clean = await setupLine({ approved: true });
-      await postReceipt(clean.poId, clean.lineId, { received_qty: 1, incoming_no: 'IN-7' });
+      // Genuinely clean needs a stage too — an incoming number without one
+      // raises missing_incoming_stage and would keep this PO out of ?flag=none.
+      await postReceipt(clean.poId, clean.lineId, {
+        received_qty: 1, incoming_no: 'IN-7', incoming_prefix_id: grayPrefixId,
+      });
 
       const flagged = await listPOs({ flag: 'missing_incoming_no', page_size: 'all' });
       const flaggedIds = flagged.body.rows.map(r => r.id);
@@ -1208,7 +1263,7 @@ describe('Outbound POs API', () => {
 
     test('Not Approved is PO-scoped — it never appears on a line or a receipt', async () => {
       const { poId, lineId } = await setupLine();
-      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10, incoming_no: 'IN-1' });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: grayPrefixId });
       const detail = await getPO(poId);
       expect(detail.body.flags).toContain('not_approved');
       expect(detail.body.lines[0].flags).not.toContain('not_approved');
@@ -1240,14 +1295,24 @@ describe('Outbound POs API', () => {
       }
     });
 
+    // A receipt carrying an incoming_no but no incoming_prefix_id is the state
+    // every receipt written before the Stitching work is in, so it raises
+    // missing_incoming_stage. The cases that are only about rate therefore pin a
+    // prefix, to keep one flag's fixtures from testing another flag by accident.
     test.each([
-      [{ received_rate: 12, incoming_no: 'IN-1' }, { rate: 10 }, ['rate_mismatch']],
-      [{ received_rate: 10, incoming_no: 'IN-1' }, { rate: 10 }, []],
-      [{ received_rate: 12, incoming_no: 'IN-1' }, { rate: 0 }, []],
+      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, ['rate_mismatch']],
+      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, []],
+      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 0 }, []],
       [{ received_rate: 10, incoming_no: null }, { rate: 10 }, ['missing_incoming_no']],
       [{ received_rate: 12, incoming_no: null }, { rate: 10 }, ['rate_mismatch', 'missing_incoming_no']],
-      [{ received_rate: null, incoming_no: 'IN-1' }, { rate: 10 }, []],
+      [{ received_rate: null, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, []],
       [{ received_rate: 10, incoming_no: '   ' }, { rate: 10 }, ['missing_incoming_no']],
+      // A number with no stage behind it — the legacy shape.
+      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10 }, ['missing_incoming_stage']],
+      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10 }, ['rate_mismatch', 'missing_incoming_stage']],
+      // No number at all raises missing_incoming_no only — one omission must not
+      // light up two flags.
+      [{ received_rate: 10, incoming_no: null, incoming_prefix_id: null }, { rate: 10 }, ['missing_incoming_no']],
     ])('receipt %j against line %j yields %j', (receipt, line, expected) => {
       const actual = RECEIPT_FLAG_KEYS.filter(k => FLAGS[k].js(receipt, line));
       expect(actual.sort()).toEqual([...expected].sort());

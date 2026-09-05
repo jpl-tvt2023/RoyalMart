@@ -11,6 +11,7 @@ import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { listOutboundVendors } from '../../api/outboundVendors.api';
 import { listCompanies } from '../../api/companies.api';
 import { listUsersLite } from '../../api/users.api';
+import { listStitchingPrefixes } from '../../api/stitchingPrefixes.api';
 import {
   getOutboundPO, createOutboundPO, updateOutboundPO,
   updateOutboundPOLineShort, addOutboundPOLineReceipt, updateOutboundPOLineReceipt,
@@ -20,6 +21,7 @@ import { ROLES } from '../../utils/roles';
 import { FLAG_META } from '../../utils/outboundPOFlags';
 import { isValidDateString } from '../../utils/dateValidation';
 import { formatDateTime } from '../../utils/formatters';
+import { moneyError, defaultAfterRate } from '../../utils/stitching';
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
 
@@ -31,7 +33,10 @@ const emptyLine = () => ({
   updated_by_name: '', updated_at: null, deleted_at: null, deleted_by: null,
 });
 
-const EMPTY_RECEIPT = { received_qty: '', received_rate: '', bill_no: '', incoming_no: '', checked_by: '' };
+const EMPTY_RECEIPT = {
+  received_qty: '', received_rate: '', bill_no: '', incoming_no: '', checked_by: '',
+  process_rate: '', after_rate: '', challan_no: '', incoming_prefix_id: '',
+};
 
 // Twin of INCOMING_NO_MAX in backend/src/controllers/outboundPOs.controller.js,
 // keep the two in step.
@@ -82,6 +87,7 @@ export default function OutboundPODetail() {
   const [companies, setCompanies] = useState([]);
   const [approvers, setApprovers] = useState([]);
   const [checkers, setCheckers] = useState([]);
+  const [prefixes, setPrefixes] = useState([]);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -107,12 +113,30 @@ export default function OutboundPODetail() {
   const [deletingReceipt, setDeletingReceipt] = useState(false);
   const [restoringReceiptId, setRestoringReceiptId] = useState(null);
 
+  // Refetched whenever a receipt row starts being edited, not only on mount:
+  // an admin can add or deactivate a prefix while this tab sits open, and the
+  // server validates against the live rows. Same fix as the outbound vendor
+  // catalog stale-dropdown bug.
+  const loadPrefixes = () => listStitchingPrefixes().then(setPrefixes).catch(() => {});
+
   useEffect(() => {
     listOutboundVendors().then(setVendors).catch(() => toast.error('Failed to load vendors'));
     listCompanies().then(setCompanies).catch(() => {});
     listUsersLite({ role: ROLES.PURCHASE_HEAD }).then(setApprovers).catch(() => {});
     listUsersLite({ role: ROLES.WAREHOUSE_POC }).then(setCheckers).catch(() => {});
+    loadPrefixes();
   }, []);
+
+  // A receipt can keep a prefix that has since been deactivated, so the option
+  // list has to include the stored one or the dropdown would silently blank a
+  // real recorded value. Mirrors checkerOptionsFor below.
+  const prefixOptionsFor = (prefixId, prefixLabel) => {
+    const opts = prefixes.filter(p => p.is_active).map(p => ({ value: p.id, label: `${p.prefix} · ${p.stage}` }));
+    if (prefixId && !opts.some(o => String(o.value) === String(prefixId))) {
+      opts.push({ value: prefixId, label: `${prefixLabel || 'Unknown'} (inactive)` });
+    }
+    return opts;
+  };
 
   const load = () => {
     if (isNew) return;
@@ -348,10 +372,38 @@ export default function OutboundPODetail() {
       if (!s) return 'Incoming No cannot be blank';
       if (s.length > INCOMING_NO_MAX) return `Incoming No must be ${INCOMING_NO_MAX} characters or less`;
     }
+    // Appended after the existing rules, matching the server's ordering.
+    const procErr = moneyError(v.process_rate, 'Process Rate');
+    if (procErr) return procErr;
+    const afterErr = moneyError(v.after_rate, 'After Rate');
+    if (afterErr) return afterErr;
+    // A prefix with no number would print as a bare "GRY" and put a phantom lot
+    // on the Stitching page. The reverse is fine — a number with no stage yet is
+    // the legacy shape, and raises the Missing Incoming Stage flag instead.
+    if (v.incoming_prefix_id && !String(v.incoming_no ?? '').trim()) {
+      return 'Incoming No is required when a prefix is selected';
+    }
     return null;
   };
 
-  const startAddReceipt = (lineKey) => { setAddingReceiptFor(lineKey); setNewReceipt(EMPTY_RECEIPT); };
+  // After Rate tracks Received Rate + Process Rate until the user types over it,
+  // exactly as the server stores it. Editing either input re-derives it unless
+  // the value currently shown is already an override.
+  const withDerivedAfterRate = (draft, field, value) => {
+    const next = { ...draft, [field]: value };
+    if (field === 'after_rate') return next;
+    if (field !== 'received_rate' && field !== 'process_rate') return next;
+    const wasDefault = draft.after_rate === '' || draft.after_rate == null
+      || Number(draft.after_rate) === Number(draft.received_rate || 0) + Number(draft.process_rate || 0);
+    if (wasDefault) next.after_rate = defaultAfterRate(next.received_rate, next.process_rate);
+    return next;
+  };
+
+  const startAddReceipt = (lineKey) => {
+    loadPrefixes();
+    setAddingReceiptFor(lineKey);
+    setNewReceipt(EMPTY_RECEIPT);
+  };
   const saveNewReceipt = async (l) => {
     const err = receiptFieldError(newReceipt);
     if (err) { toast.error(err); return; }
@@ -363,6 +415,10 @@ export default function OutboundPODetail() {
         bill_no: newReceipt.bill_no || null,
         checked_by: Number(newReceipt.checked_by),
         incoming_no: String(newReceipt.incoming_no ?? '').trim() || null,
+        process_rate: newReceipt.process_rate === '' ? null : Number(newReceipt.process_rate),
+        after_rate: newReceipt.after_rate === '' ? null : Number(newReceipt.after_rate),
+        challan_no: String(newReceipt.challan_no ?? '').trim() || null,
+        incoming_prefix_id: newReceipt.incoming_prefix_id || null,
       });
       toast.success('Receipt added');
       setAddingReceiptFor(null);
@@ -377,7 +433,17 @@ export default function OutboundPODetail() {
     if (draft && field in draft) return draft[field];
     return r[field] ?? '';
   };
-  const setReceiptField = (r, field, value) => setReceiptDrafts(d => ({ ...d, [r.id]: { ...d[r.id], [field]: value } }));
+  const setReceiptField = (r, field, value) => setReceiptDrafts(d => {
+    // Seed the draft from the saved row so the After Rate derivation sees the
+    // fields the user has NOT touched, not just the one being edited.
+    const current = {
+      received_rate: receiptValue(r, 'received_rate'),
+      process_rate: receiptValue(r, 'process_rate'),
+      after_rate: receiptValue(r, 'after_rate'),
+      ...d[r.id],
+    };
+    return { ...d, [r.id]: withDerivedAfterRate(current, field, value) };
+  });
   const saveReceipt = async (l, r) => {
     const draft = {
       received_qty: receiptValue(r, 'received_qty'),
@@ -385,6 +451,10 @@ export default function OutboundPODetail() {
       checked_by: receiptValue(r, 'checked_by'),
       incoming_no: receiptValue(r, 'incoming_no'),
       bill_no: receiptValue(r, 'bill_no'),
+      process_rate: receiptValue(r, 'process_rate'),
+      after_rate: receiptValue(r, 'after_rate'),
+      challan_no: receiptValue(r, 'challan_no'),
+      incoming_prefix_id: receiptValue(r, 'incoming_prefix_id'),
     };
     // A receipt that already has a bill number must keep one — but one that
     // never had it can still be edited without inventing it.
@@ -399,6 +469,10 @@ export default function OutboundPODetail() {
         received_rate: Number(draft.received_rate),
         checked_by: Number(draft.checked_by),
         incoming_no: String(draft.incoming_no ?? '').trim() || null,
+        process_rate: draft.process_rate === '' || draft.process_rate == null ? null : Number(draft.process_rate),
+        after_rate: draft.after_rate === '' || draft.after_rate == null ? null : Number(draft.after_rate),
+        challan_no: String(draft.challan_no ?? '').trim() || null,
+        incoming_prefix_id: draft.incoming_prefix_id || null,
       };
       // Omit bill_no entirely for a receipt that never had one, rather than
       // sending an explicit null. The server validates only the fields actually
@@ -572,8 +646,11 @@ export default function OutboundPODetail() {
                             mandatory server-side but carried no marker. */}
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Received Qty <span className="text-red-500">*</span></th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Received Rate <span className="text-red-500">*</span></th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">Process Rate</th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-24">After Rate</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Bill No <span className="text-red-500">*</span></th>
-                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Incoming No</th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Challan No</th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-600 w-44">Incoming No</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-36">Checked By <span className="text-red-500">*</span></th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-28">Updated By</th>
                         <th className="px-3 py-2 text-left font-semibold text-gray-600 w-36">Updated Timestamp</th>
@@ -717,6 +794,26 @@ export default function OutboundPODetail() {
                                     </td>
                                     <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
                                       <input
+                                        type="number" min={0} step="0.01"
+                                        value={receiptValue(receipt, 'process_rate')}
+                                        onChange={e => setReceiptField(receipt, 'process_rate', e.target.value)}
+                                        disabled={readOnly || !!receipt.deleted_at}
+                                        title="Cost of processing this material up to the stage it was received at"
+                                        className={cellCls}
+                                      />
+                                    </td>
+                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
+                                      <input
+                                        type="number" min={0} step="0.01"
+                                        value={receiptValue(receipt, 'after_rate')}
+                                        onChange={e => setReceiptField(receipt, 'after_rate', e.target.value)}
+                                        disabled={readOnly || !!receipt.deleted_at}
+                                        title="Defaults to Received Rate + Process Rate — type over it to pin a different value"
+                                        className={cellCls}
+                                      />
+                                    </td>
+                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
+                                      <input
                                         type="text"
                                         value={receiptValue(receipt, 'bill_no')}
                                         onChange={e => setReceiptField(receipt, 'bill_no', e.target.value)}
@@ -727,12 +824,39 @@ export default function OutboundPODetail() {
                                     <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
                                       <input
                                         type="text" maxLength={INCOMING_NO_MAX}
-                                        value={receiptValue(receipt, 'incoming_no')}
-                                        onChange={e => setReceiptField(receipt, 'incoming_no', e.target.value)}
+                                        value={receiptValue(receipt, 'challan_no')}
+                                        onChange={e => setReceiptField(receipt, 'challan_no', e.target.value)}
                                         disabled={readOnly || !!receipt.deleted_at}
-                                        title={(receipt.flags || []).includes('missing_incoming_no') ? FLAG_META.missing_incoming_no.hint : undefined}
-                                        className={`${cellCls} ${(receipt.flags || []).includes('missing_incoming_no') ? 'ring-1 ring-amber-400 border-amber-400' : ''}`}
+                                        className={cellCls}
                                       />
+                                    </td>
+                                    {/* Prefix and number are one field to the user: the prefix
+                                        records which stage the goods arrived at, and is what puts
+                                        the lot on a Stitching tab. */}
+                                    <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
+                                      <div className="flex gap-1">
+                                        <select
+                                          value={receiptValue(receipt, 'incoming_prefix_id') || ''}
+                                          onChange={e => setReceiptField(receipt, 'incoming_prefix_id', e.target.value)}
+                                          onFocus={loadPrefixes}
+                                          disabled={readOnly || !!receipt.deleted_at}
+                                          title={(receipt.flags || []).includes('missing_incoming_stage') ? FLAG_META.missing_incoming_stage.hint : undefined}
+                                          className={`${cellCls} w-20 shrink-0 ${(receipt.flags || []).includes('missing_incoming_stage') ? 'ring-1 ring-amber-400 border-amber-400' : ''}`}
+                                        >
+                                          <option value="">—</option>
+                                          {prefixOptionsFor(receipt.incoming_prefix_id, receipt.incoming_prefix).map(o => (
+                                            <option key={o.value} value={o.value}>{o.label}</option>
+                                          ))}
+                                        </select>
+                                        <input
+                                          type="text" maxLength={INCOMING_NO_MAX}
+                                          value={receiptValue(receipt, 'incoming_no')}
+                                          onChange={e => setReceiptField(receipt, 'incoming_no', e.target.value)}
+                                          disabled={readOnly || !!receipt.deleted_at}
+                                          title={(receipt.flags || []).includes('missing_incoming_no') ? FLAG_META.missing_incoming_no.hint : undefined}
+                                          className={`${cellCls} ${(receipt.flags || []).includes('missing_incoming_no') ? 'ring-1 ring-amber-400 border-amber-400' : ''}`}
+                                        />
+                                      </div>
                                     </td>
                                     <td className={`px-3 py-2 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
                                       <select
@@ -778,13 +902,28 @@ export default function OutboundPODetail() {
                                         <input type="number" min={0.01} step="0.01" placeholder="Qty" value={newReceipt.received_qty} onChange={e => setNewReceipt(r => ({ ...r, received_qty: e.target.value }))} className={cellCls} />
                                       </td>
                                       <td className="px-3 py-2">
-                                        <input type="number" min={0} step="0.01" placeholder="Rate" value={newReceipt.received_rate} onChange={e => setNewReceipt(r => ({ ...r, received_rate: e.target.value }))} className={cellCls} />
+                                        <input type="number" min={0} step="0.01" placeholder="Rate" value={newReceipt.received_rate} onChange={e => setNewReceipt(r => withDerivedAfterRate(r, 'received_rate', e.target.value))} className={cellCls} />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <input type="number" min={0} step="0.01" placeholder="Process" value={newReceipt.process_rate} onChange={e => setNewReceipt(r => withDerivedAfterRate(r, 'process_rate', e.target.value))} className={cellCls} />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <input type="number" min={0} step="0.01" placeholder="After" title="Defaults to Rate + Process Rate" value={newReceipt.after_rate} onChange={e => setNewReceipt(r => ({ ...r, after_rate: e.target.value }))} className={cellCls} />
                                       </td>
                                       <td className="px-3 py-2">
                                         <input type="text" placeholder="Bill No" value={newReceipt.bill_no} onChange={e => setNewReceipt(r => ({ ...r, bill_no: e.target.value }))} className={cellCls} />
                                       </td>
                                       <td className="px-3 py-2">
-                                        <input type="text" maxLength={INCOMING_NO_MAX} placeholder="e.g. IN-4521" value={newReceipt.incoming_no} onChange={e => setNewReceipt(r => ({ ...r, incoming_no: e.target.value }))} className={cellCls} />
+                                        <input type="text" maxLength={INCOMING_NO_MAX} placeholder="Challan No" value={newReceipt.challan_no} onChange={e => setNewReceipt(r => ({ ...r, challan_no: e.target.value }))} className={cellCls} />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <div className="flex gap-1">
+                                          <select value={newReceipt.incoming_prefix_id} onChange={e => setNewReceipt(r => ({ ...r, incoming_prefix_id: e.target.value }))} className={`${cellCls} w-20 shrink-0`}>
+                                            <option value="">—</option>
+                                            {prefixOptionsFor().map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                          </select>
+                                          <input type="text" maxLength={INCOMING_NO_MAX} placeholder="e.g. 0077" value={newReceipt.incoming_no} onChange={e => setNewReceipt(r => ({ ...r, incoming_no: e.target.value }))} className={cellCls} />
+                                        </div>
                                       </td>
                                       <td className="px-3 py-2">
                                         <select value={newReceipt.checked_by} onChange={e => setNewReceipt(r => ({ ...r, checked_by: e.target.value }))} className={cellCls}>
@@ -805,14 +944,14 @@ export default function OutboundPODetail() {
                                       </td>
                                     </>
                                   ) : (
-                                    <td colSpan={8} className="px-3 py-2">
+                                    <td colSpan={12} className="px-3 py-2">
                                       <button type="button" onClick={() => startAddReceipt(l._key)} className="inline-flex items-center gap-1 text-xs text-[#c1121f] hover:underline">
                                         <Plus size={12} />Add receipt
                                       </button>
                                     </td>
                                   )
                                 ) : (
-                                  <td colSpan={8} className="px-3 py-2 text-xs text-gray-400">
+                                  <td colSpan={12} className="px-3 py-2 text-xs text-gray-400">
                                     {l.deleted_at ? '—'
                                       : lineClosed ? 'Line is Closed — increase Qty to receive more'
                                       : l.id ? 'No receipts yet' : 'Save the PO to add receipts'}

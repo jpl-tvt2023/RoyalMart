@@ -44,6 +44,7 @@ app.use('/api/couriers',     require('./src/routes/couriers.routes'));
 app.use('/api/configurations', require('./src/routes/configurations.routes'));
 app.use('/api/outbound-vendors', require('./src/routes/outboundVendors.routes'));
 app.use('/api/outbound-pos', require('./src/routes/outboundPOs.routes'));
+app.use('/api/stitching', require('./src/routes/stitching.routes'));
 app.use('/api/packaging-raw-materials', require('./src/routes/packagingRawMaterials.routes'));
 app.use('/api/audit-logs',   require('./src/routes/audit.routes'));
 

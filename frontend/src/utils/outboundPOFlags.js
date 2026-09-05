@@ -16,6 +16,12 @@ export const FLAG_META = {
     color: 'yellow',
     hint: 'This receipt was saved without a warehouse incoming number',
   },
+  missing_incoming_stage: {
+    label: 'Missing Incoming Stage',
+    short: 'No Stage',
+    color: 'yellow',
+    hint: 'This receipt has an incoming number but no stage prefix, so the lot does not appear on the Stitching page',
+  },
   // PO-level rather than receipt-level, so it never appears on a line or
   // receipt badge — only on the PO row.
   not_approved: {
