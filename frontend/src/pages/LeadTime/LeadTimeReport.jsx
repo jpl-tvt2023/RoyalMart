@@ -22,14 +22,20 @@ const parseISO = (s) => { const [y, m, d] = s.split('-').map(Number); return new
 const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n); return isoLocal(d); };
 
 // Which date column the From/To range applies to. Switching the basis changes
-// which POs qualify — e.g. on GRN Date the RTV rows drop out, since they carry
-// no GRN date. The count of what got hidden is shown under the filter card.
+// which POs qualify: a PO with no date in the chosen column can't be compared
+// against the range, so it drops out. On Dispatch Date that hides everything not
+// yet dispatched; on GRN Date it hides everything not yet received. The count of
+// what got hidden is shown under the filter card.
 const DATE_BASIS_OPTIONS = [
   { value: 'po_date',       label: 'PO Date' },
   { value: 'dispatch_date', label: 'Dispatch Date' },
   { value: 'grn_date',      label: 'GRN Date' },
 ];
 const basisLabel = (v) => DATE_BASIS_OPTIONS.find(o => o.value === v)?.label || 'PO Date';
+
+// The report lists every PO regardless of GRN status; this narrows it. Values
+// match the grn_flag the API computes ('All' is sent as no filter at all).
+const GRN_FLAG_OPTIONS = ['All', 'Yes', 'RTV', 'No'];
 
 // Ready-made ranges. Day 0 of the current month is the last day of the previous
 // month, which handles month lengths and leap years without any arithmetic.
@@ -46,7 +52,7 @@ const quickRanges = () => {
 // Opens on the last 30 days of POs — bounded, and the window most people want.
 const defaultFilters = () => {
   const [last30] = quickRanges();
-  return { date_basis: 'po_date', date_from: last30.from, date_to: last30.to };
+  return { date_basis: 'po_date', date_from: last30.from, date_to: last30.to, grn_flag: 'All' };
 };
 
 const ALL_TAB = { key: 'All', label: 'All' };
@@ -62,7 +68,7 @@ const buildColumns = (vendorTab) => [
   { key: 'po_id',            label: 'S. No' },
   { key: 'total_qty',        label: 'Quantity' },
   { key: 'dispatch_date',    label: 'Dispatch Date' },
-  { key: 'grn_flag',         label: 'GRN' },
+  { key: 'grn_flag',         label: 'GRN Received?' },
   { key: 'grn_date',         label: 'GRN Date' },
   { key: 'grn_qty',          label: 'QTY' },
   { key: 'appointment_date', label: 'Appointment' },
@@ -75,24 +81,39 @@ const fmtInt  = (v) => (v == null ? '—' : Number(v).toLocaleString('en-IN'));
 const fmtLead = (v) => (v == null ? '—' : `${Number(v).toFixed(1)}d`);
 
 // Statistics over the whole filtered set, not just the visible page.
+//
+// A lead time can only be measured once both of its dates exist, so each average
+// covers a subset of the POs listed — a PO awaiting GRN has no GRN lead to
+// average. The `n POs` subtext spells out that sample size, and the caption
+// below the grid explains why it is smaller than the POs tile.
+const sampleNote = (n) => (n == null ? '' : ` · ${fmtInt(n)} PO${n === 1 ? '' : 's'}`);
+
 function SummaryTiles({ summary }) {
   const tiles = [
     { label: 'POs',                  value: fmtInt(summary?.po_count) },
     { label: 'PO Qty',               value: fmtInt(summary?.total_qty) },
     { label: 'GRN Qty',              value: fmtInt(summary?.total_grn_qty) },
-    { label: 'Avg Dispatch Lead',    value: fmtLead(summary?.avg_dispatch_lead),    sub: `median ${fmtLead(summary?.median_dispatch_lead)}` },
-    { label: 'Avg GRN Lead',         value: fmtLead(summary?.avg_grn_lead),         sub: `median ${fmtLead(summary?.median_grn_lead)}` },
-    { label: 'Avg Appointment Lead', value: fmtLead(summary?.avg_appointment_lead), sub: `median ${fmtLead(summary?.median_appointment_lead)}` },
+    { label: 'Avg Dispatch Lead',    value: fmtLead(summary?.avg_dispatch_lead),    sub: `median ${fmtLead(summary?.median_dispatch_lead)}${sampleNote(summary?.dispatch_lead_n)}` },
+    { label: 'Avg GRN Lead',         value: fmtLead(summary?.avg_grn_lead),         sub: `median ${fmtLead(summary?.median_grn_lead)}${sampleNote(summary?.grn_lead_n)}` },
+    { label: 'Avg Appointment Lead', value: fmtLead(summary?.avg_appointment_lead), sub: `median ${fmtLead(summary?.median_appointment_lead)}${sampleNote(summary?.appointment_lead_n)}` },
   ];
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
-      {tiles.map(t => (
-        <div key={t.label} className="bg-white border border-gray-200 rounded-xl px-4 py-3">
-          <div className="text-xs font-medium text-gray-500 truncate">{t.label}</div>
-          <div className="text-xl font-bold text-[#003049] mt-0.5">{t.value}</div>
-          <div className="text-xs text-gray-400 mt-0.5">{t.sub || ' '}</div>
-        </div>
-      ))}
+    <div className="mb-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        {tiles.map(t => (
+          <div key={t.label} className="bg-white border border-gray-200 rounded-xl px-4 py-3">
+            <div className="text-xs font-medium text-gray-500 truncate">{t.label}</div>
+            <div className="text-xl font-bold text-[#003049] mt-0.5">{t.value}</div>
+            <div className="text-xs text-gray-400 mt-0.5">{t.sub || ' '}</div>
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 text-xs text-gray-500">
+        This report lists every PO. A lead time needs both of its dates, so the three
+        averages cover only the POs that have them — the PO count beside each median is
+        that sample. POs still awaiting dispatch or GRN count towards{' '}
+        <span className="font-medium text-gray-600">POs</span> but not towards the averages.
+      </p>
     </div>
   );
 }
@@ -126,6 +147,7 @@ export default function LeadTimeReport() {
     if (f.date_basis) params.date_basis = f.date_basis;
     if (f.date_from) params.date_from = f.date_from;
     if (f.date_to) params.date_to = f.date_to;
+    if (f.grn_flag && f.grn_flag !== 'All') params.grn_flag = f.grn_flag;
     return params;
   }, [filters, vendorTab, sort, page, pageSize]);
 
@@ -142,14 +164,15 @@ export default function LeadTimeReport() {
       .finally(() => setLoading(false));
   }, [buildParams]);
 
-  // Per-tab counts share the date filters (but not the vendor) so each badge
-  // matches what that tab will actually show.
+  // Per-tab counts share every filter except the vendor (which is what they group
+  // by) so each badge matches what that tab will actually show.
   const loadCounts = useCallback((overrideFilters) => {
     const f = overrideFilters ?? filters;
     const params = {};
     if (f.date_basis) params.date_basis = f.date_basis;
     if (f.date_from) params.date_from = f.date_from;
     if (f.date_to) params.date_to = f.date_to;
+    if (f.grn_flag && f.grn_flag !== 'All') params.grn_flag = f.grn_flag;
     getLeadTimeCountsByVendor(params)
       .then(res => setVendorCounts(res.counts || {}))
       .catch(() => {});
@@ -253,7 +276,10 @@ export default function LeadTimeReport() {
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Lead Time');
       const range = `${filters.date_from || 'start'}_${filters.date_to || 'today'}`;
-      XLSX.writeFile(wb, `lead-time-${vendorTab.toLowerCase()}-${range}.xlsx`);
+      // Name the GRN slice too, so exporting Yes then No doesn't produce two
+      // files with the same name.
+      const flag = filters.grn_flag && filters.grn_flag !== 'All' ? `-grn-${filters.grn_flag.toLowerCase()}` : '';
+      XLSX.writeFile(wb, `lead-time-${vendorTab.toLowerCase()}${flag}-${range}.xlsx`);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Export failed');
     } finally { setExporting(false); }
@@ -305,7 +331,7 @@ export default function LeadTimeReport() {
       </div>
 
       <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Date Basis</label>
             <select
@@ -314,6 +340,18 @@ export default function LeadTimeReport() {
               className={inputCls}
             >
               {DATE_BASIS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">GRN Received?</label>
+            {/* Filters persisted before this control existed have no grn_flag, so
+                fall back to 'All' rather than letting the select go uncontrolled. */}
+            <select
+              value={filters.grn_flag || 'All'}
+              onChange={e => applyPatch({ grn_flag: e.target.value })}
+              className={inputCls}
+            >
+              {GRN_FLAG_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
             </select>
           </div>
           <div>
