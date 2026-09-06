@@ -94,7 +94,10 @@ WITH lots AS (
     -- an origin lot is not one.
     NULL AS challan_no,
     sp.id AS incoming_prefix_id, sp.prefix AS incoming_prefix, r.incoming_no AS incoming_no,
-    r.received_qty AS received_qty,
+    -- METRES, not the receipt's own quantity. Fabric is bought in taga and
+    -- worked in metres, and every stage here counts the metres -- so the origin
+    -- lot's quantity is the conversion the user entered on the receipt.
+    r.qty_in_metres AS received_qty,
     r.received_rate AS rate, r.process_rate AS process_rate,
     COALESCE(r.after_rate, r.received_rate + COALESCE(r.process_rate, 0)) AS after_rate,
     r.checked_by AS checked_by, kb.name AS checked_by_name,
@@ -106,18 +109,28 @@ WITH lots AS (
                WHERE c.parent_receipt_id = r.id AND c.deleted_at IS NULL), 0) AS forwarded,
     NULL AS sent_qty,
     l.category AS category, l.item_name AS item_name, l.variant AS variant,
-    l.unit_metric AS unit_metric,
+    -- The stage's unit, not the line's. The line says taga, which is what was
+    -- bought -- every quantity on this page is metres.
+    'm' AS unit_metric,
     p.id AS po_id, v.name AS vendor_name,
     r.created_at AS created_at, r.updated_at AS updated_at, ub.name AS updated_by_name
   FROM outbound_po_line_receipts r
   JOIN stitching_prefixes sp ON sp.id = r.incoming_prefix_id
   JOIN outbound_po_lines l ON l.id = r.line_id AND l.deleted_at IS NULL
+  -- ONLY FABRIC. Packaging, barcodes and corrugated boxes are received and done
+  -- with -- they travel no stage chain, and a Gray lot of corrugated boxes was
+  -- what made that obvious. The flag lives on the product master and is reached
+  -- through the triple a line carries, since a line holds no product id.
+  JOIN outbound_products op ON op.category = l.category AND op.item_name = l.item_name
+    AND op.unit_metric = l.unit_metric AND op.goes_to_stitching = 1
   JOIN outbound_pos p ON p.id = l.po_id AND p.status <> 'Deleted'
   JOIN outbound_vendors v ON v.id = p.vendor_id
   LEFT JOIN users kb ON kb.id = r.checked_by
   LEFT JOIN users ub ON ub.id = r.updated_by
   LEFT JOIN users clb ON clb.id = r.closed_by
-  WHERE r.deleted_at IS NULL
+  -- A fabric receipt with no metres recorded has no quantity to track, so it
+  -- waits off the page until someone fills it in rather than appearing as zero.
+  WHERE r.deleted_at IS NULL AND r.qty_in_metres IS NOT NULL
 
   UNION ALL
 
@@ -144,7 +157,7 @@ WITH lots AS (
                WHERE c.parent_entry_id = e.id AND c.deleted_at IS NULL), 0) AS forwarded,
     e.sent_qty AS sent_qty,
     l.category AS category, l.item_name AS item_name, l.variant AS variant,
-    l.unit_metric AS unit_metric,
+    'm' AS unit_metric,
     p.id AS po_id, v.name AS vendor_name,
     e.created_at AS created_at, e.updated_at AS updated_at, ub.name AS updated_by_name
   FROM stitching_entries e

@@ -61,9 +61,18 @@ const FLAGS = {
     // they are fixed by different people. Receipts with no incoming number at
     // all already raise missing_incoming_no and are excluded here so a single
     // omission does not light up two flags.
-    sql: "r.incoming_no IS NOT NULL AND TRIM(r.incoming_no) <> '' AND r.incoming_prefix_id IS NULL",
-    js: (r) => r.incoming_no != null && String(r.incoming_no).trim() !== ''
-      && r.incoming_prefix_id == null,
+    //
+    // FABRIC ONLY. Only articles flagged goes_to_stitching travel the stage
+    // chain, so a stage is meaningless on a receipt of corrugated boxes -- and
+    // without this every packaging receipt ever recorded would raise it. The
+    // flag resolves the article through the (category, item_name, unit_metric)
+    // triple the line carries, since a line holds no product id.
+    sql: `r.incoming_no IS NOT NULL AND TRIM(r.incoming_no) <> '' AND r.incoming_prefix_id IS NULL
+          AND EXISTS (SELECT 1 FROM outbound_products op
+                       WHERE op.category = l.category AND op.item_name = l.item_name
+                         AND op.unit_metric = l.unit_metric AND op.goes_to_stitching = 1)`,
+    js: (r, l) => r.incoming_no != null && String(r.incoming_no).trim() !== ''
+      && r.incoming_prefix_id == null && Number(l?.goes_to_stitching) === 1,
   },
   not_approved: {
     label: 'Not Approved',

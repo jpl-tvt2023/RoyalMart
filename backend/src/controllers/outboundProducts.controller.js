@@ -1,7 +1,7 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
 
-const OUTBOUND_PRODUCT_FIELDS = ['category', 'item_name', 'unit_metric', 'is_active'];
+const OUTBOUND_PRODUCT_FIELDS = ['category', 'item_name', 'unit_metric', 'is_active', 'goes_to_stitching'];
 
 function normName(v) {
   return v == null ? '' : String(v).trim();
@@ -28,7 +28,7 @@ async function list(req, res, next) {
   try {
     const [{ rows }, counts] = await Promise.all([
       db.execute(
-        `SELECT p.id, p.category, p.item_name, p.unit_metric, p.is_active,
+        `SELECT p.id, p.category, p.item_name, p.unit_metric, p.is_active, p.goes_to_stitching,
                 p.created_at, p.updated_at, u.name AS updated_by_name
          FROM outbound_products p
          LEFT JOIN users u ON u.id = p.updated_by
@@ -53,10 +53,12 @@ async function create(req, res, next) {
     if (!unitMetric) return res.status(400).json({ message: 'unit_metric is required' });
 
     const { rows } = await db.execute({
-      sql: `INSERT INTO outbound_products (category, item_name, unit_metric, updated_by, updated_at)
-            VALUES (?, ?, ?, ?, datetime('now'))
-            RETURNING id, category, item_name, unit_metric, is_active, created_at, updated_at`,
-      args: [category, itemName, unitMetric, req.user.id],
+      sql: `INSERT INTO outbound_products (category, item_name, unit_metric, goes_to_stitching,
+              updated_by, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            RETURNING id, category, item_name, unit_metric, is_active, goes_to_stitching,
+                      created_at, updated_at`,
+      args: [category, itemName, unitMetric, req.body?.goes_to_stitching ? 1 : 0, req.user.id],
     });
     await logAction({
       userId: req.user.id,
@@ -79,7 +81,8 @@ async function update(req, res, next) {
     const { id } = req.params;
     const has = (k) => Object.prototype.hasOwnProperty.call(req.body || {}, k);
     const { rows: existing } = await db.execute({
-      sql: 'SELECT id, category, item_name, unit_metric, is_active FROM outbound_products WHERE id = ?',
+      sql: `SELECT id, category, item_name, unit_metric, is_active, goes_to_stitching
+            FROM outbound_products WHERE id = ?`,
       args: [id],
     });
     if (!existing.length) return res.status(404).json({ message: 'Outbound product not found' });
@@ -106,6 +109,12 @@ async function update(req, res, next) {
     let nextActive = current.is_active;
     if (has('is_active')) nextActive = req.body.is_active ? 1 : 0;
 
+    // Whether this article travels the Stitching stages. Only fabric does, and
+    // ticking it is what makes a receipt of it demand a stage and a metres
+    // figure -- so it is a master decision, not two names baked into code.
+    let nextStitching = current.goes_to_stitching;
+    if (has('goes_to_stitching')) nextStitching = req.body.goes_to_stitching ? 1 : 0;
+
     // Renaming the identity pair is cascaded onto every packaging product
     // onboarded under it (and, transitively, any vendor mapping onto those),
     // since both packaging_raw_materials and outbound_vendor_articles match
@@ -117,7 +126,10 @@ async function update(req, res, next) {
 
     const changes = diffFields(
       current,
-      { category: nextCategory, item_name: nextItemName, unit_metric: nextUnitMetric, is_active: nextActive },
+      {
+        category: nextCategory, item_name: nextItemName, unit_metric: nextUnitMetric,
+        is_active: nextActive, goes_to_stitching: nextStitching,
+      },
       OUTBOUND_PRODUCT_FIELDS,
     );
 
@@ -132,10 +144,11 @@ async function update(req, res, next) {
       const { rows } = await tx.execute({
         sql: `UPDATE outbound_products
               SET category = ?, item_name = ?, unit_metric = ?, is_active = ?,
-                  updated_by = ?, updated_at = datetime('now')
+                  goes_to_stitching = ?, updated_by = ?, updated_at = datetime('now')
               WHERE id = ?
-              RETURNING id, category, item_name, unit_metric, is_active, created_at, updated_at`,
-        args: [nextCategory, nextItemName, nextUnitMetric, nextActive, req.user.id, id],
+              RETURNING id, category, item_name, unit_metric, is_active, goes_to_stitching,
+                        created_at, updated_at`,
+        args: [nextCategory, nextItemName, nextUnitMetric, nextActive, nextStitching, req.user.id, id],
       });
       updated = rows[0];
 

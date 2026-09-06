@@ -44,31 +44,49 @@ const api = {
 async function setupLine(qty = 1000) {
   const vendor = await A(request(app).post('/api/outbound-vendors')).send({
     name: `Stitch Vend ${uid()}`,
-    articles: [{ category: 'Raw Material', item_name: 'Caps' }],
+    // Fabric, because only fabric travels the stage chain now -- the flag lives
+    // on the product master and migration 076 sets it for these two names.
+    articles: [{ category: 'Raw Material', item_name: 'Handkerchief - Bundle Fabric' }],
   });
   const po = await A(request(app).post('/api/outbound-pos')).send({
     vendor_id: vendor.body.id,
     po_date: '2026-09-05',
     approved_by: warehousePocId,
     approval_date: '2026-09-05',
-    lines: [{ line_no: 1, category: 'Raw Material', item_name: 'Caps', qty, rate: 50 }],
+    lines: [{ line_no: 1, category: 'Raw Material', item_name: 'Handkerchief - Bundle Fabric', qty, rate: 50 }],
   });
   const detail = await A(request(app).get(`/api/outbound-pos/${po.body.id}`));
   return { poId: po.body.id, lineId: detail.body.lines[0].id, vendorName: vendor.body.name };
 }
 
+// Every line in this suite is fabric, and a fabric receipt must name the stage
+// it arrived at, its gate number and its metres. Tests that are ABOUT one of
+// those being absent override it explicitly.
 function receiptBody(overrides = {}) {
   return {
     received_qty: 100,
     received_rate: 50,
     bill_no: `B-${uid()}`,
     checked_by: warehousePocId,
+    qty_in_metres: 100,
+    incoming_no: `IN-${uid()}`,
+    incoming_stage: 'Gray',
     ...overrides,
   };
 }
 
 const postReceipt = (poId, lineId, body) =>
   A(request(app).post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`)).send(receiptBody(body));
+
+// Pin a SPECIFIC prefix onto a receipt, which the API deliberately cannot do:
+// a receipt names a stage and the server picks the code. The prefix-master
+// tests below are about rename/re-stage/deactivate rules, not about how a
+// receipt chooses, so they reach for the column directly rather than bending
+// the endpoint into offering a choice nobody should have.
+const attachPrefix = (receiptId, prefixId) => db.execute({
+  sql: 'UPDATE outbound_po_line_receipts SET incoming_prefix_id = ? WHERE id = ?',
+  args: [prefixId, receiptId],
+});
 
 const patchReceipt = (poId, lineId, receiptId, body) =>
   A(request(app).patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${receiptId}`)).send(body);
@@ -79,13 +97,18 @@ const getReceipt = async (poId, receiptId) => {
 };
 
 // A Gray lot of `qty` metres at rate 50 + process 5, so its after rate is 55.
+//
+// received_qty is the taga delivered and qty_in_metres is what the Stitching
+// page counts, so the two are deliberately different numbers -- a test that
+// asserts on a lot's quantity is asserting on the metres.
 async function grayLot({ qty = 100, process_rate = 5 } = {}) {
   const { poId, lineId, vendorName } = await setupLine(Math.max(qty, 1000));
   const receipt = await postReceipt(poId, lineId, {
-    received_qty: qty,
+    received_qty: 7,
+    qty_in_metres: qty,
     process_rate,
     incoming_no: `G-${uid()}`,
-    incoming_prefix_id: prefixes.Gray.id,
+    incoming_stage: 'Gray',
   });
   return { poId, lineId, vendorName, receiptId: receipt.body.id };
 }
@@ -156,7 +179,8 @@ describe('Stitching prefixes master', () => {
   test('renaming an in-use prefix is allowed — it is display-only', async () => {
     const created = await api.createPrefix({ prefix: `RN${uid()}`, stage: 'Gray' });
     const { poId, lineId } = await setupLine();
-    await postReceipt(poId, lineId, { incoming_no: 'R-1', incoming_prefix_id: created.body.id });
+    const r1 = await postReceipt(poId, lineId, { incoming_no: 'R-1', incoming_stage: 'Gray' });
+    await attachPrefix(r1.body.id, created.body.id);
 
     const renamed = `RN2${uid()}`;
     const res = await api.patchPrefix(created.body.id, { prefix: renamed });
@@ -167,7 +191,8 @@ describe('Stitching prefixes master', () => {
   test('re-staging an in-use prefix is refused', async () => {
     const created = await api.createPrefix({ prefix: `RS${uid()}`, stage: 'Gray' });
     const { poId, lineId } = await setupLine();
-    await postReceipt(poId, lineId, { incoming_no: 'R-2', incoming_prefix_id: created.body.id });
+    const r2 = await postReceipt(poId, lineId, { incoming_no: 'R-2', incoming_stage: 'Gray' });
+    await attachPrefix(r2.body.id, created.body.id);
 
     const res = await api.patchPrefix(created.body.id, { stage: 'Packed' });
     expect(res.status).toBe(400);
@@ -184,7 +209,8 @@ describe('Stitching prefixes master', () => {
   test('deactivating an in-use prefix is allowed, but it cannot be used again', async () => {
     const created = await api.createPrefix({ prefix: `DA${uid()}`, stage: 'Gray' });
     const { poId, lineId } = await setupLine();
-    const receipt = await postReceipt(poId, lineId, { incoming_no: 'D-1', incoming_prefix_id: created.body.id });
+    const receipt = await postReceipt(poId, lineId, { incoming_no: 'D-1', incoming_stage: 'Gray' });
+    await attachPrefix(receipt.body.id, created.body.id);
 
     const del = await api.deletePrefix(created.body.id);
     expect(del.status).toBe(200);
@@ -194,15 +220,20 @@ describe('Stitching prefixes master', () => {
     const still = await getReceipt(poId, receipt.body.id);
     expect(still.incoming_stage).toBe('Gray');
 
-    const reuse = await postReceipt(poId, lineId, { incoming_no: 'D-2', incoming_prefix_id: created.body.id });
-    expect(reuse.status).toBe(400);
-    expect(reuse.body.message).toMatch(/is inactive/);
+    // A receipt names a stage, and a stage only ever resolves to an ACTIVE
+    // prefix -- so a deactivated code simply stops being reachable rather than
+    // being refused by name.
+    const reuse = await postReceipt(poId, lineId, { incoming_no: 'D-2', incoming_stage: 'Gray' });
+    expect(reuse.status).toBe(201);
+    const reused = await getReceipt(poId, reuse.body.id);
+    expect(reused.incoming_prefix_id).not.toBe(created.body.id);
   });
 
   test('in_use counts live lots only', async () => {
     const created = await api.createPrefix({ prefix: `IU${uid()}`, stage: 'Gray' });
     const { poId, lineId } = await setupLine();
-    const receipt = await postReceipt(poId, lineId, { incoming_no: 'U-1', incoming_prefix_id: created.body.id });
+    const receipt = await postReceipt(poId, lineId, { incoming_no: 'U-1', incoming_stage: 'Gray' });
+    await attachPrefix(receipt.body.id, created.body.id);
 
     let list = await api.listPrefixes();
     expect(list.body.find(p => p.id === created.body.id).in_use).toBe(1);
@@ -271,24 +302,29 @@ describe('Receipt rate fields', () => {
     expect((await getReceipt(poId, created.body.id)).after_rate).toBe(100);
   });
 
-  test('a prefix with no incoming number is refused', async () => {
+  test('a stage with no incoming number is refused', async () => {
     const { poId, lineId } = await setupLine();
-    const res = await postReceipt(poId, lineId, { incoming_prefix_id: prefixes.Gray.id });
+    const res = await postReceipt(poId, lineId, { incoming_stage: 'Gray', incoming_no: '' });
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/Incoming No is required/);
   });
 
-  test('an incoming number with no prefix is allowed — that is the legacy shape', async () => {
+  // Fabric travels the stage chain, so a fabric receipt that names no stage
+  // could never appear on it. The legacy shape -- a number with no stage -- is
+  // still what every pre-feature row is in, and still what the
+  // missing_incoming_stage flag reports, but it cannot be created any more.
+  test('a fabric receipt with no stage is refused', async () => {
     const { poId, lineId } = await setupLine();
-    const res = await postReceipt(poId, lineId, { incoming_no: 'IN-legacy' });
-    expect(res.status).toBe(201);
+    const res = await postReceipt(poId, lineId, { incoming_no: 'IN-legacy', incoming_stage: '' });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/Stage is required/);
   });
 
-  test('an unknown prefix is refused', async () => {
+  test('an unknown stage is refused', async () => {
     const { poId, lineId } = await setupLine();
-    const res = await postReceipt(poId, lineId, { incoming_no: 'IN-1', incoming_prefix_id: 999999 });
+    const res = await postReceipt(poId, lineId, { incoming_no: 'IN-1', incoming_stage: 'Nowhere' });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/prefix not found/);
+    expect(res.body.message).toMatch(/Stage must be one of/);
   });
 
   // Challan moved off the PO receipt entirely: Bill No already covers what a
@@ -318,7 +354,11 @@ describe('Stitching page — lots and stages', () => {
 
   test('a receipt with no prefix appears on no tab at all', async () => {
     const { poId, lineId } = await setupLine();
+    // A fabric receipt cannot be CREATED without a stage any more, so the legacy
+    // shape is reached by clearing the column -- which is exactly the state
+    // every pre-feature row is in, and what missing_incoming_stage reports.
     const created = await postReceipt(poId, lineId, { incoming_no: 'NOSTAGE-1' });
+    await attachPrefix(created.body.id, null);
     const all = await api.listStage();
     expect(findLot(all.body.rows, 'receipt', created.body.id)).toBeFalsy();
   });
@@ -327,7 +367,7 @@ describe('Stitching page — lots and stages', () => {
     const { receiptId, poId, vendorName } = await grayLot();
     const gray = await api.listStage({ stage: 'Gray' });
     const lot = findLot(gray.body.rows, 'receipt', receiptId);
-    expect(lot.item_name).toBe('Caps');
+    expect(lot.item_name).toBe('Handkerchief - Bundle Fabric');
     expect(lot.po_order_no).toBe(String(poId).padStart(3, '0'));
     expect(lot.party_name).toBe(vendorName);
   });
@@ -356,6 +396,56 @@ describe('Stitching page — lots and stages', () => {
   test('an unknown stage is rejected', async () => {
     const res = await api.listStage({ stage: 'Washed' });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('Only fabric, and only in metres', () => {
+  test('a Gray lot counts the METRES, not the taga delivered', async () => {
+    const { poId, lineId } = await setupLine();
+    const receipt = await postReceipt(poId, lineId, {
+      received_qty: 6, qty_in_metres: 240, incoming_no: `M-${uid()}`, incoming_stage: 'Gray',
+    });
+    const lot = findLot((await api.listStage({ stage: 'Gray' })).body.rows, 'receipt', receipt.body.id);
+    expect(lot.received_qty).toBe(240);
+    expect(lot.balance).toBe(240);
+    // The line is bought in taga, but nothing on this page is measured in it.
+    expect(lot.unit_metric).toBe('m');
+  });
+
+  test('a packaging receipt never reaches the page, however it is numbered', async () => {
+    const vendor = await A(request(app).post('/api/outbound-vendors')).send({
+      name: `Pack Vend ${uid()}`,
+      articles: [{ category: 'Raw Material', item_name: 'Caps' }],
+    });
+    const po = await A(request(app).post('/api/outbound-pos')).send({
+      vendor_id: vendor.body.id,
+      po_date: '2026-09-05',
+      approved_by: warehousePocId,
+      approval_date: '2026-09-05',
+      lines: [{ line_no: 1, category: 'Raw Material', item_name: 'Caps', qty: 50, rate: 10 }],
+    });
+    const detail = await A(request(app).get(`/api/outbound-pos/${po.body.id}`));
+    const receipt = await A(request(app)
+      .post(`/api/outbound-pos/${po.body.id}/lines/${detail.body.lines[0].id}/receipts`))
+      .send({
+        received_qty: 10, received_rate: 10, bill_no: `B-${uid()}`,
+        checked_by: warehousePocId, incoming_no: `P-${uid()}`,
+      });
+    expect(receipt.status).toBe(201);
+
+    const all = await api.listStage();
+    expect(findLot(all.body.rows, 'receipt', receipt.body.id)).toBeFalsy();
+  });
+
+  test('a fabric receipt with no metres waits off the page rather than showing as zero', async () => {
+    const { poId, lineId } = await setupLine();
+    const receipt = await postReceipt(poId, lineId, { incoming_no: `Z-${uid()}` });
+    await db.execute({
+      sql: 'UPDATE outbound_po_line_receipts SET qty_in_metres = NULL WHERE id = ?',
+      args: [receipt.body.id],
+    });
+    const all = await api.listStage();
+    expect(findLot(all.body.rows, 'receipt', receipt.body.id)).toBeFalsy();
   });
 });
 
@@ -388,7 +478,7 @@ describe('Forwarding through the stages', () => {
     expect(child.sent_qty).toBe(60);
     expect(child.rate).toBe(55);        // the Gray lot's after rate
     expect(child.after_rate).toBe(62);  // 55 + 7
-    expect(child.item_name).toBe('Caps');
+    expect(child.item_name).toBe('Handkerchief - Bundle Fabric');
     expect(child.party_name).toBe('Dyeing House');
   });
 
@@ -456,7 +546,7 @@ describe('Forwarding through the stages', () => {
     expect(lot.status).toBe('In Stock');
     expect(lot.can_forward).toBe(false);
     // The article survives three hops because origin_receipt_id is carried down.
-    expect(lot.item_name).toBe('Caps');
+    expect(lot.item_name).toBe('Handkerchief - Bundle Fabric');
   });
 
   test('a Packed lot cannot be forwarded further', async () => {
@@ -571,30 +661,32 @@ describe('Integrity guards back on the receipt', () => {
     expect(res.body.message).toMatch(/forwarded from it/);
   });
 
-  test('its received qty cannot drop below what has been forwarded', async () => {
+  // The METRES are what the Stitching page counts, so they are what cannot be
+  // cut below the lots already sent out of this receipt. The taga figure beside
+  // them is the PO's business and nothing downstream reads it.
+  test('its metres cannot drop below what has been forwarded', async () => {
     const { poId, lineId, receiptId } = await forwardedGrayLot();
-    const res = await patchReceipt(poId, lineId, receiptId, { received_qty: 50 });
+    const res = await patchReceipt(poId, lineId, receiptId, { qty_in_metres: 50 });
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/already forwarded/);
   });
 
-  test('but it can still be reduced to exactly what was forwarded', async () => {
+  test('but they can still be reduced to exactly what was forwarded', async () => {
     const { poId, lineId, receiptId } = await forwardedGrayLot();
-    const res = await patchReceipt(poId, lineId, receiptId, { received_qty: 60 });
+    const res = await patchReceipt(poId, lineId, receiptId, { qty_in_metres: 60 });
     expect(res.status).toBe(200);
   });
 
   test('its stage cannot be changed once anything has been forwarded', async () => {
     const { poId, lineId, receiptId } = await forwardedGrayLot();
-    const res = await patchReceipt(poId, lineId, receiptId, { incoming_prefix_id: prefixes.Stitched.id });
+    const res = await patchReceipt(poId, lineId, receiptId, { incoming_stage: 'Stitched' });
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/change the receipt/);
   });
 
-  test('swapping to another prefix for the SAME stage is still allowed', async () => {
+  test('re-picking the SAME stage is a no-op, not a refusal', async () => {
     const { poId, lineId, receiptId } = await forwardedGrayLot();
-    const alt = await api.createPrefix({ prefix: `ALT${uid()}`, stage: 'Gray' });
-    const res = await patchReceipt(poId, lineId, receiptId, { incoming_prefix_id: alt.body.id });
+    const res = await patchReceipt(poId, lineId, receiptId, { incoming_stage: 'Gray' });
     expect(res.status).toBe(200);
   });
 
@@ -709,7 +801,7 @@ describe('Listing, filtering and sorting', () => {
     const { poId, lineId } = await setupLine();
     const marker = `FIND${uid()}`;
     const created = await postReceipt(poId, lineId, {
-      incoming_no: marker, incoming_prefix_id: prefixes.Gray.id,
+      incoming_no: marker, incoming_stage: 'Gray',
     });
     const res = await api.listStage({ stage: 'Gray', incoming_no: `${prefixes.Gray.prefix}${marker}` });
     expect(findLot(res.body.rows, 'receipt', created.body.id)).toBeTruthy();
@@ -797,7 +889,7 @@ describe('Closing a Packed lot', () => {
   test('a receipt bought straight at the Packed stage closes identically', async () => {
     const { poId, lineId } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_prefix_id: prefixes.Packed.id,
+      incoming_no: `K-${uid()}`, incoming_stage: 'Packed',
     });
 
     let packed = await api.listStage({ stage: 'Packed' });
@@ -903,7 +995,7 @@ describe('Open-lot counts per stage', () => {
     // so filtering by that name isolates this test from every other row.
     const { poId, lineId, vendorName } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_prefix_id: prefixes.Packed.id,
+      incoming_no: `K-${uid()}`, incoming_stage: 'Packed',
     });
 
     expect((await api.counts({ party_name: vendorName })).body.counts.Packed).toBe(1);
@@ -1028,7 +1120,7 @@ describe('Journey view', () => {
     expect(body.summary.origin_qty).toBe(100);
     expect(body.summary.origin_rate).toBe(50);
     expect(body.summary.total_short).toBe(3);
-    expect(body.summary.article).toBe('Caps');
+    expect(body.summary.article).toBe('Handkerchief - Bundle Fabric');
   });
 
   test('a deleted hop is still in the record, marked', async () => {

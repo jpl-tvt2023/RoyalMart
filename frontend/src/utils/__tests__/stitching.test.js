@@ -3,6 +3,7 @@ import {
   STAGES, STAGE_TABS, ALL_TAB, nextStage, prevStage,
   carriedIncomingNo, soleActivePrefix,
   challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX, fmtQty,
+  writeOffReasonError, WRITE_OFF_REASON_MAX, shortOf, STATUSES, OPEN_STATUSES,
 } from '../stitching';
 
 describe('STAGE_TABS', () => {
@@ -114,5 +115,51 @@ describe('fmtQty', () => {
     // The em-dash placeholder must not pick up a unit.
     expect(fmtQty(null, 'pcs')).toBe('—');
     expect(fmtQty('', 'pcs')).toBe('—');
+  });
+});
+
+describe('shortOf', () => {
+  test('is what was sent minus what came back', () => {
+    expect(shortOf(40, 38)).toBe(2);
+    expect(shortOf(40, 40)).toBe(0);
+  });
+
+  // An origin lot was never sent by anyone, so its short is absent rather than
+  // zero -- the column renders blank instead of claiming a clean hop.
+  test('is null when there is no dispatch to compare against', () => {
+    expect(shortOf(null, 38)).toBeNull();
+    expect(shortOf(40, null)).toBeNull();
+    expect(shortOf('', '')).toBeNull();
+  });
+
+  test('rounds to 2dp rather than trailing float error', () => {
+    expect(shortOf(0.3, 0.1)).toBe(0.2);
+  });
+});
+
+describe('writeOffReasonError', () => {
+  test('requires a reason', () => {
+    expect(writeOffReasonError('')).toMatch(/reason is required/i);
+    expect(writeOffReasonError('   ')).toMatch(/reason is required/i);
+  });
+
+  test('caps it, and accepts anything within the cap', () => {
+    expect(writeOffReasonError('x'.repeat(WRITE_OFF_REASON_MAX))).toBeNull();
+    expect(writeOffReasonError('x'.repeat(WRITE_OFF_REASON_MAX + 1)))
+      .toMatch(/at most 300 characters/);
+  });
+});
+
+describe('statuses', () => {
+  // In Transit came with a two-step move and went with it. Pinned so it does not
+  // creep back: adding a challan IS sending the lot on, and a shortage is a
+  // quantity rather than a state.
+  test('there is no In Transit', () => {
+    expect(STATUSES).not.toContain('In Transit');
+    expect(OPEN_STATUSES).not.toContain('In Transit');
+  });
+
+  test('every open status is a real status', () => {
+    for (const s of OPEN_STATUSES) expect(STATUSES).toContain(s);
   });
 });

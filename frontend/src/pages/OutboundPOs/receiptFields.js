@@ -5,7 +5,7 @@
 // rules and duplicating them would let the two drift — which matters most for
 // receiptFieldError, whose whole point is to reproduce the server's answer.
 
-import { moneyError, defaultAfterRate, STAGES } from '../../utils/stitching';
+import { moneyError, qtyError, defaultAfterRate, STAGES, EPSILON } from '../../utils/stitching';
 
 // Twin of INCOMING_NO_MAX in backend/src/controllers/outboundPOs.controller.js,
 // keep the two in step.
@@ -13,8 +13,41 @@ export const INCOMING_NO_MAX = 50;
 
 export const EMPTY_RECEIPT = {
   received_qty: '', received_rate: '', bill_no: '', incoming_no: '', checked_by: '',
-  process_rate: '', after_rate: '', incoming_prefix_id: '',
+  process_rate: '', after_rate: '', incoming_stage: '',
+  qty_in_metres: '', qty_diff_action: '', qty_diff_reason: '',
 };
+
+// Only fabric travels the Stitching stages, so only fabric has a stage and a
+// metres figure. The flag lives on the outbound product master and rides down
+// on the PO line.
+export const isFabricLine = (line) => Number(line?.goes_to_stitching) === 1;
+
+// A receipt can arrive at any stage EXCEPT Third Party, which is where material
+// leaves us -- nothing is ever bought into it. Twin of RECEIPT_STAGES on the
+// server.
+export const RECEIPT_STAGES = STAGES.filter(s => s !== 'Third Party');
+
+// What is still due on a line: ordered, less what has arrived, less what has
+// been written off as never coming. The number a delivery is measured against,
+// and the same arithmetic the detail page's Pending column uses.
+export const outstandingOf = (line) =>
+  Math.max(0, Number(line?.qty || 0) - Number(line?.received || 0) - Number(line?.short || 0));
+
+// What this delivery is over or under by. Negative is short, positive is over,
+// and null while the user has typed nothing.
+export function qtyDifference(receivedQty, line) {
+  if (receivedQty === '' || receivedQty == null) return null;
+  const n = Number(receivedQty);
+  if (!Number.isFinite(n)) return null;
+  return Math.round((n - outstandingOf(line)) * 100) / 100;
+}
+
+// Which box the difference earns. Exactly one is ever offered, so a delivery
+// that matches offers neither. Twin of qtyDiffAction on the server.
+export function offeredQtyDiffAction(difference) {
+  if (difference == null || Math.abs(difference) <= EPSILON) return null;
+  return difference < 0 ? 'write_off' : 'rollover';
+}
 
 // Mirrors the server's receipt rules — including their ORDER, so the message
 // shown here is the one the server would have returned — so the user gets the
@@ -24,7 +57,7 @@ export const EMPTY_RECEIPT = {
 // (migration 053 synthesized those from the legacy flat `received` value, with
 // no bill to record). Those stay editable for unrelated fixes rather than
 // demanding a bill number nobody has — matching what the server enforces.
-export function receiptFieldError(v, { requireBillNo = true } = {}) {
+export function receiptFieldError(v, { requireBillNo = true, line = null } = {}) {
   if (!v.received_qty || Number(v.received_qty) <= 0) return 'Received Qty is required';
   if (v.received_rate === '' || v.received_rate == null) return 'Billed Rate is required';
   if (!Number.isFinite(Number(v.received_rate)) || Number(v.received_rate) < 0) return 'Billed Rate must be a number >= 0';
@@ -40,11 +73,27 @@ export function receiptFieldError(v, { requireBillNo = true } = {}) {
   if (procErr) return procErr;
   const afterErr = moneyError(v.after_rate, 'After Rate');
   if (afterErr) return afterErr;
-  // A prefix with no number would print as a bare "GRY" and put a phantom lot on
-  // the Stitching page. The reverse is fine — a number with no stage yet is the
-  // legacy shape, and raises the Missing Incoming Stage flag instead.
-  if (v.incoming_prefix_id && !String(v.incoming_no ?? '').trim()) {
-    return 'Incoming No is required when a prefix is selected';
+  // Fabric travels the stage chain and is worked in metres, so a fabric receipt
+  // that names neither could never be tracked through it. Everything else has no
+  // stage at all and keeps its incoming number as optional free text.
+  const fabric = isFabricLine(line);
+  if (fabric) {
+    if (!v.incoming_stage) return 'Stage is required';
+    if (!String(v.incoming_no ?? '').trim()) return 'Incoming No is required';
+    const metresErr = qtyError(v.qty_in_metres, 'Qty in metres');
+    if (metresErr) return metresErr;
+  }
+
+  // A ticked box has to say why, and has to match the difference it explains.
+  if (v.qty_diff_action) {
+    if (!String(v.qty_diff_reason ?? '').trim()) {
+      return v.qty_diff_action === 'write_off'
+        ? 'A reason is required to write off the shortfall'
+        : 'A reason is required to roll over the excess';
+    }
+    if (String(v.qty_diff_reason).trim().length > 300) {
+      return 'Reason can be at most 300 characters';
+    }
   }
   return null;
 }
@@ -62,30 +111,15 @@ export function withDerivedAfterRate(draft, field, value) {
   return next;
 }
 
-// Prefix options as a flat list, each reading "GRY · Gray".
+// Stage options, in process order rather than alphabetically, so the list reads
+// Gray -> Processed -> Stitched -> Packed the way the material actually moves.
 //
-// These were briefly grouped under <optgroup> stage headings, which existed only
-// to keep the COLLAPSED select narrow enough to sit in a table cell. That select
-// is gone — the table shows read-only text now and the picker lives in a modal
-// with room to spare — so the grouping just turned four choices into eight rows,
-// each single option carrying its own heading. Flat is shorter and says the same
-// thing.
-//
-// Sorted by stage in process order rather than alphabetically, so the list reads
-// Gray → Processed → Stitched → Packed the way the material actually moves.
-//
-// A receipt can keep a prefix that has since been deactivated, so the stored one
-// is appended and marked, or the dropdown would silently blank a real recorded
-// value.
-export function prefixOptionsFor(prefixes, prefixId, prefixLabel) {
-  const active = (prefixes || []).filter(p => p.is_active);
-  const opts = STAGES.flatMap(stage => active
-    .filter(p => p.stage === stage)
-    .map(p => ({ value: p.id, label: `${p.prefix} · ${stage}` })));
-  if (prefixId && !active.some(p => String(p.id) === String(prefixId))) {
-    opts.push({ value: prefixId, label: `${prefixLabel || 'Unknown'} (inactive)` });
-  }
-  return opts;
+// A STAGE, not a prefix. Nobody picks a prefix anywhere any more: the stage is
+// the fact being recorded, and the code that prints on it follows from it on the
+// server. That also means a receipt keeps rendering a prefix that has since been
+// deactivated without the dropdown having to carry it as an option.
+export function stageOptionsFor() {
+  return RECEIPT_STAGES.map(stage => ({ value: stage, label: stage }));
 }
 
 // If a receipt's stored checker isn't in the live Warehouse_POC list (tagged

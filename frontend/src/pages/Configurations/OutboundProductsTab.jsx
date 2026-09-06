@@ -17,14 +17,14 @@ import {
 // here -- it is built around a
 // single `name` field -- so this mirrors its layout and behaviour instead.
 
-const EMPTY = { category: '', item_name: '', unit_metric: '', is_active: true };
+const EMPTY = { category: '', item_name: '', unit_metric: '', is_active: true, goes_to_stitching: false };
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f] disabled:bg-gray-50 disabled:text-gray-500';
 
 export default function OutboundProductsTab() {
   const { canEdit: canAdmin } = useRBAC();
   // # + Category + Item Name + Unit Metric + Products Using + Last Updated + Status
-  const colCount = 7 + (canAdmin ? 1 : 0);
+  const colCount = 8 + (canAdmin ? 1 : 0);
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -61,6 +61,7 @@ export default function OutboundProductsTab() {
       item_name: r.item_name,
       unit_metric: r.unit_metric,
       is_active: !!r.is_active,
+      goes_to_stitching: !!r.goes_to_stitching,
       products_using: r.products_using || 0,
     });
     setFormError('');
@@ -77,6 +78,7 @@ export default function OutboundProductsTab() {
       category: form.category.trim(),
       item_name: form.item_name.trim(),
       unit_metric: form.unit_metric.trim(),
+      goes_to_stitching: form.goes_to_stitching,
     };
     if (!payload.category) { setFormError('Category is required'); return; }
     if (!payload.item_name) { setFormError('Item name is required'); return; }
@@ -131,6 +133,7 @@ export default function OutboundProductsTab() {
                 <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Category</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Item Name</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Unit Metric</th>
+                <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Stitching</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Products Using</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Last Updated</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Status</th>
@@ -148,6 +151,13 @@ export default function OutboundProductsTab() {
                   <td className="px-4 py-3 text-gray-700">{r.category}</td>
                   <td className="px-4 py-3 text-gray-900 font-medium">{r.item_name}</td>
                   <td className="px-4 py-3 text-gray-700">{r.unit_metric}</td>
+                  {/* Only these articles travel the Stitching stages, and only
+                      their receipts demand a stage and a metres figure. */}
+                  <td className="px-4 py-3 text-gray-700">
+                    {r.goes_to_stitching
+                      ? <span className="text-[#003049] font-medium">Yes</span>
+                      : <span className="text-gray-300">—</span>}
+                  </td>
                   {/* Derived count, not a stored field — a native title is used
                       rather than a popover because this table sits in an
                       overflow-auto container that would clip one. */}
@@ -269,6 +279,22 @@ export default function OutboundProductsTab() {
           </div>
 
           {formError && <p className="text-xs text-red-600">{formError}</p>}
+
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={form.goes_to_stitching}
+              onChange={e => setForm(f => ({ ...f, goes_to_stitching: e.target.checked }))}
+            />
+            <span>
+              Goes through Stitching
+              <span className="block text-[11px] text-gray-400">
+                Fabric only. Its receipts ask for the stage the goods arrived at and their
+                quantity in metres, and its lots appear on the Stitching page.
+              </span>
+            </span>
+          </label>
 
           {modal !== 'add' && (
             <label className="flex items-center gap-2 text-sm text-gray-700">
