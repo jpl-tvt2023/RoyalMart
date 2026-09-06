@@ -37,7 +37,7 @@ export default function JourneyModal({ src, id, onClose }) {
   const s = data?.summary;
   // Unit comes from the PO line the chain descends from, not from an assumption
   // that everything here is fabric.
-  const metres = (v) => fmtQty(v, s?.unit_metric);
+  const qty = (v) => fmtQty(v, s?.unit_metric);
 
   return (
     <Modal isOpen onClose={onClose} title="Journey" size="xl">
@@ -71,18 +71,29 @@ export default function JourneyModal({ src, id, onClose }) {
                   style={{ marginLeft: `${n.depth * 20}px` }}
                   className={n.deleted ? 'opacity-60' : ''}
                 >
-                  {showConnector && (
+                  {/* A write-off went nowhere, so it gets no sent/received arrow —
+                      printing one would claim a hand-over that never happened. */}
+                  {showConnector && n.is_write_off && (
                     <div className="flex items-center gap-2 py-1.5 pl-1 text-xs text-gray-500">
                       <span className="text-gray-300">│</span>
-                      <span>sent <span className="font-medium text-gray-700">{metres(n.sent_qty)}</span></span>
+                      <span className="text-amber-600 font-medium">written off {qty(n.sent_qty)}</span>
+                      {n.write_off_reason && <span className="text-gray-400">{n.write_off_reason}</span>}
+                    </div>
+                  )}
+
+                  {showConnector && !n.is_write_off && (
+                    <div className="flex items-center gap-2 py-1.5 pl-1 text-xs text-gray-500">
+                      <span className="text-gray-300">│</span>
+                      <span>sent <span className="font-medium text-gray-700">{qty(n.sent_qty)}</span></span>
                       <span className="text-gray-300">→</span>
-                      <span>received <span className="font-medium text-gray-700">{metres(n.metre)}</span></span>
+                      <span>received <span className="font-medium text-gray-700">{qty(n.received_qty)}</span></span>
                       {/* Silent on a clean hop — only a real loss earns ink. */}
-                      {n.loss > 0 && (
-                        <span className="text-amber-600 font-medium">loss {metres(n.loss)}</span>
+                      {n.short > 0 && (
+                        <span className="text-amber-600 font-medium">short {qty(n.short)}</span>
                       )}
-                      {/* The challan belongs to the lot that was SENT, so it goes
-                          on the arrow rather than on the node that arrived. */}
+                      {/* The challan belongs to THIS hop -- it is what the
+                          material travelled under -- and goes on the arrow
+                          because that is where the hand-over happened. */}
                       {n.sent_under_challan && (
                         <span className="text-gray-400">under challan {n.sent_under_challan}</span>
                       )}
@@ -117,16 +128,20 @@ export default function JourneyModal({ src, id, onClose }) {
                         ) : null}
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
-                        <span className="font-semibold text-[#003049]">{metres(n.metre)}</span>
+                        <span className="font-semibold text-[#003049]">
+                          {n.is_write_off ? qty(n.sent_qty) : qty(n.received_qty)}
+                        </span>
                         {n.deleted
                           ? <Badge color="gray">Removed</Badge>
-                          : <Badge color={STATUS_COLORS[n.status] || 'gray'}>{n.status}</Badge>}
+                          : n.is_write_off
+                            ? <Badge color="yellow">Written off</Badge>
+                            : <Badge color={STATUS_COLORS[n.status] || 'gray'}>{n.status}</Badge>}
                       </div>
                     </div>
 
                     {n.deleted ? (
                       <div className="mt-1 text-[11px] text-gray-400">
-                        {n.revert_reason ? 'sent back' : 'removed'} by {n.deleted_by_name || 'unknown'}
+                        {n.revert_reason ? 'withdrawn' : 'removed'} by {n.deleted_by_name || 'unknown'}
                         {' · '}{formatDateTime(n.deleted_at)}
                         {n.revert_reason && (
                           <span className="text-amber-600"> · {n.revert_reason}</span>
@@ -142,7 +157,6 @@ export default function JourneyModal({ src, id, onClose }) {
                           {' = '}
                           <span className="font-semibold text-[#003049]">{fmtNum(n.after_rate)}</span>
                         </span>
-                        {n.bill_no && <span>bill {n.bill_no}</span>}
                         {n.checked_by_name && <span>checked by {n.checked_by_name}</span>}
                         {n.closed_at && (
                           <span className="text-gray-400">
@@ -159,12 +173,12 @@ export default function JourneyModal({ src, id, onClose }) {
 
           <div className="mt-5 pt-4 border-t border-gray-200 flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-600">
             <span>
-              <span className="text-gray-400">in</span> {metres(s.origin_metre)}
+              <span className="text-gray-400">in</span> {qty(s.origin_qty)}
               <span className="text-gray-300"> → </span>
-              <span className="text-gray-400">packed</span> {metres(s.packed_metre)}
+              <span className="text-gray-400">packed</span> {qty(s.packed_qty)}
             </span>
-            {s.total_loss > 0 && (
-              <span className="text-amber-600 font-medium">total loss {metres(s.total_loss)}</span>
+            {s.total_short > 0 && (
+              <span className="text-amber-600 font-medium">total short {qty(s.total_short)}</span>
             )}
             {s.final_rate != null && (
               <span>

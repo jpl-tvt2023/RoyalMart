@@ -15,6 +15,10 @@ router.get('/stage-counts', auth, canView, stitching.stageCounts);
 router.get('/journey/:src/:id', auth, canView, stitching.journey);
 router.post('/', auth, canEdit, stitching.create);
 
+// Material that leaves a lot without arriving anywhere. A literal path segment,
+// so it is matched before any '/:id' route rather than being read as an id.
+router.post('/write-off', auth, canEdit, stitching.writeOff);
+
 // Close/reopen take the lot TYPE as well as the id: a lot reaches Packed either
 // forwarded through the chain (an entry) or bought straight at that stage (a
 // receipt), and the two live in different tables. Three segments, so there is no
@@ -22,12 +26,9 @@ router.post('/', auth, canEdit, stitching.create);
 router.post('/:src/:id/close', auth, canEdit, stitching.close);
 router.post('/:src/:id/reopen', auth, canEdit, stitching.reopen);
 
-// Recording what came back against a challan. One segment: only a challan can be
-// received, and every challan is a stitching_entries row.
-router.post('/:id/receive', auth, canEdit, stitching.receive);
-
-// Withdrawing a challan that should not exist -- a correction, not a movement.
-// One segment for the same reason as receive.
+// Withdrawing a challan or a write-off that should not exist -- a correction,
+// not a movement. One segment: only these can be withdrawn, and both are
+// stitching_entries rows, so the id needs no lot type beside it.
 router.post('/:id/remove', auth, canEdit, stitching.removeChallan);
 
 router.patch('/:id', auth, canEdit, stitching.update);

@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { Plus, Trash2, ExternalLink, Route, PackageCheck, RotateCcw, Undo2, Download } from 'lucide-react';
+import { Plus, Trash2, ExternalLink, Route, PackageCheck, RotateCcw, Undo2, Download, Ban } from 'lucide-react';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
@@ -17,7 +17,7 @@ import { STATUSES, STATUS_COLORS, fmtNum, fmtQty, EPSILON, ALL_TAB } from '../..
 import { formatDateTime } from '../../utils/formatters';
 import JourneyModal from './JourneyModal';
 import ChallanModal from './ChallanModal';
-import ReceiveModal from './ReceiveModal';
+import WriteOffModal from './WriteOffModal';
 import RemoveChallanModal from './RemoveChallanModal';
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
@@ -53,13 +53,19 @@ const EXPORT_COLUMNS = [
   { key: 'variant', header: 'Variant' },
   { key: 'po_order_no', header: 'PO' },
   { key: 'status', header: 'Status' },
-  { key: 'metre', header: 'Qty' },
+  { key: 'sent_qty', header: 'Sent' },
+  { key: 'received_qty', header: 'Qty' },
+  { key: 'short', header: 'Short' },
   { key: 'balance', header: 'Balance' },
   { key: 'unit_metric', header: 'Unit' },
   { key: 'rate', header: 'Rate' },
   { key: 'process_rate', header: 'Process Rate' },
-  { key: 'after_rate', header: 'After Rate' },
+  // The challan this row was sent under. It is off the table on purpose — a lot
+  // has many, and they read better nested — but a spreadsheet has no nesting, so
+  // here it belongs on the row it describes. Blank on an origin lot, which
+  // nobody sent.
   { key: 'challan_no', header: 'Challan No' },
+  { key: 'after_rate', header: 'After Rate' },
   { key: 'incoming_no', header: 'Incoming No' },
   { key: 'checked_by_name', header: 'Checked By' },
   { key: 'updated_by_name', header: 'Updated By' },
@@ -83,7 +89,7 @@ export default function StageTab({ stage, onOpenCounts }) {
   const [journeyFor, setJourneyFor] = useState(null);
   const [closing, setClosing] = useState(null);
   const [challanFor, setChallanFor] = useState(null);
-  const [receiving, setReceiving] = useState(null);
+  const [writingOff, setWritingOff] = useState(null);
   const [removing, setRemoving] = useState(null);
   const [busyKey, setBusyKey] = useState(null);
   const [downloading, setDownloading] = useState(false);
@@ -151,7 +157,9 @@ export default function StageTab({ stage, onOpenCounts }) {
         status: r.status,
         // Numbers stay numbers, with the unit in its own column. A spreadsheet
         // exists to sum this, which "5 pcs" in the cell would prevent.
-        metre: r.metre,
+        sent_qty: r.sent_qty,
+        received_qty: r.received_qty,
+        short: r.short,
         balance: r.balance,
         unit_metric: r.unit_metric || '',
         rate: r.rate,
@@ -255,11 +263,15 @@ export default function StageTab({ stage, onOpenCounts }) {
                 <th className={thCls}>Article</th>
                 <th className={thCls}>Status</th>
                 <th className={thCls}>Qty</th>
+                <th className={thCls}>Short</th>
                 <th className={thCls}>Balance</th>
                 <th className={thCls}>Rate</th>
                 <th className={thCls}>Process Rate</th>
                 <th className={thCls}>After Rate</th>
-                <th className={thCls}>Challan No</th>
+                {/* No Challan No. A lot has many challans and they sit nested
+                    beneath it, so a single column here could only ever show one
+                    of them — and on an origin lot it showed a stale number the
+                    PO screen no longer manages. */}
                 <th className={thCls}>Incoming No</th>
                 <th className={thCls}>Checked By</th>
                 <th className={thCls}>Actions</th>
@@ -294,19 +306,16 @@ export default function StageTab({ stage, onOpenCounts }) {
                       <Badge color={STATUS_COLORS[r.status] || 'gray'}>{r.status}</Badge>
                     </td>
                     <td className={`${tdCls} whitespace-nowrap`}>
-                      {fmtNum(r.metre)}
-                      {/* Sent more than came back: the difference was lost in processing. */}
-                      {r.sent_qty != null && r.received_at
-                        && Number(r.sent_qty) - Number(r.metre) > EPSILON && (
-                        <div className="text-[11px] text-amber-600">
-                          sent {fmtNum(r.sent_qty)} · loss {fmtNum(Number(r.sent_qty) - Number(r.metre))}
-                        </div>
+                      {fmtNum(r.received_qty)}
+                      {r.sent_qty != null && (
+                        <div className="text-[11px] text-gray-400">sent {fmtNum(r.sent_qty)}</div>
                       )}
-                      {/* Nothing has arrived yet, so the quantity that matters is
-                          what went out. */}
-                      {!r.received_at && (
-                        <div className="text-[11px] text-amber-600">sent {fmtNum(r.sent_qty)}</div>
-                      )}
+                    </td>
+                    {/* What was sent but never arrived. Spelled out with its unit
+                        because it is the one number here that gets read aloud,
+                        and the unit is the PO line's, never an assumed metre. */}
+                    <td className={`${tdCls} whitespace-nowrap ${Number(r.short) > EPSILON ? 'text-amber-600 font-medium' : 'text-gray-300'}`}>
+                      {Number(r.short) > EPSILON ? fmtQty(r.short, r.unit_metric) : '—'}
                     </td>
                     <td className={`${tdCls} font-semibold whitespace-nowrap ${Number(r.balance) > EPSILON ? 'text-amber-700' : 'text-gray-400'}`}>
                       {fmtNum(r.balance)}
@@ -314,9 +323,6 @@ export default function StageTab({ stage, onOpenCounts }) {
                     <td className={`${tdCls} text-gray-600`}>{fmtNum(r.rate)}</td>
                     <td className={`${tdCls} text-gray-600`}>{fmtNum(r.process_rate)}</td>
                     <td className={`${tdCls} font-medium text-[#003049]`}>{fmtNum(r.after_rate)}</td>
-                    {/* The challan this lot arrived under. Read-only: challans are
-                        records of their own now, added and withdrawn as such. */}
-                    <td className={`${tdCls} text-gray-600 whitespace-nowrap`}>{r.challan_no || '—'}</td>
                     <td className={`${tdCls} whitespace-nowrap`}>
                       {r.incoming_prefix || r.incoming_no
                         ? <span className="font-mono text-xs">{r.incoming_prefix || ''}{r.incoming_no || ''}</span>
@@ -325,18 +331,19 @@ export default function StageTab({ stage, onOpenCounts }) {
                     <td className={`${tdCls} text-gray-600 whitespace-nowrap`}>{r.checked_by_name || '—'}</td>
                     <td className={tdCls}>
                       <div className="flex items-center gap-1">
-                        {/* This lot is itself a challan still out at a processor. */}
-                        {r.can_receive && (
+                        {/* Material that will never move on: ruined at rest, or
+                            gone. Not a stage move, so it names no destination. */}
+                        {Number(r.balance) > EPSILON && (
                           <button
                             type="button"
-                            onClick={() => setReceiving(r)}
-                            title="Record what came back against this challan"
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-[#c1121f] hover:bg-red-50"
+                            onClick={() => setWritingOff(r)}
+                            title="Write material off this lot"
+                            className="p-1.5 rounded hover:bg-amber-50 text-amber-600"
                           >
-                            <PackageCheck size={13} />Receive
+                            <Ban size={14} />
                           </button>
                         )}
-                        {r.stage === 'Packed' && r.received_at && !r.closed_at && (
+                        {r.stage === 'Packed' && !r.closed_at && (
                           <button
                             type="button"
                             onClick={() => setClosing(r)}
@@ -393,51 +400,60 @@ export default function StageTab({ stage, onOpenCounts }) {
                     </td>
                   </tr>
 
-                  {/* Challans raised against this lot, nested beneath it the way
-                      receipts sit under a PO line. Each one is a dispatch: some
-                      of this lot out at a processor, or already back. */}
-                  {(r.challans || []).map(c => (
+                  {/* Everything that has LEFT this lot, nested beneath it the way
+                      receipts sit under a PO line: challans sent on, and material
+                      written off. Not on the All tab, where every challan is
+                      already a row of its own and this would print it twice. */}
+                  {!isAll && (r.outgoing || []).map(c => (
                     <tr key={c.lot_key} className="bg-gray-50/40">
                       <td className={tdCls} />
                       <td className={tdCls} colSpan={COLUMN_COUNT - 2}>
                         <div className="flex items-center gap-3 flex-wrap text-xs pl-4 border-l-2 border-gray-200">
-                          <span className="text-gray-400">Challan</span>
-                          <span className="font-mono text-[#003049]">{c.challan_no || '—'}</span>
-                          <span className="text-gray-500">{c.party_name}</span>
-                          <span className="text-gray-400">
-                            sent <span className="font-medium text-gray-700">{fmtQty(c.sent_qty, r.unit_metric)}</span>
-                          </span>
-                          {c.received_at ? (
-                            <span className="text-gray-400">
-                              received <span className="font-medium text-gray-700">{fmtQty(c.metre, r.unit_metric)}</span>
-                            </span>
-                          ) : null}
-                          <Badge color={STATUS_COLORS[c.status] || 'gray'}>{c.status}</Badge>
-                          <span className="font-mono text-[11px] text-gray-400">
-                            {c.incoming_prefix || ''}{c.incoming_no || ''}
-                          </span>
+                          {c.is_write_off ? (
+                            <>
+                              <span className="text-amber-600 font-medium">Written off</span>
+                              <span className="font-medium text-gray-700">
+                                {fmtQty(c.sent_qty, r.unit_metric)}
+                              </span>
+                              <span className="text-gray-500">{c.write_off_reason}</span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-gray-400">Challan</span>
+                              <span className="font-mono text-[#003049]">{c.challan_no || '—'}</span>
+                              <span className="text-gray-500">{c.party_name}</span>
+                              <span className="text-gray-400">
+                                sent <span className="font-medium text-gray-700">{fmtQty(c.sent_qty, r.unit_metric)}</span>
+                              </span>
+                              <span className="text-gray-400">
+                                back <span className="font-medium text-gray-700">{fmtQty(c.received_qty, r.unit_metric)}</span>
+                              </span>
+                              {Number(c.short) > EPSILON && (
+                                <span className="text-amber-600 font-medium">
+                                  {fmtQty(c.short, r.unit_metric)} short
+                                </span>
+                              )}
+                              <Badge color={STATUS_COLORS[c.status] || 'gray'}>{c.status}</Badge>
+                              <span className="font-mono text-[11px] text-gray-400">
+                                {c.incoming_prefix || ''}{c.incoming_no || ''}
+                              </span>
+                            </>
+                          )}
                         </div>
                       </td>
                       <td className={tdCls}>
                         <div className="flex items-center gap-1">
-                          {c.can_receive && (
-                            <button
-                              type="button"
-                              onClick={() => setReceiving(c)}
-                              title="Record what came back against this challan"
-                              className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-[#c1121f] hover:bg-red-50"
-                            >
-                              <PackageCheck size={13} />Receive
-                            </button>
-                          )}
                           {/* A correction: the challan was entered against the
-                              wrong lot, or never raised at all. Nothing travels
-                              anywhere -- the quantity stops counting as sent. */}
+                              wrong lot, or the write-off was wrong. Nothing
+                              travels anywhere -- the quantity stops counting as
+                              gone. */}
                           {c.can_remove && (
                             <button
                               type="button"
                               onClick={() => setRemoving(c)}
-                              title="Withdraw this challan — entered in error"
+                              title={c.is_write_off
+                                ? 'Withdraw this write-off — entered in error'
+                                : 'Withdraw this challan — entered in error'}
                               className="p-1.5 rounded hover:bg-amber-50 text-amber-600"
                             >
                               <Undo2 size={14} />
@@ -450,8 +466,9 @@ export default function StageTab({ stage, onOpenCounts }) {
 
                   {/* A lot cannot reach the next stage except under a challan, so
                       this is the only way forward -- and it is on the lot rather
-                      than behind an action menu for exactly that reason. */}
-                  {r.can_forward && r.received_at && (
+                      than behind an action menu for exactly that reason. Every
+                      stage works this way, not just Gray. */}
+                  {r.can_forward && (
                     <tr className="bg-gray-50/40">
                       <td className={tdCls} />
                       <td className={tdCls} colSpan={COLUMN_COUNT - 1}>
@@ -484,10 +501,12 @@ export default function StageTab({ stage, onOpenCounts }) {
 
         {!loading && rows.length === 0 && (
           <p className="text-center text-gray-400 py-8">
-            No lots at the {stage} stage yet.
-            {stage === 'Gray'
+            {isAll
+              ? 'No lots yet. A receipt appears here once it has an incoming number with a stage prefix.'
+              : `No lots at the ${stage} stage yet.`}
+            {!isAll && (stage === 'Gray'
               ? ' A receipt appears here once it has an incoming number with a Gray prefix.'
-              : ` Send a lot on from ${stage === 'Processed' ? 'Gray' : stage === 'Stitched' ? 'Processed' : 'Stitched'} to see it here.`}
+              : ' Add a challan on a lot at the previous stage to send some of it here.')}
           </p>
         )}
 
@@ -512,7 +531,7 @@ export default function StageTab({ stage, onOpenCounts }) {
         confirmLabel="Close lot"
         title="Close this lot?"
         message={closing
-          ? `Marks the ${fmtNum(closing.metre)} m at ${closing.party_name} as dispatched. It stops counting as open stock, and can be reopened if that was wrong.`
+          ? `Marks the ${fmtQty(closing.received_qty, closing.unit_metric)} at ${closing.party_name} as dispatched. It stops counting as open stock, and can be reopened if that was wrong.`
           : ''}
       />
 
@@ -524,11 +543,11 @@ export default function StageTab({ stage, onOpenCounts }) {
         />
       )}
 
-      {receiving && (
-        <ReceiveModal
-          challan={receiving}
-          onClose={() => setReceiving(null)}
-          onSaved={() => { setReceiving(null); load(); }}
+      {writingOff && (
+        <WriteOffModal
+          lot={writingOff}
+          onClose={() => setWritingOff(null)}
+          onSaved={() => { setWritingOff(null); load(); }}
         />
       )}
 

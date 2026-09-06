@@ -1,3 +1,16 @@
+-- SUPERSEDED, and left in place deliberately. The two-step split described below
+-- was reversed a day later: adding a challan IS sending the lot on, so there is
+-- no window in which a row is dispatched but not received, and the In Transit
+-- status and the receive endpoint are both gone.
+--
+-- The columns stay. Dropping one is destructive for no gain, and received_at is
+-- still written -- dispatch and receipt are simply the same moment now, so the
+-- value is honest. Nothing reads it to decide a status any more. Migration 075
+-- renames metre to received_qty, so read the two together.
+--
+-- Everything below is the original note, kept because it explains why the
+-- columns exist and why the backfill looks the way it does.
+--
 -- Dispatch and receipt become two steps instead of one.
 --
 -- Until now a lot moved to the next stage in a single action: the form captured

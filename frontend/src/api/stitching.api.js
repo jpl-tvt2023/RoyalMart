@@ -31,15 +31,8 @@ export async function reopenStitchingLot(src, id) {
   return data;
 }
 
-// Record what came back against a challan. One segment: only a challan can be
-// received, and every challan is a stitching entry.
-export async function receiveStitchingChallan(id, payload) {
-  const { data } = await api.post(`/stitching/${id}/receive`, payload);
-  return data;
-}
-
-// Withdraw a challan that should not exist -- a correction, not a movement.
-// Nothing travels anywhere: the quantity stops counting as dispatched.
+// Withdraw a challan or a write-off that should not exist -- a correction, not a
+// movement. Nothing travels anywhere: the quantity stops counting as gone.
 export async function removeStitchingChallan(id, reason) {
   const { data } = await api.post(`/stitching/${id}/remove`, { reason });
   return data;
@@ -50,11 +43,19 @@ export async function listStitchingParties() {
   return data;
 }
 
-// Record a challan: part of a lot dispatched to a processor. Nothing has come
-// back yet — that is receiveStitchingChallan. The stage is never sent, and nor
-// is the incoming number: the server derives both from the parent.
-export async function dispatchStitchingChallan(payload) {
+// Add a challan: part of a lot sent on to the next stage. One act, covering what
+// left and what came back. The stage is never sent, and nor is the incoming
+// number: the server derives both from the parent.
+export async function addStitchingChallan(payload) {
   const { data } = await api.post('/stitching', payload);
+  return data;
+}
+
+// Material that leaves a lot without arriving anywhere -- ruined at rest, or a
+// challan that never came back. Not a stage move, so it takes no target and
+// produces no lot.
+export async function writeOffStitchingQty(payload) {
+  const { data } = await api.post('/stitching/write-off', payload);
   return data;
 }
 

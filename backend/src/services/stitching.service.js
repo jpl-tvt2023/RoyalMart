@@ -16,13 +16,13 @@
 
 const STAGES = ['Gray', 'Processed', 'Stitched', 'Packed'];
 
-// Half a paisa / half a millimetre. Metres and rates round-trip through SQLite
-// REAL, so exact comparisons would call 100 and 99.99999999 different lots.
+// Half a paisa, half a millimetre, half a piece. Quantities and rates round-trip
+// through SQLite REAL, so exact comparisons would call 100 and 99.99999999
+// different lots.
 // Same value and same reasoning as RATE_EPSILON in outboundPOFlags.js.
 const EPSILON = 0.005;
 
 const STATUS = {
-  IN_TRANSIT: 'In Transit',
   PENDING: 'Pending',
   PARTIAL: 'Partial',
   FORWARDED: 'Forwarded',
@@ -30,10 +30,10 @@ const STATUS = {
   CLOSED: 'Closed',
 };
 
-// Outstanding work: a lot still holding metre at its stage, or finished goods
+// Outstanding work: a lot still holding quantity at its stage, or finished goods
 // packed but not yet dispatched. Forwarded means the lot fully moved on, and
 // Closed means someone confirmed it is done with -- neither needs attention.
-const OPEN_STATUSES = [STATUS.IN_TRANSIT, STATUS.PENDING, STATUS.PARTIAL, STATUS.IN_STOCK];
+const OPEN_STATUSES = [STATUS.PENDING, STATUS.PARTIAL, STATUS.IN_STOCK];
 
 const isValidStage = (s) => STAGES.includes(s);
 
@@ -85,7 +85,7 @@ const effectiveAfterRate = (rate, processRate, afterRate) => {
 // live children's sent_qty -- what LEFT this lot, not what arrived at the next
 // stage, since the shortfall between the two is process loss and belongs to the
 // child, not to this lot's balance.
-const balanceOf = (metre, forwarded) => Number(metre || 0) - Number(forwarded || 0);
+const balanceOf = (receivedQty, forwarded) => Number(receivedQty || 0) - Number(forwarded || 0);
 
 // Mirrors computeLineStatus in outboundPOs.controller.js in spirit: a small pure
 // function over quantities, never a user-supplied value.
@@ -95,14 +95,13 @@ const balanceOf = (metre, forwarded) => Number(metre || 0) - Number(forwarded ||
 // it, which is what records that the goods left the building. Before migration
 // 070 it returned Closed unconditionally, which made the status constant and
 // hid packed stock from any "what is outstanding" count.
-const computeStatus = ({ stage, metre, forwarded, closedAt, receivedAt }) => {
-  // FIRST, and load bearing. A dispatched challan holds nothing until the goods
-  // come back, so its balance is 0 minus 0 -- which every branch below would
-  // read as Forwarded, the one status meaning "done with". Material sitting at a
-  // processor is the opposite of done.
-  if (!receivedAt) return STATUS.IN_TRANSIT;
+// There is no In Transit here, and that is a decision rather than an omission.
+// Adding a challan IS sending the lot on, so a row never exists in a state where
+// the goods have left but not arrived. Shortage is a quantity, not a state: a
+// challan sent 40 and back 38 is an ordinary lot holding 38 with 2 short.
+const computeStatus = ({ stage, receivedQty, forwarded, closedAt }) => {
   if (stage === 'Packed') return closedAt ? STATUS.CLOSED : STATUS.IN_STOCK;
-  const balance = balanceOf(metre, forwarded);
+  const balance = balanceOf(receivedQty, forwarded);
   if (balance <= EPSILON) return STATUS.FORWARDED;
   if (Number(forwarded || 0) > EPSILON) return STATUS.PARTIAL;
   return STATUS.PENDING;
@@ -113,11 +112,10 @@ const computeStatus = ({ stage, metre, forwarded, closedAt, receivedAt }) => {
 // paging has to happen in the database — filtering afterwards would return short
 // pages. A parity test pins the two together, exactly as outboundPOFlags.js
 // does for its flag predicates.
-const statusSql = (stageCol, metreCol, forwardedCol, closedAtCol, receivedAtCol) => `CASE
-  WHEN ${receivedAtCol} IS NULL THEN '${STATUS.IN_TRANSIT}'
+const statusSql = (stageCol, qtyCol, forwardedCol, closedAtCol) => `CASE
   WHEN ${stageCol} = 'Packed' THEN
     CASE WHEN ${closedAtCol} IS NOT NULL THEN '${STATUS.CLOSED}' ELSE '${STATUS.IN_STOCK}' END
-  WHEN ${metreCol} - ${forwardedCol} <= ${EPSILON} THEN '${STATUS.FORWARDED}'
+  WHEN ${qtyCol} - ${forwardedCol} <= ${EPSILON} THEN '${STATUS.FORWARDED}'
   WHEN ${forwardedCol} > ${EPSILON} THEN '${STATUS.PARTIAL}'
   ELSE '${STATUS.PENDING}'
 END`;
@@ -143,20 +141,19 @@ const moneyError = (value, label, { required = false } = {}) => {
   return null;
 };
 
-// The challan a lot is dispatched under. It belongs to the lot being SENT, not
-// to the hop that arrives: a lot that has just come in has not been sent
-// anywhere yet, so its challan is genuinely blank until it moves on. That is
-// also why a lot cannot be forwarded without one -- there is no dispatch without
-// a challan to dispatch it under.
+// The challan a dispatch travels under. It belongs to the DISPATCH -- the row
+// created when part of a lot is sent on -- not to the lot it came out of: one
+// lot has many challans, and each describes a single hand-over. Migration 073
+// makes the number unique within a lot, since two physical challans always have
+// two numbers and the number is the only thing telling two dispatches apart.
 //
 // Free text, deliberately. The user was asked whether "numerical" should mean
 // digits-only and chose free text, the same call already made for Incoming No.
 // Do not add a digits-only rule without asking again -- challan books that use a
 // prefix or a slash would stop being enterable.
 //
-// Blank is not an error here. Clearing a challan is allowed, and the only
-// consequence is that the lot stops being forwardable, which is the gate in
-// create() doing its job rather than something to reject at write time.
+// Blank is checked at the point of dispatch, which requires one, rather than
+// here, so that an edit clearing an unrelated field is not forced to supply it.
 const CHALLAN_MAX = 50;
 
 const challanError = (value) => {
@@ -165,12 +162,26 @@ const challanError = (value) => {
   return null;
 };
 
-// The gate itself, shared by the SQL-free checks on both sides so "has a
-// challan" means exactly one thing.
-const hasChallan = (lot) => String(lot?.challan_no ?? '').trim() !== '';
+// Writing material off destroys a quantity on paper, so the reason is the whole
+// record -- "where did 60 go" has to be answerable a year later. Required for the
+// same reason a withdrawal's is, and separate from it because the two say
+// different things: one is material gone, the other is a row that should never
+// have existed.
+const WRITE_OFF_REASON_MAX = 300;
 
-// Quantities (metres) use the same 2dp rule but must be strictly positive --
-// forwarding or receiving zero metres is not a thing that happens.
+const writeOffReasonError = (value) => {
+  const text = String(value ?? '').trim();
+  if (!text) return 'A reason is required to write material off';
+  if (text.length > WRITE_OFF_REASON_MAX) {
+    return `Reason can be at most ${WRITE_OFF_REASON_MAX} characters`;
+  }
+  return null;
+};
+
+// Quantities use the same 2dp rule but must be strictly positive -- sending or
+// receiving zero of something is not a thing that happens. A challan where
+// NOTHING came back is not a challan that arrived empty, it is material gone, and
+// it is recorded as a write-off against the lot instead.
 const qtyError = (value, label) => {
   if (value == null || value === '') return `${label} is required`;
   const n = Number(value);
@@ -182,8 +193,9 @@ const qtyError = (value, label) => {
 };
 
 module.exports = {
-  STAGES, STATUS, OPEN_STATUSES, EPSILON, REVERT_REASON_MAX, CHALLAN_MAX,
+  STAGES, STATUS, OPEN_STATUSES, EPSILON,
+  REVERT_REASON_MAX, WRITE_OFF_REASON_MAX, CHALLAN_MAX,
   isValidStage, nextStage, prevStage,
   effectiveAfterRate, balanceOf, computeStatus, statusSql,
-  moneyError, qtyError, revertReasonError, challanError, hasChallan,
+  moneyError, qtyError, revertReasonError, writeOffReasonError, challanError,
 };

@@ -12,15 +12,16 @@ export const STAGES = ['Gray', 'Processed', 'Stitched', 'Packed'];
 export const ALL_TAB = 'All';
 export const STAGE_TABS = [...STAGES, ALL_TAB];
 
-export const STATUSES = ['In Transit', 'Pending', 'Partial', 'Forwarded', 'In Stock', 'Closed'];
+// No In Transit, deliberately. Adding a challan IS sending the lot on, so no row
+// ever sits between the two. Shortage is a quantity in its own column, not a
+// state: sent 40 and back 38 is an ordinary lot holding 38 with 2 short.
+export const STATUSES = ['Pending', 'Partial', 'Forwarded', 'In Stock', 'Closed'];
 
-// Outstanding work: out at a processor, still holding stock, or packed but not
-// yet dispatched. Twin of OPEN_STATUSES in the backend service, keep in step.
-export const OPEN_STATUSES = ['In Transit', 'Pending', 'Partial', 'In Stock'];
+// Outstanding work: still holding stock, or packed but not yet dispatched. Twin
+// of OPEN_STATUSES in the backend service, keep in step.
+export const OPEN_STATUSES = ['Pending', 'Partial', 'In Stock'];
 
 export const STATUS_COLORS = {
-  // Dispatched under a challan, nothing back yet.
-  'In Transit': 'yellow',
   Pending: 'blue',
   Partial: 'yellow',
   Forwarded: 'green',
@@ -104,6 +105,18 @@ export const revertReasonError = (value) => {
   return null;
 };
 
+// Writing material off destroys a quantity on paper, so "where did 60 go" has to
+// stay answerable. Separate from the withdrawal reason because the two say
+// different things: material gone, versus a row that should never have existed.
+export const WRITE_OFF_REASON_MAX = 300;
+
+export const writeOffReasonError = (value) => {
+  const text = String(value ?? '').trim();
+  if (!text) return 'A reason is required to write material off';
+  if (text.length > WRITE_OFF_REASON_MAX) return `Reason can be at most ${WRITE_OFF_REASON_MAX} characters`;
+  return null;
+};
+
 // After Rate defaults to carried-in rate plus this stage's process rate, and
 // stays on that default until the user types over it.
 export const defaultAfterRate = (rate, processRate) => {
@@ -122,6 +135,15 @@ export const fmtQty = (value, unit) => {
   const n = fmtNum(value);
   if (n === '—') return n;
   return unit ? `${n} ${unit}` : n;
+};
+
+// What was sent but never arrived. Null on an origin lot, which nobody sent, so
+// the column renders blank rather than as a zero. Twin of the `short` expression
+// in LOT_SELECT -- the server is the authority, this is for a form that has not
+// submitted yet.
+export const shortOf = (sentQty, receivedQty) => {
+  if (sentQty == null || sentQty === '' || receivedQty == null || receivedQty === '') return null;
+  return Math.round((Number(sentQty) - Number(receivedQty)) * 100) / 100;
 };
 
 export const fullIncomingNo = (row) =>
