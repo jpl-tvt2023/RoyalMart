@@ -19,6 +19,21 @@ export function AuthProvider({ children }) {
 
   const login = useCallback(async (username, password) => {
     const { data } = await apiLogin(username, password);
+
+    // A 200 without a token means the backend wants a second factor
+    // (`{ mfaRequired: true }`) — there is no TOTP prompt in this UI yet. Fail
+    // loudly instead of storing `undefined`, which lands the *string*
+    // "undefined" in localStorage; that is truthy in the request interceptor, so
+    // every later call goes out as `Bearer undefined` and 401-loops in a way
+    // that survives reloads until site data is cleared by hand.
+    if (!data?.accessToken) {
+      throw new Error(
+        data?.mfaRequired
+          ? 'This account has two-factor authentication enabled, which the portal does not support yet. Ask an admin to disable it.'
+          : 'Login failed — unexpected response from the server.'
+      );
+    }
+
     localStorage.setItem('accessToken', data.accessToken);
     localStorage.setItem('user', JSON.stringify(data.user));
     setUser(data.user);
