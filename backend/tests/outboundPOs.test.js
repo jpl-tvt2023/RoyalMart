@@ -1112,11 +1112,35 @@ describe('Outbound POs API', () => {
 
       test('the stage picks the prefix — the client never names one', async () => {
         const { poId, lineId } = await fabricLine();
-        const created = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Packed' }));
+        // Packed is one of the two stages that count pieces, so the delivery
+        // carries a dozen count as well as its metres.
+        const created = await postReceipt(poId, lineId,
+          fabricBody({ incoming_stage: 'Packed', received_dozens: 20 }));
         expect(created.status).toBe(201);
         const receipt = (await lineOf(poId)).receipts[0];
         expect(receipt.incoming_stage).toBe('Packed');
         expect(receipt.incoming_prefix).toBeTruthy();
+        expect(receipt.received_dozens).toBe(20);
+      });
+
+      // Migration 081 made Panchal receivable: fabric can be bought straight
+      // into the warehouse. Third Party never can — that is where goods leave.
+      test('Panchal is receivable and Third Party is not', async () => {
+        const { poId, lineId } = await fabricLine();
+        const ok = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Panchal' }));
+        expect(ok.status).toBe(201);
+
+        const { poId: p2, lineId: l2 } = await fabricLine();
+        const refused = await postReceipt(p2, l2, fabricBody({ incoming_stage: 'Third Party' }));
+        expect(refused.status).toBe(400);
+        expect(refused.body.message).toMatch(/Stage must be one of/);
+      });
+
+      test('dozens are required when the goods arrive already made up', async () => {
+        const { poId, lineId } = await fabricLine();
+        const res = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Stitched' }));
+        expect(res.status).toBe(400);
+        expect(res.body.message).toMatch(/Dozens Received is required/);
       });
 
       test('an unknown stage is refused', async () => {

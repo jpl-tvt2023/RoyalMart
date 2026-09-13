@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest';
 import {
   STAGES, STAGE_TABS, ALL_TAB, nextStage, DESTINATIONS, destinationsFor, canSendTo,
   EXIT_STAGE, STOCK_STAGE, PARTY_USE_STAGES, rateLadderStages,
+  DOZEN_STAGES, countsDozens, metresPerDozen, rateUnitFor,
   carriedIncomingNo, soleActivePrefix,
   challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX, fmtQty,
   writeOffReasonError, WRITE_OFF_REASON_MAX, shortOf, STATUSES, OPEN_STATUSES,
@@ -64,6 +65,44 @@ describe('DESTINATIONS', () => {
   test('party use tags are exactly the destinations', () => {
     expect(PARTY_USE_STAGES).not.toContain('Gray');
     expect(PARTY_USE_STAGES).toEqual([...new Set(Object.values(DESTINATIONS).flat())]);
+  });
+});
+
+// Metres stay the currency of the chain. Dozens are an extra count that only
+// exists once there are pieces to count, and the yield is what the count is for.
+describe('dozens and yield', () => {
+  test('only Stitched and Packed count pieces', () => {
+    expect(DOZEN_STAGES).toEqual(['Stitched', 'Packed']);
+    expect(countsDozens('Stitched')).toBe(true);
+    expect(countsDozens('Packed')).toBe(true);
+    for (const stage of ['Gray', 'Processed', 'Panchal', 'Third Party']) {
+      expect(countsDozens(stage)).toBe(false);
+    }
+  });
+
+  test('the yield is metres over dozens, to two places', () => {
+    expect(metresPerDozen(96, 40)).toBe(2.4);
+    expect(metresPerDozen(100, 3)).toBe(33.33);
+  });
+
+  // Number(null) and Number('') are both 0, which is finite — so these have to
+  // be rejected before the cast or an empty field reads as a yield of 0 while
+  // the user is still typing.
+  test('a missing or zero half is blank, never 0 and never Infinity', () => {
+    expect(metresPerDozen(96, 0)).toBeNull();
+    expect(metresPerDozen(null, 40)).toBeNull();
+    expect(metresPerDozen('', 40)).toBeNull();
+    expect(metresPerDozen(96, null)).toBeNull();
+    expect(metresPerDozen(96, '')).toBeNull();
+  });
+
+  // A stitcher is paid by the dozen, a dyer by the metre. The label has to say
+  // which, because the same field means different money at different stages.
+  test('the rate is per dozen exactly where pieces are counted', () => {
+    expect(rateUnitFor('Stitched')).toBe('dozen');
+    expect(rateUnitFor('Packed')).toBe('dozen');
+    expect(rateUnitFor('Processed')).toBe('metre');
+    expect(rateUnitFor('Panchal')).toBe('metre');
   });
 });
 

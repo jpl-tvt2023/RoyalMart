@@ -10,6 +10,24 @@ let prefixes;
 const uid = () => Math.random().toString(36).slice(2, 8);
 const A = (r) => r.set('Authorization', `Bearer ${token}`);
 
+const { DESTINATIONS, DOZEN_STAGES } = require('../src/services/stitching.service');
+
+// Where a forward will land if the caller named no target: the parent's first
+// destination, which is exactly what create() falls back to.
+async function defaultTargetFor(parentSrc, parentId) {
+  if (parentId == null) return null;
+  const { rows } = parentSrc === 'receipt'
+    ? await db.execute({
+      sql: `SELECT sp.stage FROM outbound_po_line_receipts r
+              JOIN stitching_prefixes sp ON sp.id = r.incoming_prefix_id
+             WHERE r.id = ?`,
+      args: [parentId],
+    })
+    : await db.execute({ sql: 'SELECT stage FROM stitching_entries WHERE id = ?', args: [parentId] });
+  const parentStage = rows[0]?.stage;
+  return parentStage ? (DESTINATIONS[parentStage] || [])[0] || null : null;
+}
+
 const api = {
   listStage: (query = {}) => A(request(app).get('/api/stitching').query({ page_size: 'all', ...query })),
   // Adding a challan IS sending the lot on, so this is one call again. The
@@ -22,13 +40,23 @@ const api = {
   // challan_type defaults to Fresh for the same reason the challan number does:
   // it is required on every dispatch, and only the tests that are ABOUT the
   // grade care which one. Those pass their own.
-  forward: (body) => A(request(app).post('/api/stitching')).send({
-    challan_no: `CH-${uid()}`,
-    challan_type: 'Fresh',
-    ...(body.received_qty == null && body.sent_qty != null
-      ? { received_qty: body.sent_qty } : {}),
-    ...body,
-  }),
+  forward: async (body) => {
+    // Dozens are required wherever the goods land as countable pieces. Rather
+    // than sprinkling a count through every chain-walking test that happens to
+    // pass through Stitched or Packed, the fixture works out the destination the
+    // same way the server does and supplies one. A test that is ABOUT the count
+    // passes its own, and one that is about the count being MISSING passes null.
+    const target = body.target_stage || await defaultTargetFor(body.parent_src, body.parent_id);
+    return A(request(app).post('/api/stitching')).send({
+      challan_no: `CH-${uid()}`,
+      challan_type: 'Fresh',
+      ...(body.received_qty == null && body.sent_qty != null
+        ? { received_qty: body.sent_qty } : {}),
+      ...(DOZEN_STAGES.includes(target) && body.received_dozens === undefined
+        ? { received_dozens: 12 } : {}),
+      ...body,
+    });
+  },
   writeOff: (body) => A(request(app).post('/api/stitching/write-off')).send(body),
   removeChallan: (id, reason) =>
     A(request(app).post(`/api/stitching/${id}/remove`)).send({ reason }),
@@ -2070,7 +2098,7 @@ describe('Dozens and yield at Stitched and Packed', () => {
     const parent = await processedLot(100);
     const r = await api.forward({
       parent_src: 'entry', parent_id: parent, target_stage: 'Stitched',
-      party_name: 'Stitch', sent_qty: 100, received_qty: 96,
+      party_name: 'Stitch', sent_qty: 100, received_qty: 96, received_dozens: null,
     });
     expect(r.status).toBe(400);
     expect(r.body.message).toMatch(/Dozens Received is required/);

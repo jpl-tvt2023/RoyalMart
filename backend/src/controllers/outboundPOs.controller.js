@@ -353,7 +353,7 @@ async function validateReceiptFields(body, { requireAll, line }) {
   //
   // Keyed on the stage being RECEIVED AT, not on fabric alone: a Gray receipt
   // has no pieces to count.
-  const dozenStage = fabric && countsDozens(trimOrNull(body?.incoming_stage));
+  const dozenStage = fabric && countsDozens(String(body?.incoming_stage ?? '').trim());
   if (present('received_dozens') && !blank(body?.received_dozens)) {
     if (!dozenStage) return 'Dozens are only counted on fabric received at the Stitched or Packed stage';
     const err = qtyError(body.received_dozens, 'Dozens Received');

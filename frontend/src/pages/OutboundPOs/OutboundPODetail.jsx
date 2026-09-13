@@ -484,6 +484,10 @@ export default function OutboundPODetail() {
                             two sit side by side. Blank on anything else, which
                             travels no stage chain and has no metres. */}
                         <th className={`${thCls} w-20`}>Qty in metres</th>
+                        {/* Only fabric bought in ALREADY stitched or packed has
+                            pieces to count, so this is blank on most rows —
+                            including every Gray one. */}
+                        <th className={`${thCls} w-16`}>Dozens</th>
                         <th className={`${thCls} w-16`}>Rate <span className="text-red-500">*</span></th>
                         <th className={`${thCls} w-16`}>Process</th>
                         <th className={`${thCls} w-16`}>After</th>
@@ -619,6 +623,12 @@ export default function OutboundPODetail() {
                                     <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>
                                       {l.goes_to_stitching ? num(receipt.qty_in_metres) : ''}
                                     </td>
+                                    <td className={`${tdCls} text-gray-600`}>
+                                      {/* Blank unless the goods arrived as
+                                          countable pieces: fabric received at
+                                          Stitched or Packed. */}
+                                      {receipt.received_dozens == null ? '' : num(receipt.received_dozens)}
+                                    </td>
                                     <td
                                       className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''} ${(receipt.flags || []).includes('rate_mismatch') ? 'text-red-600 font-semibold' : ''}`}
                                       title={(receipt.flags || []).includes('rate_mismatch') ? `${FLAG_META.rate_mismatch.hint} (agreed ${l.rate})` : undefined}
@@ -738,7 +748,7 @@ const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2 whitespace-nowrap';
 
 // Receipt-side column count, for the colSpan on the "Add receipt" and
 // "No receipts yet" rows. Keep in step with the receipt <th> block above:
-// Recd Qty, Qty in metres, Rate, Process, After, Bill No, Incoming No,
+// Recd Qty, Qty in metres, Dozens, Rate, Process, After, Bill No, Incoming No,
 // Checked By, Updated, Actions. The Updated column is hidden below 1600px but
 // still occupies a slot in the colSpan, which is correct — a spanned cell counts
 // hidden columns.
@@ -747,7 +757,7 @@ const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2 whitespace-nowrap';
 // Stitching page, which is where material is dispatched to a processor and so
 // where a challan is actually raised — Bill No already covers what a PO receipt
 // needs to record.
-const RECEIPT_COLSPAN = 10;
+const RECEIPT_COLSPAN = 11;
 
 // Cell chrome WITHOUT a width. cellCls keeps w-full for the single-control
 // cells; a cell packing two controls composes from cellBase and sizes them

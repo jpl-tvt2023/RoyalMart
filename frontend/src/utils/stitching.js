@@ -83,6 +83,12 @@ export const countsDozens = (stage) => DOZEN_STAGES.includes(stage);
 // than 0 or Infinity when either half is missing, so the field renders blank
 // instead of a number that means nothing.
 export const metresPerDozen = (receivedQty, receivedDozens) => {
+  // Checked BEFORE the cast, because Number(null) and Number('') are both 0 —
+  // which is finite, and would turn an empty field into a yield of 0 rather
+  // than a blank while the user is still typing.
+  if (receivedQty == null || receivedQty === '' || receivedDozens == null || receivedDozens === '') {
+    return null;
+  }
   const qty = Number(receivedQty);
   const dz = Number(receivedDozens);
   if (!Number.isFinite(qty) || !Number.isFinite(dz) || dz <= 0) return null;
