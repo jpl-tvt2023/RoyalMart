@@ -22,7 +22,57 @@ export const EMPTY_RECEIPT = {
 // Only fabric travels the Stitching stages, so only fabric has a stage and a
 // metres figure. The flag lives on the outbound product master and rides down
 // on the PO line.
+//
+// A MISSING field reads as "not fabric", indistinguishably from a genuine
+// non-fabric line. That is why toLineState below lives in this file and is
+// pinned by a test: the flag going astray on the way to the modal is silent,
+// and shows up only as a server rejection the form never warned about.
 export const isFabricLine = (line) => Number(line?.goes_to_stitching) === 1;
+
+// An article's identity: the tuple, joined so it can live in a <select> value.
+// Matches are case-insensitive, like the backend's.
+export const mapKey = (a) => `${a.category}${a.item_name}${a.variant || ''}`.toLowerCase();
+
+export const mapLabel = (a) => `${a.category} · ${a.item_name}${a.variant ? ` · ${a.variant}` : ''}`;
+
+// A blank line for the detail page's editable grid. Keep its keys in step with
+// toLineState's — a test asserts the two agree, so a field added to one cannot
+// quietly go missing from the other.
+export const emptyLine = () => ({
+  _key: `new-${Math.random().toString(36).slice(2)}`,
+  id: null, mapping: '', category: '', item_name: '', variant: '',
+  qty: 1, rate: 0, short: 0, received: 0, receipts: [], unit_metric: '', flags: [],
+  goes_to_stitching: 0,
+  updated_by_name: '', updated_at: null, deleted_at: null, deleted_by: null,
+});
+
+// The server's line row, projected into the shape the detail page's form binds
+// to. It is an allowlist rather than a spread because the form owns _key and
+// mapping, which the server knows nothing about.
+//
+// It lives HERE, not in the page, for the reason at the top of this file: the
+// page and the modal must not drift. ReceiptModal is opened from this projected
+// state, so anything the modal reads has to survive the projection — and
+// goes_to_stitching once did not, which suppressed the Stage, Qty in metres and
+// Dozens fields on every fabric line while the server went on demanding them.
+export function toLineState(l) {
+  return {
+    _key: String(l.id),
+    id: l.id,
+    mapping: mapKey(l),
+    category: l.category, item_name: l.item_name, variant: l.variant || '',
+    qty: l.qty, rate: l.rate, short: l.short, received: l.received,
+    unit_metric: l.unit_metric || '',
+    flags: l.flags || [],
+    // Server-derived, and the modal's ONLY signal that this line travels the
+    // stitching stages. Defaulted rather than passed through so a row that
+    // predates the flag reads as non-fabric instead of NaN.
+    goes_to_stitching: l.goes_to_stitching ?? 0,
+    updated_by_name: l.updated_by_name, updated_at: l.updated_at,
+    deleted_at: l.deleted_at, deleted_by: l.deleted_by,
+    receipts: l.receipts || [],
+  };
+}
 
 // A receipt can arrive at any stage EXCEPT Third Party, which is where material
 // leaves us -- nothing is ever bought into it. Twin of RECEIPT_STAGES on the

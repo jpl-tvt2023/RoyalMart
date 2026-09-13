@@ -21,22 +21,14 @@ import { FLAG_META } from '../../utils/outboundPOFlags';
 import { isValidDateString } from '../../utils/dateValidation';
 import { formatDateTime } from '../../utils/formatters';
 import ReceiptModal from './ReceiptModal';
+// The line-shape contract lives with the receipt rules, not here, so one test
+// can hold this page and ReceiptModal to the same set of fields. Dropping one
+// silently suppressed the modal's fabric fields once already.
+import { emptyLine, mapKey, mapLabel, toLineState } from './receiptFields';
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
 
 const today = () => new Date().toISOString().slice(0, 10);
-const emptyLine = () => ({
-  _key: `new-${Math.random().toString(36).slice(2)}`,
-  id: null, mapping: '', category: '', item_name: '', variant: '',
-  qty: 1, rate: 0, short: 0, received: 0, receipts: [], unit_metric: '', flags: [],
-  updated_by_name: '', updated_at: null, deleted_at: null, deleted_by: null,
-});
-
-// A mapping option's identity: the article tuple, joined so it can live in a
-// <select> value. Matches are case-insensitive like the backend.
-const mapKey = (a) => `${a.category}${a.item_name}${a.variant || ''}`.toLowerCase();
-const mapLabel = (a) => `${a.category} · ${a.item_name}${a.variant ? ` · ${a.variant}` : ''}`;
-
 // Per-line status, mirroring the backend's computeLineStatus.
 function computeLineStatus(l) {
   const qty = Number(l.qty), received = Number(l.received) || 0, short = Number(l.short) || 0;
@@ -51,21 +43,6 @@ function deriveStatus(activeLines) {
   if (activeLines.every(l => computeLineStatus(l) === 'Closed')) return 'Closed';
   if (activeLines.some(l => computeLineStatus(l) !== 'Open')) return 'Partially Received';
   return 'Open';
-}
-
-function toLineState(l) {
-  return {
-    _key: String(l.id),
-    id: l.id,
-    mapping: mapKey(l),
-    category: l.category, item_name: l.item_name, variant: l.variant || '',
-    qty: l.qty, rate: l.rate, short: l.short, received: l.received,
-    unit_metric: l.unit_metric || '',
-    flags: l.flags || [],
-    updated_by_name: l.updated_by_name, updated_at: l.updated_at,
-    deleted_at: l.deleted_at, deleted_by: l.deleted_by,
-    receipts: l.receipts || [],
-  };
 }
 
 export default function OutboundPODetail() {
@@ -170,7 +147,13 @@ export default function OutboundPODetail() {
   const changeVendor = (vendorId) => {
     setPo(p => ({ ...p, vendor_id: vendorId }));
     // Different vendor = different mapping catalogue; reset picked articles.
-    setLines(ls => ls.map(l => ({ ...l, mapping: '', category: '', item_name: '', variant: '', unit_metric: '' })));
+    // goes_to_stitching is derived from (category, item_name, unit_metric), so it
+    // has to go when they do -- otherwise the line keeps a stale flag and the
+    // receipt modal offers stage fields for an article nobody has picked yet.
+    setLines(ls => ls.map(l => ({
+      ...l, mapping: '', category: '', item_name: '', variant: '', unit_metric: '',
+      goes_to_stitching: 0,
+    })));
   };
 
   // Counts flagged receipts (not lines) so the banner headline matches what the

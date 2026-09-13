@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest';
 import {
   isFabricLine, RECEIPT_STAGES, outstandingOf, qtyDifference, offeredQtyDiffAction,
   receiptFieldError, stageOptionsFor,
+  emptyLine, toLineState,
 } from '../receiptFields';
 import { STAGES } from '../../../utils/stitching';
 
@@ -113,5 +114,64 @@ describe('receiptFieldError', () => {
       { ...valid, qty_diff_action: 'write_off', qty_diff_reason: 'x'.repeat(301) },
       { line: fabric },
     )).toMatch(/at most 300 characters/);
+  });
+});
+
+
+// The PO detail page does not hand ReceiptModal the API row — it hands it a
+// projection, and the projection is an allowlist. Anything the modal reads has
+// to survive it.
+//
+// This exists because goes_to_stitching once did not. The API sent it, the page
+// dropped it, and isFabricLine read the missing field as "not fabric" — so the
+// Stage, Qty in metres and Dozens fields silently vanished on every fabric line
+// while the server went on rejecting the save with "Stage is required". Nothing
+// threw, and nothing in the UI said why.
+describe('toLineState — the page/modal line contract', () => {
+  // Shaped like a row from GET /outbound-pos/:id.
+  const serverRow = {
+    id: 52, po_id: 19, line_no: 1,
+    category: 'Raw Material', item_name: 'Handkerchief - Bundle Fabric', variant: null,
+    qty: 250, rate: 25, short: 0, received: 50, unit_metric: 'taga',
+    goes_to_stitching: 1,
+    flags: [], receipts: [],
+    updated_by_name: 'admin', updated_at: '2026-09-13 10:00:00',
+    deleted_at: null, deleted_by: null,
+  };
+
+  // THE regression. One assertion, and it is the whole bug.
+  test('a fabric line is still fabric after the projection', () => {
+    expect(isFabricLine(serverRow)).toBe(true);
+    expect(isFabricLine(toLineState(serverRow))).toBe(true);
+  });
+
+  test('every field ReceiptModal reads survives', () => {
+    const line = toLineState(serverRow);
+    for (const key of ['category', 'item_name', 'variant', 'qty', 'rate',
+      'received', 'short', 'unit_metric', 'goes_to_stitching', 'id']) {
+      expect(line).toHaveProperty(key);
+    }
+    expect(line.goes_to_stitching).toBe(1);
+    expect(line.unit_metric).toBe('taga');
+  });
+
+  test('a non-fabric line reads as non-fabric rather than as missing', () => {
+    const line = toLineState({ ...serverRow, goes_to_stitching: 0 });
+    expect(line.goes_to_stitching).toBe(0);
+    expect(isFabricLine(line)).toBe(false);
+  });
+
+  // A row written before the flag existed must read as non-fabric, not NaN.
+  test('an absent flag defaults rather than propagating undefined', () => {
+    const { goes_to_stitching, ...withoutFlag } = serverRow;
+    expect(goes_to_stitching).toBe(1);
+    expect(toLineState(withoutFlag).goes_to_stitching).toBe(0);
+  });
+
+  // The two shapes feed the same grid and the same modal, so a field added to
+  // one and not the other is the next instance of this bug.
+  test('emptyLine and toLineState agree on their fields', () => {
+    expect(Object.keys(toLineState(serverRow)).sort())
+      .toEqual(Object.keys(emptyLine()).sort());
   });
 });
