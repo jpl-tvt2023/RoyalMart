@@ -5,7 +5,9 @@
 // rules and duplicating them would let the two drift — which matters most for
 // receiptFieldError, whose whole point is to reproduce the server's answer.
 
-import { moneyError, qtyError, defaultAfterRate, STAGES, EPSILON } from '../../utils/stitching';
+import {
+  moneyError, qtyError, defaultAfterRate, STAGES, EPSILON, countsDozens, metresPerDozen,
+} from '../../utils/stitching';
 
 // Twin of INCOMING_NO_MAX in backend/src/controllers/outboundPOs.controller.js,
 // keep the two in step.
@@ -14,7 +16,7 @@ export const INCOMING_NO_MAX = 50;
 export const EMPTY_RECEIPT = {
   received_qty: '', received_rate: '', bill_no: '', incoming_no: '', checked_by: '',
   process_rate: '', after_rate: '', incoming_stage: '',
-  qty_in_metres: '', qty_diff_action: '', qty_diff_reason: '',
+  qty_in_metres: '', received_dozens: '', qty_diff_action: '', qty_diff_reason: '',
 };
 
 // Only fabric travels the Stitching stages, so only fabric has a stage and a
@@ -26,6 +28,17 @@ export const isFabricLine = (line) => Number(line?.goes_to_stitching) === 1;
 // leaves us -- nothing is ever bought into it. Twin of RECEIPT_STAGES on the
 // server.
 export const RECEIPT_STAGES = STAGES.filter(s => s !== 'Third Party');
+
+// Fabric bought in ALREADY STITCHED or ALREADY PACKED arrives as countable
+// pieces, so it carries a dozen count exactly as a challan into those stages
+// does. Keyed on the stage being received at, not on fabric alone: a Gray
+// receipt has no pieces to count.
+export const receiptCountsDozens = (line, incomingStage) =>
+  isFabricLine(line) && countsDozens(incomingStage);
+
+// The yield, for the read-only field beside the count. Re-exported here so the
+// receipt modal and the stitching page compute it the same way.
+export { metresPerDozen };
 
 // What is still due on a line: ordered, less what has arrived, less what has
 // been written off as never coming. The number a delivery is measured against,
@@ -82,6 +95,10 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
     if (!String(v.incoming_no ?? '').trim()) return 'Incoming No is required';
     const metresErr = qtyError(v.qty_in_metres, 'Qty in metres');
     if (metresErr) return metresErr;
+    if (countsDozens(v.incoming_stage)) {
+      const dozensErr = qtyError(v.received_dozens, 'Dozens Received');
+      if (dozensErr) return dozensErr;
+    }
   }
 
   // A ticked box has to say why, and has to match the difference it explains.

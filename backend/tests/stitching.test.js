@@ -18,8 +18,13 @@ const api = {
   //
   // received_qty defaults to sent_qty: nothing short is the ordinary case, and
   // the tests that are about shortage say so explicitly.
+  //
+  // challan_type defaults to Fresh for the same reason the challan number does:
+  // it is required on every dispatch, and only the tests that are ABOUT the
+  // grade care which one. Those pass their own.
   forward: (body) => A(request(app).post('/api/stitching')).send({
     challan_no: `CH-${uid()}`,
+    challan_type: 'Fresh',
     ...(body.received_qty == null && body.sent_qty != null
       ? { received_qty: body.sent_qty } : {}),
     ...body,
@@ -30,6 +35,11 @@ const api = {
   patchLot: (id, body) => A(request(app).patch(`/api/stitching/${id}`)).send(body),
   deleteLot: (id) => A(request(app).delete(`/api/stitching/${id}`)),
   restoreLot: (id) => A(request(app).post(`/api/stitching/${id}/restore`)),
+  listParties: (query = {}) => A(request(app).get('/api/stitching/parties').query(query)),
+  listPartyMaster: () => A(request(app).get('/api/configurations/stitching-parties')),
+  createParty: (body) => A(request(app).post('/api/configurations/stitching-parties')).send(body),
+  patchParty: (id, body) => A(request(app).patch(`/api/configurations/stitching-parties/${id}`)).send(body),
+  deleteParty: (id) => A(request(app).delete(`/api/configurations/stitching-parties/${id}`)),
   listPrefixes: () => A(request(app).get('/api/configurations/stitching-prefixes')),
   createPrefix: (body) => A(request(app).post('/api/configurations/stitching-prefixes')).send(body),
   patchPrefix: (id, body) => A(request(app).patch(`/api/configurations/stitching-prefixes/${id}`)).send(body),
@@ -121,9 +131,11 @@ beforeAll(async () => {
   token = login.body.accessToken;
   warehousePocId = login.body.user.id;
 
-  // checked_by is validated with the strict userHasRole, so being Admin is not
-  // enough. Tag the seeded admin rather than mint a user, matching the approach
-  // in outboundPOs.test.js.
+  // Still needed for the RECEIPT side: outbound PO receipts validate checked_by
+  // with the strict userHasRole, so being Admin is not enough there. Stitching
+  // challans no longer ask -- they record the session user -- but every lot in
+  // this suite starts life as a receipt. Tag the seeded admin rather than mint a
+  // user, matching the approach in outboundPOs.test.js.
   await db.execute({
     sql: "INSERT OR IGNORE INTO user_roles (user_id, role) VALUES (?, 'Warehouse_POC')",
     args: [warehousePocId],
@@ -149,9 +161,13 @@ afterAll(async () => {
 });
 
 describe('Stitching prefixes master', () => {
-  test('migration 067 seeds one active prefix per stage', () => {
-    expect(Object.keys(prefixes).sort()).toEqual(['Gray', 'Packed', 'Processed', 'Stitched']);
+  // 067 seeded four, 081 added PNL for Panchal. Third Party is deliberately
+  // absent and has no prefix: nothing ARRIVES there, so there is nothing to
+  // number -- see the CHECK in 081.
+  test('one active prefix is seeded per receivable stage', () => {
+    expect(Object.keys(prefixes).sort()).toEqual(['Gray', 'Packed', 'Panchal', 'Processed', 'Stitched']);
     for (const p of Object.values(prefixes)) expect(p.is_active).toBe(1);
+    expect(prefixes).not.toHaveProperty('Third Party');
   });
 
   test('a duplicate prefix code is a 409', async () => {
@@ -522,7 +538,11 @@ describe('Forwarding through the stages', () => {
     expect(res.body.message).toMatch(/only 100 is left/);
   });
 
-  test('the full Gray to Packed chain compounds the rate at every stage', async () => {
+  // WAS "compounds the rate at every stage". Rates used to roll up into a running
+  // after_rate, so a lot at Packed showed one number with four stages inside it.
+  // Each stage keeps its own figure now, and the ladder reports them separately
+  // against the PO rate -- which is what the user actually asked to see.
+  test('each stage keeps its own rate, against one shared PO rate', async () => {
     const { receiptId } = await grayLot({ qty: 100, process_rate: 5 });
     const f1 = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye',
@@ -541,31 +561,98 @@ describe('Forwarding through the stages', () => {
 
     const packed = await api.listStage({ stage: 'Packed' });
     const lot = findLot(packed.body.rows, 'entry', f3.body.id);
-    expect(lot.rate).toBe(65);       // 50 + 5 + 7 + 3
-    expect(lot.after_rate).toBe(67); // + 2
-    expect(lot.status).toBe('In Stock');
-    expect(lot.can_forward).toBe(false);
+
+    // One PO rate, shared by every lot in the chain and read off the origin
+    // receipt rather than copied down it.
+    expect(lot.po_rate).toBe(50);
+    // This lot's own stage rate, and only this lot's.
+    expect(lot.stage_rate).toBe(2);
+
+    // The ladder: what each stage charged, for the stages actually travelled.
+    expect(lot.rate_ladder).toEqual({
+      Gray: 5,        // the receipt's process rate — bought in at Gray
+      Processed: 7,
+      Stitched: 3,
+      Packed: 2,
+    });
+
+    // Packed is an ordinary forwarding stage now — Panchal is where stock sits.
+    expect(lot.status).toBe('Pending');
+    expect(lot.can_forward).toBe(true);
+    expect(lot.destinations).toEqual(['Panchal', 'Third Party']);
     // The article survives three hops because origin_receipt_id is carried down.
     expect(lot.item_name).toBe('Handkerchief - Bundle Fabric');
   });
 
-  test('a Packed lot cannot be forwarded further', async () => {
+  test('a lot that skipped a stage has no rate for it', async () => {
+    const { receiptId } = await grayLot({ qty: 100, process_rate: 5 });
+    const f1 = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye',
+      sent_qty: 100, received_qty: 98, process_rate: 7,
+    });
+    // Processed straight to Packed, skipping Stitched entirely.
+    const f2 = await api.forward({
+      parent_src: 'entry', parent_id: f1.body.id, target_stage: 'Packed',
+      party_name: 'Pack', sent_qty: 98, received_qty: 98, process_rate: 4,
+    });
+    expect(f2.body.stage).toBe('Packed');
+
+    const packed = await api.listStage({ stage: 'Packed' });
+    const lot = findLot(packed.body.rows, 'entry', f2.body.id);
+    expect(lot.rate_ladder).toEqual({ Gray: 5, Processed: 7, Packed: 4 });
+    expect(lot.rate_ladder).not.toHaveProperty('Stitched');
+  });
+
+  // WAS "a Packed lot cannot be forwarded further". Packed forwards on to the
+  // warehouse now -- Panchal is the end of the chain, and what sits there is
+  // stock that leaves by being closed rather than forwarded.
+  test('a Panchal lot cannot be forwarded further', async () => {
     const { receiptId } = await grayLot();
     let parent = { src: 'receipt', id: receiptId };
-    for (const stage of ['Processed', 'Stitched', 'Packed']) {
+    for (const stage of ['Processed', 'Stitched', 'Packed', 'Panchal']) {
       const res = await api.forward({
-        parent_src: parent.src, parent_id: parent.id, party_name: 'P',
-        sent_qty: 100, received_qty: 100, checked_by: warehousePocId,
+        parent_src: parent.src, parent_id: parent.id, target_stage: stage, party_name: 'P',
+        sent_qty: 100, received_qty: 100,
       });
       expect(res.body.stage).toBe(stage);
       parent = { src: 'entry', id: res.body.id };
     }
     const res = await api.forward({
       parent_src: 'entry', parent_id: parent.id, party_name: 'P',
-      sent_qty: 1, received_qty: 1, checked_by: warehousePocId,
+      sent_qty: 1, received_qty: 1,
     });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/already Packed/);
+    expect(res.body.message).toMatch(/nowhere further/);
+  });
+
+  test('a lot sold to a third party cannot be sent anywhere', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const f1 = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye',
+      sent_qty: 100, received_qty: 100,
+    });
+    const sold = await api.forward({
+      parent_src: 'entry', parent_id: f1.body.id, target_stage: 'Third Party',
+      party_name: 'Buyer', sent_qty: 50, received_qty: 50, outbound_bill_no: 'OB-1',
+    });
+    expect(sold.status).toBe(201);
+    const res = await api.forward({
+      parent_src: 'entry', parent_id: sold.body.id, party_name: 'P',
+      sent_qty: 1, received_qty: 1,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/sold to a third party/);
+  });
+
+  test('a destination the graph does not allow is refused', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    // Gray goes to Processed and nowhere else.
+    const res = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, target_stage: 'Packed',
+      party_name: 'P', sent_qty: 10, received_qty: 10,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/can only be sent to Processed/);
   });
 
   test('the stage is never taken from the request body', async () => {
@@ -617,14 +704,39 @@ describe('Forwarding through the stages', () => {
     expect(res.body.message).toMatch(matcher);
   });
 
-  test('checked_by must be tagged Warehouse_POC', async () => {
+  // WAS "checked_by must be tagged Warehouse_POC". The field stopped being a
+  // question: it records WHO ENTERED the challan, taken from the session, and
+  // every logged-in user qualifies to have done that. Asking made every dispatch
+  // wait on picking a name the person filling the form already knew -- their own.
+  test('checked_by defaults to whoever entered the challan', async () => {
+    const { receiptId } = await grayLot();
+    const res = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'P',
+      sent_qty: 10, received_qty: 10,
+    });
+    expect(res.status).toBe(201);
+    const row = findLot((await api.listStage({ stage: 'Processed' })).body.rows, 'entry', res.body.id);
+    // The session user, which in this suite is the seeded admin.
+    expect(row.checked_by).toBe(warehousePocId);
+  });
+
+  test('an untagged user is accepted, because the tag no longer gates it', async () => {
     const { receiptId } = await grayLot();
     const res = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'P',
       sent_qty: 10, received_qty: 10, checked_by: untaggedUserId,
     });
+    expect(res.status).toBe(201);
+  });
+
+  test('a checked_by naming no real user is still refused', async () => {
+    const { receiptId } = await grayLot();
+    const res = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'P',
+      sent_qty: 10, received_qty: 10, checked_by: 999999,
+    });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/Warehouse_POC/);
+    expect(res.body.message).toMatch(/user not found/);
   });
 
   test('an unknown parent is a 404', async () => {
@@ -832,45 +944,68 @@ describe('Listing, filtering and sorting', () => {
     expect(res.body.page_size).toBe(10);
   });
 
-  test('the parties datalist offers vendors and previously typed processors', async () => {
-    const { receiptId, vendorName } = await grayLot();
-    const party = `Datalist Co ${uid()}`;
-    await api.forward({
-      parent_src: 'receipt', parent_id: receiptId, party_name: party,
-      sent_qty: 10, received_qty: 10, checked_by: warehousePocId,
-    });
-    const res = await A(request(app).get('/api/stitching/parties'));
-    expect(res.body).toContain(party);
-    expect(res.body).toContain(vendorName);
+  // Was "offers vendors and previously typed processors" -- it unioned
+  // outbound_vendors with every name ever typed, which offered every name for
+  // every job. Migration 079's master replaced that, and the use tags are the
+  // whole point: picking a destination should not then offer a packer for
+  // stitching work.
+  test('the party list comes from the master and is narrowed by use', async () => {
+    const stitcher = `Stitch Co ${uid()}`;
+    const packer = `Pack Co ${uid()}`;
+    await api.createParty({ name: stitcher, uses: ['Stitched'] });
+    await api.createParty({ name: packer, uses: ['Packed'] });
+
+    const all = await api.listParties();
+    expect(all.body).toEqual(expect.arrayContaining([stitcher, packer]));
+
+    const forStitching = await api.listParties({ use: 'Stitched' });
+    expect(forStitching.body).toContain(stitcher);
+    expect(forStitching.body).not.toContain(packer);
+  });
+
+  test('an inactive party is no longer offered', async () => {
+    const name = `Retired Co ${uid()}`;
+    const created = await api.createParty({ name, uses: ['Processed'] });
+    expect((await api.listParties({ use: 'Processed' })).body).toContain(name);
+    await api.deleteParty(created.body.id);
+    expect((await api.listParties({ use: 'Processed' })).body).not.toContain(name);
+  });
+
+  test('an unknown use is rejected rather than silently ignored', async () => {
+    const res = await api.listParties({ use: 'Nowhere' });
+    expect(res.status).toBe(400);
   });
 });
 
 // The SQL CASE in stitching.service.js drives filtering and paging, the JS
 // function labels rows; this pins them together the way the outbound PO flag
 // parity test does for its predicates.
-describe('Closing a Packed lot', () => {
-  // Walk a Gray lot all the way to Packed and hand back the leaf.
-  async function packedLot() {
+// Closing moved from Packed to Panchal. Closing means "this stock has left the
+// warehouse", and Panchal IS the warehouse -- Packed only held the role while the
+// chain had nowhere else to end.
+describe('Closing a Panchal lot', () => {
+  // Walk a Gray lot all the way to the warehouse and hand back the leaf.
+  async function panchalLot() {
     const { receiptId } = await grayLot({ qty: 100 });
     let parent = { src: 'receipt', id: receiptId };
-    for (const _ of ['Processed', 'Stitched', 'Packed']) {
+    for (const stage of ['Processed', 'Stitched', 'Packed', 'Panchal']) {
       const res = await api.forward({
-        parent_src: parent.src, parent_id: parent.id, party_name: 'P',
-        sent_qty: 100, received_qty: 100, checked_by: warehousePocId,
+        parent_src: parent.src, parent_id: parent.id, target_stage: stage,
+        party_name: 'P', sent_qty: 100, received_qty: 100,
       });
       parent = { src: 'entry', id: res.body.id };
     }
     return parent;
   }
 
-  test('a lot that reaches Packed is In Stock, not Closed', async () => {
-    const lot = await packedLot();
-    const packed = await api.listStage({ stage: 'Packed' });
-    expect(findLot(packed.body.rows, 'entry', lot.id).status).toBe('In Stock');
+  test('a lot that reaches Panchal is In Stock, not Closed', async () => {
+    const lot = await panchalLot();
+    const panchal = await api.listStage({ stage: 'Panchal' });
+    expect(findLot(panchal.body.rows, 'entry', lot.id).status).toBe('In Stock');
   });
 
   test('closing it makes it Closed, and reopening restores In Stock', async () => {
-    const lot = await packedLot();
+    const lot = await panchalLot();
 
     const closed = await api.close('entry', lot.id);
     expect(closed.status).toBe(200);
@@ -885,33 +1020,52 @@ describe('Closing a Packed lot', () => {
   });
 
   // The case migration 070's second pair of columns exists for: a lot can reach
-  // Packed without ever being a stitching_entries row.
-  test('a receipt bought straight at the Packed stage closes identically', async () => {
+  // the warehouse without ever being a stitching_entries row. Migration 081
+  // added the Panchal prefix that makes buying straight in there possible.
+  test('a receipt bought straight at the Panchal stage closes identically', async () => {
     const { poId, lineId } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_stage: 'Packed',
+      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal',
     });
 
-    let packed = await api.listStage({ stage: 'Packed' });
-    expect(findLot(packed.body.rows, 'receipt', receipt.body.id).status).toBe('In Stock');
+    let panchal = await api.listStage({ stage: 'Panchal' });
+    expect(findLot(panchal.body.rows, 'receipt', receipt.body.id).status).toBe('In Stock');
 
     const closed = await api.close('receipt', receipt.body.id);
     expect(closed.status).toBe(200);
     expect(closed.body.status).toBe('Closed');
 
-    packed = await api.listStage({ stage: 'Packed' });
-    expect(findLot(packed.body.rows, 'receipt', receipt.body.id).status).toBe('Closed');
+    panchal = await api.listStage({ stage: 'Panchal' });
+    expect(findLot(panchal.body.rows, 'receipt', receipt.body.id).status).toBe('Closed');
   });
 
-  test('a lot short of Packed cannot be closed, and the message names its stage', async () => {
+  test('a lot short of Panchal cannot be closed, and the message names its stage', async () => {
     const { receiptId } = await grayLot();
     const res = await api.close('receipt', receiptId);
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/Only a Packed lot can be closed — this one is Gray/);
+    expect(res.body.message).toMatch(/Only a Panchal lot can be closed — this one is Gray/);
+  });
+
+  // Packed used to be closeable and is not any more: it is an ordinary
+  // forwarding stage with a real balance, and its goods are not stock until they
+  // reach the warehouse.
+  test('a Packed lot can no longer be closed', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    let parent = { src: 'receipt', id: receiptId };
+    for (const stage of ['Processed', 'Stitched', 'Packed']) {
+      const res = await api.forward({
+        parent_src: parent.src, parent_id: parent.id, target_stage: stage,
+        party_name: 'P', sent_qty: 100, received_qty: 100,
+      });
+      parent = { src: 'entry', id: res.body.id };
+    }
+    const res = await api.close('entry', parent.id);
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/this one is Packed/);
   });
 
   test('double-closing is refused rather than rewriting the attribution', async () => {
-    const lot = await packedLot();
+    const lot = await panchalLot();
     await api.close('entry', lot.id);
     const again = await api.close('entry', lot.id);
     expect(again.status).toBe(400);
@@ -919,7 +1073,7 @@ describe('Closing a Packed lot', () => {
   });
 
   test('reopening a lot that is not closed is refused', async () => {
-    const lot = await packedLot();
+    const lot = await panchalLot();
     const res = await api.reopen('entry', lot.id);
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/not closed/);
@@ -932,7 +1086,7 @@ describe('Closing a Packed lot', () => {
   });
 
   test('closing writes an audit entry', async () => {
-    const lot = await packedLot();
+    const lot = await panchalLot();
     await api.close('entry', lot.id);
     const audit = await A(request(app).get('/api/audit-logs')
       .query({ entity_type: 'stitching_entry', entity_id: lot.id }));
@@ -945,7 +1099,8 @@ describe('Open-lot counts per stage', () => {
   test('every stage is reported, including zero', async () => {
     const res = await api.counts();
     expect(res.status).toBe(200);
-    expect(Object.keys(res.body.counts).sort()).toEqual(['Gray', 'Packed', 'Processed', 'Stitched']);
+    expect(Object.keys(res.body.counts).sort())
+      .toEqual(['Gray', 'Packed', 'Panchal', 'Processed', 'Stitched', 'Third Party']);
     for (const v of Object.values(res.body.counts)) expect(typeof v).toBe('number');
   });
 
@@ -990,18 +1145,33 @@ describe('Open-lot counts per stage', () => {
     expect(scoped.body.counts.Processed).toBe(1);
   });
 
-  test('a Packed lot counts while In Stock and stops once closed', async () => {
+  test('a Panchal lot counts while In Stock and stops once closed', async () => {
     // An origin lot's party is its PO vendor, and setupLine mints a unique one,
     // so filtering by that name isolates this test from every other row.
     const { poId, lineId, vendorName } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_stage: 'Packed',
+      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal',
     });
 
-    expect((await api.counts({ party_name: vendorName })).body.counts.Packed).toBe(1);
+    expect((await api.counts({ party_name: vendorName })).body.counts.Panchal).toBe(1);
 
     await api.close('receipt', receipt.body.id);
-    expect((await api.counts({ party_name: vendorName })).body.counts.Packed).toBe(0);
+    expect((await api.counts({ party_name: vendorName })).body.counts.Panchal).toBe(0);
+  });
+
+  // A sale is never outstanding work, so it never appears in a stage count even
+  // while the row is perfectly live.
+  test('a Third Party sale is never counted as open', async () => {
+    const { receiptId, vendorName } = await grayLot({ qty: 100 });
+    const f1 = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
+      sent_qty: 100, received_qty: 100,
+    });
+    await api.forward({
+      parent_src: 'entry', parent_id: f1.body.id, target_stage: 'Third Party',
+      party_name: 'Buyer', sent_qty: 30, received_qty: 30, outbound_bill_no: 'OB-2',
+    });
+    expect((await api.counts({ party_name: vendorName })).body.counts['Third Party']).toBe(0);
   });
 
   test('filters narrow the counts', async () => {
@@ -1212,17 +1382,17 @@ describe('Challans — a lot moves on only under one', () => {
   test('every stage works the way Gray does', async () => {
     const { receiptId } = await grayLot({ qty: 100 });
     let parent = { src: 'receipt', id: receiptId };
-    for (const stage of ['Processed', 'Stitched', 'Packed']) {
+    for (const stage of ['Processed', 'Stitched', 'Packed', 'Panchal']) {
       const r = await api.forward({
-        parent_src: parent.src, parent_id: parent.id, party_name: `P-${stage}`,
-        sent_qty: 50, received_qty: 50, checked_by: warehousePocId,
+        parent_src: parent.src, parent_id: parent.id, target_stage: stage,
+        party_name: `P-${stage}`, sent_qty: 50, received_qty: 50,
       });
       expect(r.status).toBe(201);
       const row = await lotRow(stage, 'entry', r.body.id);
-      // Holds material, and offers the same next step -- except at the end of
-      // the chain, where there is nowhere left to go.
+      // Holds material, and offers the same next step -- except at the warehouse,
+      // which is the end of the chain and has nowhere left to go.
       expect(row.balance).toBe(50);
-      expect(row.can_forward).toBe(stage !== 'Packed');
+      expect(row.can_forward).toBe(stage !== 'Panchal');
       parent = { src: 'entry', id: r.body.id };
     }
   });
@@ -1647,10 +1817,11 @@ describe('Withdrawing a wrongly entered challan', () => {
     const { receiptId } = await grayLot({ qty: 100 });
     let parent = { src: 'receipt', id: receiptId };
     let last;
-    for (const party of ['Dye', 'Stitch', 'Pack']) {
+    // All the way to the warehouse: closing is a Panchal-only action now.
+    for (const stage of ['Processed', 'Stitched', 'Packed', 'Panchal']) {
       const r = await api.forward({
-        parent_src: parent.src, parent_id: parent.id, party_name: party,
-        sent_qty: 100, received_qty: 100, checked_by: warehousePocId,
+        parent_src: parent.src, parent_id: parent.id, target_stage: stage,
+        party_name: `P-${stage}`, sent_qty: 100, received_qty: 100,
       });
       last = r.body.id;
       parent = { src: 'entry', id: last };
@@ -1720,36 +1891,68 @@ describe('Withdrawing a wrongly entered challan', () => {
   });
 });
 
+// The chain branches now, so "always the next stage" is no longer the rule. What
+// survives -- and what this pins -- is that it only ever goes FORWARD. A lot may
+// skip a stage, go to the warehouse, or be sold out, but it never returns to a
+// stage it has left.
 describe('Material only ever flows forward', () => {
-  const { STAGES } = require('../src/services/stitching.service');
+  const { STAGES, DESTINATIONS, destinationsFor } = require('../src/services/stitching.service');
 
-  test('a dispatch always lands on the next stage, never an earlier one', async () => {
+  test('every destination in the graph is later in the chain than its source', () => {
+    for (const stage of STAGES) {
+      expect(DESTINATIONS).toHaveProperty(stage);
+      for (const dest of DESTINATIONS[stage]) {
+        expect(STAGES).toContain(dest);
+        expect(STAGES.indexOf(dest)).toBeGreaterThan(STAGES.indexOf(stage));
+      }
+    }
+  });
+
+  test('the two terminal stages lead nowhere', () => {
+    expect(destinationsFor('Panchal')).toEqual([]);
+    expect(destinationsFor('Third Party')).toEqual([]);
+  });
+
+  test('a dispatch lands on the destination it asked for', async () => {
     const { receiptId } = await grayLot({ qty: 100 });
     let parent = { src: 'receipt', id: receiptId };
     const seen = [];
-    for (let i = 0; i < STAGES.length - 1; i += 1) {
+    for (const stage of ['Processed', 'Stitched', 'Packed', 'Panchal']) {
       const r = await api.forward({
-        parent_src: parent.src, parent_id: parent.id, party_name: `P${i}`,
-        sent_qty: 100, received_qty: 100, checked_by: warehousePocId,
+        parent_src: parent.src, parent_id: parent.id, target_stage: stage,
+        party_name: `P-${stage}`, sent_qty: 100, received_qty: 100,
       });
       seen.push(r.body.stage);
       parent = { src: 'entry', id: r.body.id };
     }
-    expect(seen).toEqual(STAGES.slice(1));
+    expect(seen).toEqual(['Processed', 'Stitched', 'Packed', 'Panchal']);
   });
 
-  test('no endpoint accepts a stage, so none can move a lot backwards', async () => {
+  test('omitting the destination takes the first one, so Gray stays one field', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const r = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
+      sent_qty: 40, received_qty: 40,
+    });
+    expect(r.status).toBe(201);
+    expect(r.body.stage).toBe('Processed');
+  });
+
+  // create() now takes target_stage -- but ONLY as a choice among the parent's
+  // allowed destinations, and no other endpoint accepts a stage at all. A PATCH
+  // still cannot move a lot, which is what keeps the chain from running backwards.
+  test('a PATCH cannot move a lot to another stage', async () => {
     const { receiptId } = await grayLot({ qty: 100 });
     const d = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
-      sent_qty: 40, received_qty: 40, checked_by: warehousePocId,
-      challan_no: 'C1', stage: 'Gray',
+      sent_qty: 40, received_qty: 40, challan_no: 'C1', stage: 'Gray',
     });
     expect(d.status).toBe(201);
-    // The supplied stage is ignored: the target is a function of the parent.
+    // A bare `stage` in the body is ignored -- only target_stage is read, and
+    // only on create.
     expect(d.body.stage).toBe('Processed');
 
-    const patched = await api.patchLot(d.body.id, { stage: 'Gray' });
+    const patched = await api.patchLot(d.body.id, { stage: 'Gray', target_stage: 'Gray' });
     const row = findLot((await api.listStage({ stage: 'Processed' })).body.rows, 'entry', d.body.id);
     expect([200, 400]).toContain(patched.status);
     expect(row).toBeTruthy();
@@ -1757,19 +1960,11 @@ describe('Material only ever flows forward', () => {
   });
 });
 
-describe('prevStage', () => {
-  const { prevStage, nextStage, STAGES } = require('../src/services/stitching.service');
-
-  test('is the inverse of nextStage, and null at the head', () => {
-    expect(prevStage('Gray')).toBeNull();
-    expect(prevStage('nonsense')).toBeNull();
-    for (const stage of STAGES.slice(0, -1)) {
-      expect(prevStage(nextStage(stage))).toBe(stage);
-    }
-  });
-
-  // parent_stage is derived with prevStage rather than joined, which is only
-  // sound while hop creation stays forward-only. This pins that.
+// prevStage is gone. It answered "the stage before this one", which a strictly
+// linear chain had exactly one of -- a branching one does not: a Packed lot may
+// have come from Processed or from Stitched. Every caller that wanted it
+// actually wanted the parent row, which a lot already carries.
+describe('a hop knows its real parent', () => {
   test('parent_stage matches the parent a hop was actually created from', async () => {
     const { receiptId } = await grayLot({ qty: 100 });
     const child = await api.forward({
@@ -1839,6 +2034,113 @@ describe('Chain-order sorting for the All view', () => {
   });
 });
 
+// Metres stay the currency of the whole chain. Dozens are an EXTRA count that
+// only exists once there are pieces to count, and metres-per-dozen is the yield
+// the count exists to produce.
+describe('Dozens and yield at Stitched and Packed', () => {
+  const svc = require('../src/services/stitching.service');
+
+  // Walk a lot to Processed, which is where a Stitched challan starts from.
+  async function processedLot(qty = 100) {
+    const { receiptId } = await grayLot({ qty });
+    const f = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye',
+      sent_qty: qty, received_qty: qty,
+    });
+    return f.body.id;
+  }
+
+  test('a challan into Stitched records dozens and derives the yield', async () => {
+    const parent = await processedLot(100);
+    const r = await api.forward({
+      parent_src: 'entry', parent_id: parent, target_stage: 'Stitched',
+      party_name: 'Stitch', sent_qty: 100, received_qty: 96, received_dozens: 40,
+    });
+    expect(r.status).toBe(201);
+
+    const row = findLot((await api.listStage({ stage: 'Stitched' })).body.rows, 'entry', r.body.id);
+    // The balance is still METRES -- dozens ride alongside, they do not replace.
+    expect(row.received_qty).toBe(96);
+    expect(row.unit_metric).toBe('m');
+    expect(row.received_dozens).toBe(40);
+    expect(row.metres_per_dozen).toBe(2.4);
+  });
+
+  test('dozens are required at Stitched', async () => {
+    const parent = await processedLot(100);
+    const r = await api.forward({
+      parent_src: 'entry', parent_id: parent, target_stage: 'Stitched',
+      party_name: 'Stitch', sent_qty: 100, received_qty: 96,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/Dozens Received is required/);
+  });
+
+  test('dozens are refused where there are no pieces to count', async () => {
+    const { receiptId } = await grayLot({ qty: 100 });
+    const r = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye',
+      sent_qty: 100, received_qty: 100, received_dozens: 40,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/only counted at the Stitched and Packed/);
+  });
+
+  // Sending onward stays in metres: the chain never changes unit mid-stream.
+  test('a Stitched lot forwards in metres, and Packed counts its own dozens', async () => {
+    const parent = await processedLot(100);
+    const stitched = await api.forward({
+      parent_src: 'entry', parent_id: parent, target_stage: 'Stitched',
+      party_name: 'Stitch', sent_qty: 100, received_qty: 96, received_dozens: 40,
+    });
+    const packed = await api.forward({
+      parent_src: 'entry', parent_id: stitched.body.id, target_stage: 'Packed',
+      party_name: 'Pack', sent_qty: 96, received_qty: 95, received_dozens: 39,
+    });
+    expect(packed.status).toBe(201);
+
+    const row = findLot((await api.listStage({ stage: 'Packed' })).body.rows, 'entry', packed.body.id);
+    expect(row.sent_qty).toBe(96);
+    expect(row.received_qty).toBe(95);
+    expect(row.received_dozens).toBe(39);
+    expect(row.metres_per_dozen).toBe(2.44);
+  });
+
+  test('the yield is derived, never stored, and agrees with the service', () => {
+    expect(svc.metresPerDozen(96, 40)).toBe(2.4);
+    // Two places, rounded not truncated.
+    expect(svc.metresPerDozen(100, 3)).toBe(33.33);
+    // Nothing to divide by is blank rather than Infinity.
+    expect(svc.metresPerDozen(96, 0)).toBeNull();
+    expect(svc.metresPerDozen(null, 40)).toBeNull();
+  });
+
+  // A lot can be BOUGHT already stitched, in which case it is a receipt and
+  // never passes through stitching_entries at all.
+  test('a receipt bought in at Packed carries its own dozens', async () => {
+    const { poId, lineId } = await setupLine();
+    const receipt = await postReceipt(poId, lineId, {
+      incoming_no: `K-${uid()}`, incoming_stage: 'Packed', received_dozens: 25,
+    });
+    expect(receipt.status).toBe(201);
+
+    const row = findLot((await api.listStage({ stage: 'Packed' })).body.rows,
+      'receipt', receipt.body.id);
+    expect(row.received_dozens).toBe(25);
+    // grayLot's receiptBody puts 100 metres on the receipt.
+    expect(row.metres_per_dozen).toBe(svc.metresPerDozen(row.received_qty, 25));
+  });
+
+  test('a receipt at Gray is refused a dozen count', async () => {
+    const { poId, lineId } = await setupLine();
+    const res = await postReceipt(poId, lineId, {
+      incoming_no: `K-${uid()}`, incoming_stage: 'Gray', received_dozens: 25,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/Stitched or Packed/);
+  });
+});
+
 describe('Status SQL/JS parity', () => {
   const svc = require('../src/services/stitching.service');
 
@@ -1848,8 +2150,16 @@ describe('Status SQL/JS parity', () => {
     ['Gray', 100, 100, 'Forwarded'],
     ['Gray', 100, 99.999, 'Forwarded'],
     ['Processed', 50, 0, 'Pending'],
-    ['Packed', 50, 0, 'In Stock'],
-    ['Packed', 50, 50, 'In Stock'],
+    // Packed is an ordinary forwarding stage now. It reads like Gray does.
+    ['Packed', 50, 0, 'Pending'],
+    ['Packed', 50, 50, 'Forwarded'],
+    // Panchal is the warehouse: balance is meaningless because nothing forwards
+    // out of it, so it reads In Stock until someone closes it.
+    ['Panchal', 50, 0, 'In Stock'],
+    ['Panchal', 50, 50, 'In Stock'],
+    // Third Party is the exit. The goods are not ours, so there is no state left.
+    ['Third Party', 50, 0, 'Sold'],
+    ['Third Party', 50, 50, 'Sold'],
   ])('%s lot of %s with %s forwarded is %s', (stage, receivedQty, forwarded, expected) => {
     expect(svc.computeStatus({ stage, receivedQty, forwarded })).toBe(expected);
   });
@@ -1862,20 +2172,45 @@ describe('Status SQL/JS parity', () => {
     expect(svc.OPEN_STATUSES).not.toContain('In Transit');
   });
 
-  // Packed is the only stage where closed_at changes the answer, and the only
-  // one where balance does not.
+  // Panchal is the only stage where closed_at changes the answer.
   test.each([
     [null, 'In Stock'],
     ['2026-09-05 10:00:00', 'Closed'],
-  ])('a Packed lot with closedAt %s is %s', (closedAt, expected) => {
-    expect(svc.computeStatus({ stage: 'Packed', receivedQty: 50, forwarded: 0, closedAt })).toBe(expected);
+  ])('a Panchal lot with closedAt %s is %s', (closedAt, expected) => {
+    expect(svc.computeStatus({ stage: 'Panchal', receivedQty: 50, forwarded: 0, closedAt })).toBe(expected);
+  });
+
+  // closed_at is inert everywhere else. Rows closed while Packed WAS the stock
+  // stage still carry one, and it must not keep changing their status.
+  test('closed_at does not change the answer at any other stage', () => {
+    for (const stage of ['Gray', 'Processed', 'Stitched', 'Packed']) {
+      const closedAt = '2026-09-05 10:00:00';
+      expect(svc.computeStatus({ stage, receivedQty: 50, forwarded: 0, closedAt }))
+        .toBe(svc.computeStatus({ stage, receivedQty: 50, forwarded: 0 }));
+    }
+  });
+
+  // Sold is terminal, so it is never outstanding work.
+  test('Sold is a status but never an open one', () => {
+    expect(Object.values(svc.STATUS)).toContain('Sold');
+    expect(svc.OPEN_STATUSES).not.toContain('Sold');
   });
 
   test('every row the API returns agrees with computeStatus', async () => {
     const { receiptId } = await grayLot({ qty: 100 });
-    await api.forward({
+    const f1 = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'P',
-      sent_qty: 40, received_qty: 40, checked_by: warehousePocId,
+      sent_qty: 40, received_qty: 40,
+    });
+    // Put a lot on each of the new stages too, so the sweep actually exercises
+    // the two branches the SQL CASE grew.
+    await api.forward({
+      parent_src: 'entry', parent_id: f1.body.id, target_stage: 'Panchal',
+      party_name: 'P', sent_qty: 20, received_qty: 20,
+    });
+    await api.forward({
+      parent_src: 'entry', parent_id: f1.body.id, target_stage: 'Third Party',
+      party_name: 'P', sent_qty: 10, received_qty: 10, outbound_bill_no: 'OB-9',
     });
     const res = await api.listStage();
     expect(res.body.rows.length).toBeGreaterThan(0);

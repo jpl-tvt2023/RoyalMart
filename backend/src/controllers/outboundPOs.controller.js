@@ -7,7 +7,7 @@ const {
 } = require('../services/outboundPOFlags');
 const { pairKey, unitMetricsByPair } = require('../services/outboundProducts.service');
 const {
-  effectiveAfterRate, moneyError, qtyError, EPSILON, isValidStage, STAGES,
+  effectiveAfterRate, moneyError, qtyError, EPSILON, isValidStage, STAGES, countsDozens,
 } = require('../services/stitching.service');
 
 const VALID_STATUSES = ['Open', 'Partially Received', 'Closed'];
@@ -345,6 +345,23 @@ async function validateReceiptFields(body, { requireAll, line }) {
     return 'Qty in metres is required';
   }
 
+  // Fabric bought in ALREADY STITCHED or ALREADY PACKED arrives as countable
+  // pieces, so it carries a dozen count exactly as a challan into those stages
+  // does -- otherwise such a lot would sit on the Stitched or Packed tab as the
+  // only row with no yield, which reads as missing data rather than as a
+  // different kind of row.
+  //
+  // Keyed on the stage being RECEIVED AT, not on fabric alone: a Gray receipt
+  // has no pieces to count.
+  const dozenStage = fabric && countsDozens(trimOrNull(body?.incoming_stage));
+  if (present('received_dozens') && !blank(body?.received_dozens)) {
+    if (!dozenStage) return 'Dozens are only counted on fabric received at the Stitched or Packed stage';
+    const err = qtyError(body.received_dozens, 'Dozens Received');
+    if (err) return err;
+  } else if (dozenStage && requireAll) {
+    return 'Dozens Received is required';
+  }
+
   // What to do about a delivery that does not match what was outstanding. The
   // action says which box was ticked, the reason says why, and neither is
   // inferable from the other -- so a ticked box without a reason is refused.
@@ -455,7 +472,7 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
     const receiptDeletedClause = includeDeleted ? '' : 'AND r.deleted_at IS NULL';
     const { rows: receipts } = await executor.execute({
       sql: `SELECT r.id, r.line_id, r.received_qty, r.received_rate, r.bill_no,
-                   r.checked_by, r.incoming_no, r.qty_in_metres,
+                   r.checked_by, r.incoming_no, r.qty_in_metres, r.received_dozens,
                    r.qty_diff_action, r.qty_diff_reason,
                    r.process_rate, r.after_rate, r.incoming_prefix_id,
                    sp.prefix AS incoming_prefix, sp.stage AS incoming_stage,
@@ -1131,9 +1148,11 @@ async function createReceipt(req, res, next) {
 
     // The client sends a stage, never a prefix. Resolving it here is what keeps
     // the prefix master a display concern rather than something a user picks.
+    const incomingStage = req.body?.incoming_stage != null
+      ? (String(req.body.incoming_stage).trim() || null) : null;
     let prefixId = null;
-    if (req.body?.incoming_stage != null && req.body.incoming_stage !== '') {
-      const [resolved, stageError] = await prefixIdForStage(req.body.incoming_stage);
+    if (incomingStage) {
+      const [resolved, stageError] = await prefixIdForStage(incomingStage);
       if (stageError) return res.status(400).json({ message: stageError });
       prefixId = resolved;
     }
@@ -1145,6 +1164,12 @@ async function createReceipt(req, res, next) {
     const qtyInMetres = isStitchingLine(line)
       && req.body?.qty_in_metres != null && req.body.qty_in_metres !== ''
       ? Number(req.body.qty_in_metres) : null;
+
+    // Only for fabric bought in already stitched or already packed -- the two
+    // stages where there are pieces to count.
+    const receivedDozens = isStitchingLine(line) && countsDozens(incomingStage)
+      && req.body?.received_dozens != null && req.body.received_dozens !== ''
+      ? Number(req.body.received_dozens) : null;
 
     // Against what was still due when this delivery was entered, not against the
     // whole order -- a part delivery is not a shortfall.
@@ -1167,11 +1192,11 @@ async function createReceipt(req, res, next) {
     try {
       const { rows: inserted } = await tx.execute({
         sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, checked_by, incoming_no,
-                process_rate, after_rate, incoming_prefix_id, qty_in_metres,
+                process_rate, after_rate, incoming_prefix_id, qty_in_metres, received_dozens,
                 qty_diff_action, qty_diff_reason, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
         args: [lineId, receivedQty, receivedRate, billNo, checkedBy, incomingNo,
-          processRate, afterRate, prefixId, qtyInMetres,
+          processRate, afterRate, prefixId, qtyInMetres, receivedDozens,
           diffAction, diffReason, req.user.id, req.user.id],
       });
 
@@ -1222,6 +1247,7 @@ async function updateReceipt(req, res, next) {
     const { rows: receiptRows } = await db.execute({
       sql: `SELECT r.id, r.received_qty, r.received_rate, r.bill_no, r.checked_by, r.incoming_no,
                    r.process_rate, r.after_rate, r.incoming_prefix_id, r.qty_in_metres,
+                   r.received_dozens,
                    sp.stage AS incoming_stage,
                    l.category, l.item_name, l.variant, l.unit_metric,
                    COALESCE((SELECT op.goes_to_stitching FROM outbound_products op
@@ -1277,6 +1303,12 @@ async function updateReceipt(req, res, next) {
     if (has('qty_in_metres')) {
       nextQtyInMetres = req.body.qty_in_metres != null && req.body.qty_in_metres !== ''
         ? Number(req.body.qty_in_metres) : null;
+    }
+
+    let nextReceivedDozens = receipt.received_dozens;
+    if (has('received_dozens')) {
+      nextReceivedDozens = req.body.received_dozens != null && req.body.received_dozens !== ''
+        ? Number(req.body.received_dozens) : null;
     }
 
     // After Rate follows Billed + Process whenever the user has not pinned it
@@ -1349,12 +1381,13 @@ async function updateReceipt(req, res, next) {
     // short already absorbed. Corrections go through the inline Short cell on
     // the line, which is what updateLineShort is for.
     const RECEIPT_FIELDS = ['received_qty', 'received_rate', 'bill_no', 'checked_by', 'incoming_no',
-      'process_rate', 'after_rate', 'incoming_prefix_id', 'qty_in_metres'];
+      'process_rate', 'after_rate', 'incoming_prefix_id', 'qty_in_metres', 'received_dozens'];
     const changes = diffFields(receipt, {
       received_qty: nextQty, received_rate: nextRate, bill_no: nextBillNo,
       checked_by: nextCheckedBy, incoming_no: nextIncomingNo,
       process_rate: nextProcessRate, after_rate: nextAfterRate,
       incoming_prefix_id: nextPrefixId, qty_in_metres: nextQtyInMetres,
+      received_dozens: nextReceivedDozens,
     }, RECEIPT_FIELDS);
 
     const tx = await db.transaction('write');
@@ -1363,10 +1396,11 @@ async function updateReceipt(req, res, next) {
         await tx.execute({
           sql: `UPDATE outbound_po_line_receipts SET received_qty = ?, received_rate = ?, bill_no = ?,
                   checked_by = ?, incoming_no = ?, process_rate = ?, after_rate = ?,
-                  incoming_prefix_id = ?, qty_in_metres = ?,
+                  incoming_prefix_id = ?, qty_in_metres = ?, received_dozens = ?,
                   updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
           args: [nextQty, nextRate, nextBillNo, nextCheckedBy, nextIncomingNo,
-            nextProcessRate, nextAfterRate, nextPrefixId, nextQtyInMetres, req.user.id, receiptId],
+            nextProcessRate, nextAfterRate, nextPrefixId, nextQtyInMetres, nextReceivedDozens,
+            req.user.id, receiptId],
         });
         await logAction({
           client: tx,

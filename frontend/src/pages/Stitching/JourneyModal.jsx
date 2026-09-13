@@ -149,15 +149,26 @@ export default function JourneyModal({ src, id, onClose }) {
                       </div>
                     ) : (
                       <div className="mt-1 flex items-center gap-3 flex-wrap text-[11px] text-gray-500">
-                        {/* The rate arithmetic, spelled out rather than left for
-                            the reader to work back from three columns. */}
+                        {/* This stage's own charge, against the PO rate every
+                            node in the chain shares. It used to read
+                            "carried-in + process = after", a running total that
+                            made each stage's actual charge impossible to read
+                            off — which is the whole reason the rates were
+                            unbundled. */}
                         <span>
-                          {fmtNum(n.rate)}
-                          {Number(n.process_rate) > 0 && <> + {fmtNum(n.process_rate)} process</>}
-                          {' = '}
-                          <span className="font-semibold text-[#003049]">{fmtNum(n.after_rate)}</span>
+                          <span className="text-gray-400">PO</span> {fmtNum(n.po_rate)}
+                          {n.stage_rate != null && (
+                            <>
+                              {' · '}<span className="text-gray-400">{n.stage}</span>{' '}
+                              <span className="font-semibold text-[#003049]">{fmtNum(n.stage_rate)}</span>
+                            </>
+                          )}
                         </span>
-                        {n.checked_by_name && <span>checked by {n.checked_by_name}</span>}
+                        {n.challan_type && <span>{n.challan_type}</span>}
+                        {n.outbound_bill_no && (
+                          <span>bill <span className="font-mono">{n.outbound_bill_no}</span></span>
+                        )}
+                        {n.checked_by_name && <span>entered by {n.checked_by_name}</span>}
                         {n.closed_at && (
                           <span className="text-gray-400">
                             closed by {n.closed_by_name || 'unknown'} · {formatDateTime(n.closed_at)}
@@ -172,19 +183,29 @@ export default function JourneyModal({ src, id, onClose }) {
           </ol>
 
           <div className="mt-5 pt-4 border-t border-gray-200 flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-600">
+            {/* Where the chain ENDED, which is no longer one place. A lot that
+                branched can finish partly as warehouse stock and partly sold, so
+                these are two numbers rather than one. */}
             <span>
               <span className="text-gray-400">in</span> {qty(s.origin_qty)}
               <span className="text-gray-300"> → </span>
-              <span className="text-gray-400">packed</span> {qty(s.packed_qty)}
+              <span className="text-gray-400">in stock</span> {qty(s.stock_qty)}
+              {Number(s.sold_qty) > 0 && (
+                <>
+                  <span className="text-gray-300"> · </span>
+                  <span className="text-gray-400">sold</span> {qty(s.sold_qty)}
+                </>
+              )}
             </span>
             {s.total_short > 0 && (
               <span className="text-amber-600 font-medium">total short {qty(s.total_short)}</span>
             )}
-            {s.final_rate != null && (
+            {/* No "rate origin → final". There is no single final rate any more:
+                each stage kept its own, and they are on the nodes above. */}
+            {s.origin_rate != null && (
               <span>
-                <span className="text-gray-400">rate</span> {fmtNum(s.origin_rate)}
-                <span className="text-gray-300"> → </span>
-                <span className="font-semibold text-[#003049]">{fmtNum(s.final_rate)}</span>
+                <span className="text-gray-400">PO rate</span>{' '}
+                <span className="font-semibold text-[#003049]">{fmtNum(s.origin_rate)}</span>
               </span>
             )}
           </div>

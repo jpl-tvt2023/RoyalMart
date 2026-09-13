@@ -1,8 +1,10 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
-const { userHasRole } = require('../services/userRoles.service');
 const {
   STAGES, OPEN_STATUSES, EPSILON, isValidStage, nextStage,
+  DESTINATIONS, EXIT_STAGE, STOCK_STAGE, destinationsFor, canSendTo,
+  countsDozens, metresPerDozen,
+  PARTY_USE_STAGES, CHALLAN_TYPES, isValidPartyUse, isValidChallanType,
   effectiveAfterRate, statusSql, moneyError, qtyError, challanError,
   revertReasonError, writeOffReasonError,
 } = require('../services/stitching.service');
@@ -93,13 +95,34 @@ WITH lots AS (
     -- what put a stale 12345 on a Gray lot. A challan belongs to a dispatch, and
     -- an origin lot is not one.
     NULL AS challan_no,
+    -- An origin lot was never dispatched, so it carries no challan and therefore
+    -- no challan type. Same reasoning as the NULL challan_no directly above.
+    NULL AS challan_type,
     sp.id AS incoming_prefix_id, sp.prefix AS incoming_prefix, r.incoming_no AS incoming_no,
     -- METRES, not the receipt's own quantity. Fabric is bought in taga and
     -- worked in metres, and every stage here counts the metres -- so the origin
     -- lot's quantity is the conversion the user entered on the receipt.
     r.qty_in_metres AS received_qty,
-    r.received_rate AS rate, r.process_rate AS process_rate,
+    -- Only ever set on a receipt bought straight in at Stitched or Packed.
+    r.received_dozens AS received_dozens,
+    r.received_rate AS rate,
+    -- THE PO RATE: what the fabric was billed at on the purchase order. It is
+    -- the one rate every lot in a chain shares, and downstream lots read it off
+    -- this same origin receipt rather than carrying a copy.
+    --
+    -- Column ORDER matters from here down: the two halves of this UNION ALL are
+    -- matched by position, not by name, so a column added to one must be added
+    -- to the other in the same place.
+    r.received_rate AS po_rate,
+    -- THIS STAGE'S OWN RATE, and only this stage's. On a receipt that is the
+    -- cost of the processing already done when we bought it -- a lot bought in
+    -- at Processed was billed for processing. Rates no longer accumulate into a
+    -- running after_rate: each stage keeps its own figure and the ladder is
+    -- assembled by withRateLadder at read time.
+    r.process_rate AS stage_rate,
+    r.process_rate AS process_rate,
     COALESCE(r.after_rate, r.received_rate + COALESCE(r.process_rate, 0)) AS after_rate,
+    NULL AS outbound_bill_no, NULL AS party_id,
     r.checked_by AS checked_by, kb.name AS checked_by_name,
     r.closed_at AS closed_at, r.closed_by AS closed_by, clb.name AS closed_by_name,
     -- An origin lot arrived on a PO, so it was never written off by us.
@@ -136,15 +159,21 @@ WITH lots AS (
 
   SELECT
     'entry' AS src, e.id AS id, orr.line_id AS line_id, e.stage AS stage,
-    e.party_name AS party_name, e.challan_no AS challan_no,
+    e.party_name AS party_name, e.challan_no AS challan_no, e.challan_type AS challan_type,
     sp.id AS incoming_prefix_id, sp.prefix AS incoming_prefix, e.incoming_no AS incoming_no,
     e.received_qty AS received_qty,
+    e.received_dozens AS received_dozens,
     COALESCE(
       CASE WHEN e.parent_receipt_id IS NOT NULL
            THEN COALESCE(pr.after_rate, pr.received_rate + COALESCE(pr.process_rate, 0))
            ELSE pe.after_rate END, 0) AS rate,
+    -- Read off the origin receipt the row already joins, so correcting the PO
+    -- rate upstream flows down the whole chain without a stored copy anywhere.
+    orr.received_rate AS po_rate,
+    e.process_rate AS stage_rate,
     e.process_rate AS process_rate,
     COALESCE(e.after_rate, 0) AS after_rate,
+    e.outbound_bill_no AS outbound_bill_no, e.party_id AS party_id,
     e.checked_by AS checked_by, kb.name AS checked_by_name,
     e.closed_at AS closed_at, e.closed_by AS closed_by, clb.name AS closed_by_name,
     -- Present means this row is a write-off rather than a dispatch. One column,
@@ -259,8 +288,18 @@ const outward = (row) => {
     // Unique across both kinds — used as the React key and as what the forward
     // form names when it says which lot it is drawing from.
     lot_key: `${row.src}:${row.id}`,
+    // Everywhere this lot may go, which is what the destination chooser renders.
+    // next_stage survives as the chooser's pre-selection -- the first
+    // destination -- not as the only one.
+    destinations: destinationsFor(row.stage),
     next_stage: nextStage(row.stage),
-    can_forward: nextStage(row.stage) != null && Number(row.balance) > EPSILON,
+    can_forward: destinationsFor(row.stage).length > 0 && Number(row.balance) > EPSILON,
+    // A sale is not a lot anyone works on. It shows on its own tab and under its
+    // parent, and carries no actions but Journey, History and withdrawal.
+    is_exit: row.stage === EXIT_STAGE,
+    // Derived, never stored: one number to read, so a stored copy can never
+    // disagree with the two it comes from.
+    metres_per_dozen: metresPerDozen(row.received_qty, row.received_dozens),
     // Derived, never stored: one column to read, so a flag can never disagree
     // with the reason beside it.
     is_write_off: row.write_off_reason != null,
@@ -272,6 +311,67 @@ const outward = (row) => {
       && row.closed_at == null,
   };
 };
+
+// The RATE LADDER: every stage this lot has already travelled, and what that
+// stage cost.
+//
+// Rates used to accumulate. Each hop stored an after_rate of "carried-in rate
+// plus what this stage cost", so a lot at Stitched showed one number with three
+// stages rolled into it and no way to see what any of them charged. The user
+// asked for the opposite: a PO rate, then a named column per stage, filled in as
+// the material reaches it. A lot that entered at Gray and is now at Stitched
+// carries PO Rate, Gray Rate, Processed Rate and Stitch Rate. One that entered
+// at Processed carries PO Rate and Processed Rate, because those are the only
+// stages it has actually been through.
+//
+// A SECOND QUERY keyed on the ids the page returned, exactly like withOutgoing
+// above, rather than more columns on LOTS_CTE. Filtering, sorting and paging all
+// run against that CTE, and a recursive walk inside it would be computed for
+// every row in the table to render twenty-five. The cost of this is one extra
+// round trip per page.
+//
+// The walk is bounded by the chain itself -- at most six stages -- and terminates
+// because parent_src is NULL exactly once per chain, at the origin receipt.
+async function withRateLadder(lots) {
+  if (!lots.length) return lots;
+
+  const clauses = [];
+  const args = [];
+  for (const src of ['receipt', 'entry']) {
+    const ids = lots.filter(l => l.src === src).map(l => l.id);
+    if (!ids.length) continue;
+    clauses.push(`(src = ? AND id IN (${ids.map(() => '?').join(',')}))`);
+    args.push(src, ...ids);
+  }
+  if (!clauses.length) return lots;
+
+  const { rows } = await db.execute({
+    sql: `${LOTS_CTE},
+    -- Seed: every lot is its own first ancestor, so a lot's own stage rate lands
+    -- in the ladder without a special case.
+    chain(lot_src, lot_id, anc_src, anc_id, anc_stage, anc_rate) AS (
+      SELECT src, id, src, id, stage, stage_rate FROM lots WHERE ${clauses.join(' OR ')}
+      UNION ALL
+      SELECT c.lot_src, c.lot_id, p.src, p.id, p.stage, p.stage_rate
+        FROM chain c
+        JOIN lots l ON l.src = c.anc_src AND l.id = c.anc_id
+        JOIN lots p ON p.src = l.parent_src AND p.id = l.parent_id
+       WHERE l.parent_src IS NOT NULL
+    )
+    SELECT lot_src, lot_id, anc_stage, anc_rate FROM chain`,
+    args,
+  });
+
+  const byLot = new Map();
+  for (const row of rows) {
+    const key = `${row.lot_src}:${row.lot_id}`;
+    if (!byLot.has(key)) byLot.set(key, {});
+    // A stage appears at most once in any one chain, so last-write-wins is not
+    // a real choice being made here.
+    byLot.get(key)[row.anc_stage] = row.anc_rate;
+  }
+  return lots.map(lot => ({ ...lot, rate_ladder: byLot.get(lot.lot_key) || {} }));
+}
 
 // GET /api/stitching?stage=Gray&…
 async function list(req, res, next) {
@@ -297,7 +397,12 @@ async function list(req, res, next) {
     });
 
     const lots = rows.map(outward);
-    res.json({ rows: await withOutgoing(lots), total, page, page_size: pageSize ?? 'all' });
+    res.json({
+      rows: await withRateLadder(await withOutgoing(lots)),
+      total,
+      page,
+      page_size: pageSize ?? 'all',
+    });
   } catch (err) { next(err); }
 }
 
@@ -372,17 +477,35 @@ async function stageCounts(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// GET /api/stitching/parties — datalist for the free-text Party Name field.
-// Outbound vendors plus every party already typed on a stage entry, so spelling
-// stays consistent until a party master exists.
+// GET /api/stitching/parties?use=Stitched — the party dropdown for a dispatch.
+//
+// Reads the master migration 079 added. It used to union outbound_vendors with
+// every name already typed into a challan, which was a stand-in for exactly this
+// table -- and offered every name for every job, since free text knows nothing
+// about what a party actually does.
+//
+// `use` narrows it to parties tagged for that destination, which is the whole
+// point of the tags: a non-technical user picking a destination should not then
+// be shown a packer for stitching work. Omitting `use` returns every active
+// party, which is what an unfiltered list or an export wants.
+//
+// Only active parties. A deactivated one keeps appearing on the challans already
+// raised against it -- party_name is denormalised onto those rows -- it simply
+// stops being offered for new ones.
 async function listParties(req, res, next) {
   try {
-    const { rows } = await db.execute(
-      `SELECT name FROM outbound_vendors WHERE is_active = 1
-       UNION
-       SELECT party_name AS name FROM stitching_entries WHERE deleted_at IS NULL
-       ORDER BY name COLLATE NOCASE ASC`
-    );
+    const use = trimOrNull(req.query?.use);
+    if (use && !isValidPartyUse(use)) {
+      return res.status(400).json({ message: `use must be one of ${PARTY_USE_STAGES.join(', ')}` });
+    }
+    const { rows } = await db.execute({
+      sql: `SELECT p.name FROM stitching_parties p
+             WHERE p.is_active = 1
+               ${use ? `AND EXISTS (SELECT 1 FROM stitching_party_uses u
+                                     WHERE u.party_id = p.id AND u.use_stage = ?)` : ''}
+             ORDER BY p.name COLLATE NOCASE ASC`,
+      args: use ? [use] : [],
+    });
     res.json(rows.map(r => r.name));
   } catch (err) { next(err); }
 }
@@ -437,6 +560,28 @@ async function validateEntryFields(body, { requireAll = false, targetStage } = {
     return 'Received Qty cannot be more than Sent Qty';
   }
 
+  // Dozens: required exactly where there are pieces to count, refused everywhere
+  // else rather than ignored, so a number typed against a dyeing challan
+  // surfaces as a question instead of vanishing into a column nothing reads.
+  if (countsDozens(targetStage)) {
+    if (requireAll || present('received_dozens')) {
+      const err = qtyError(body?.received_dozens, 'Dozens Received');
+      if (err) return err;
+    }
+  } else if (present('received_dozens') && body.received_dozens != null && body.received_dozens !== '') {
+    return 'Dozens are only counted at the Stitched and Packed stages';
+  }
+
+  // Sits next to Sent Qty on the form, and is validated here so the first error
+  // the server returns is the first field the user would reach. Required on
+  // create only: rows raised before migration 080 have none, and a PATCH
+  // touching an unrelated field must not be forced to invent one.
+  if (requireAll || present('challan_type')) {
+    const t = trimOrNull(body?.challan_type);
+    if (!t) return 'Challan Type is required';
+    if (!isValidChallanType(t)) return `Challan Type must be one of ${CHALLAN_TYPES.join(', ')}`;
+  }
+
   if (present('process_rate')) {
     const err = moneyError(body.process_rate, 'Process Rate');
     if (err) return err;
@@ -446,18 +591,41 @@ async function validateEntryFields(body, { requireAll = false, targetStage } = {
     if (err) return err;
   }
 
-  if (requireAll || present('checked_by')) {
-    if (body?.checked_by == null || body.checked_by === '') return 'Checked By is required';
+  // Checked By is no longer asked for, and no longer a qualification.
+  //
+  // It used to be a required dropdown of Warehouse_POC users, which made every
+  // dispatch wait on picking a name that the person filling the form already
+  // knew: their own. It now records WHO ENTERED THE CHALLAN, taken from the
+  // session, and every logged-in user qualifies to have done that. The column
+  // and the table page's Checked By stay -- only the question goes.
+  //
+  // Still validated when explicitly supplied, so an API caller cannot attach a
+  // challan to a user id that does not exist.
+  if (present('checked_by') && body.checked_by != null && body.checked_by !== '') {
     const { rows } = await db.execute({ sql: 'SELECT id FROM users WHERE id = ?', args: [body.checked_by] });
     if (!rows.length) return 'Checked By: user not found';
-    if (!(await userHasRole(body.checked_by, 'Warehouse_POC'))) {
-      return 'Checked By must be a user tagged Warehouse_POC';
-    }
   }
 
-  // Bill No is deliberately absent. It belongs to the PO receipt, where it is
-  // mandatory, and a challan is not a bill -- the column survives on the table
-  // unread, the way outbound_po_lines.received did after migration 053.
+  // Outbound Bill No belongs to a SALE, and only to a sale.
+  //
+  // A challan is not a bill -- that is still true of every hand-over inside the
+  // chain, and the receipt's Bill No is still the only bill number on a purchase.
+  // But a dispatch to a third party is goods leaving the business against our own
+  // outbound invoice, and that number is the only handle on it: no incoming
+  // number is derived for the exit, because nothing arrives.
+  //
+  // Rejected on anything else rather than ignored, so a bill number typed against
+  // an internal move surfaces as a question instead of vanishing.
+  if (targetStage === EXIT_STAGE) {
+    if (requireAll || present('outbound_bill_no')) {
+      const bill = trimOrNull(body?.outbound_bill_no);
+      if (!bill) return 'Outbound Bill No is required when sending to a third party';
+      if (bill.length > TEXT_MAX) return `Outbound Bill No must be ${TEXT_MAX} characters or less`;
+    }
+  } else if (present('outbound_bill_no') && trimOrNull(body?.outbound_bill_no)) {
+    return 'Outbound Bill No applies only to goods sold to a third party';
+  }
+
   if (present('challan_no') && body.challan_no != null && body.challan_no !== '') {
     const err = challanError(body.challan_no);
     if (err) return err;
@@ -501,6 +669,12 @@ const describeLot = (lot) => `${lot.item_name}${lot.variant ? ` - ${lot.variant}
 // Returns an error string when the stage has no single active prefix, because a
 // dispatch that cannot be numbered should be refused rather than written blank.
 async function deriveIncomingNo(targetStage, parent) {
+  // Nothing ARRIVES at Third Party -- the goods left the building. There is no
+  // gate register to number them into and no tab they land on, so the pair stays
+  // null and the outbound bill number is the handle instead. Looking for a
+  // prefix here would refuse every sale with "No active Third Party prefix".
+  if (targetStage === EXIT_STAGE) return [{ prefixId: null, incomingNo: null }, null];
+
   const { rows } = await db.execute({
     sql: 'SELECT id, prefix FROM stitching_prefixes WHERE stage = ? AND is_active = 1 ORDER BY id',
     args: [targetStage],
@@ -542,11 +716,28 @@ async function create(req, res, next) {
     const parent = await loadLot(parentSrc, Number(parentId));
     if (!parent) return res.status(404).json({ message: 'Lot not found' });
 
-    // Material flows one way: Gray to Processed to Stitched to Packed. The target
-    // is never user-selected, it is always a function of where the parent is.
-    const targetStage = nextStage(parent.stage);
-    if (!targetStage) {
-      return res.status(400).json({ message: 'This lot is already Packed — there is no next stage' });
+    // THE CALLER PICKS THE DESTINATION, and this is the one place in the module
+    // where that is true. Every comment and doc that says the target is never
+    // user-supplied describes the strictly linear chain, where nextStage() was
+    // the only possible answer. The chain branches now -- Processed can go to
+    // Stitched, Packed, Panchal or straight out to a Third Party -- so the pick
+    // is real and is validated against DESTINATIONS rather than invented here.
+    //
+    // Omitting it still works and means "the first destination", which keeps a
+    // single-destination stage like Gray a one-field call.
+    const allowed = destinationsFor(parent.stage);
+    if (!allowed.length) {
+      return res.status(400).json({
+        message: parent.stage === EXIT_STAGE
+          ? 'This lot was sold to a third party — it cannot be sent anywhere'
+          : `This lot is at ${parent.stage} — there is nowhere further to send it`,
+      });
+    }
+    const targetStage = trimOrNull(req.body?.target_stage) || allowed[0];
+    if (!canSendTo(parent.stage, targetStage)) {
+      return res.status(400).json({
+        message: `A ${parent.stage} lot can only be sent to ${allowed.join(', ')}`,
+      });
     }
 
     const validationError = await validateEntryFields(req.body, { requireAll: true, targetStage });
@@ -562,6 +753,14 @@ async function create(req, res, next) {
     const originReceiptId = parentSrc === 'receipt' ? parent.id : parent.origin_receipt_id;
     const partyName = trimOrNull(req.body.party_name);
     const challanNo = trimOrNull(req.body.challan_no);
+    const challanType = trimOrNull(req.body.challan_type);
+    const outboundBillNo = targetStage === EXIT_STAGE ? trimOrNull(req.body.outbound_bill_no) : null;
+    const receivedDozens = countsDozens(targetStage) ? numOrNull(req.body.received_dozens) : null;
+    // Who entered this, not who was picked for it. An explicit value is still
+    // honoured so an import or a correction can name someone else.
+    const checkedBy = req.body.checked_by != null && req.body.checked_by !== ''
+      ? Number(req.body.checked_by)
+      : req.user.id;
 
     // Checked here as well as by the unique index, so the user gets a sentence
     // rather than a raw constraint failure surfacing as a 500. The index is what
@@ -593,18 +792,18 @@ async function create(req, res, next) {
         // moment now, so the value is true rather than vestigial.
         sql: `INSERT INTO stitching_entries
                 (stage, origin_receipt_id, parent_receipt_id, parent_entry_id, party_name,
-                 challan_no, incoming_prefix_id, incoming_no,
-                 sent_qty, received_qty, process_rate, after_rate, checked_by,
+                 challan_no, challan_type, outbound_bill_no, incoming_prefix_id, incoming_no,
+                 sent_qty, received_qty, received_dozens, process_rate, after_rate, checked_by,
                  received_at, received_by, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)
               RETURNING id`,
         args: [
           targetStage, originReceiptId,
           parentSrc === 'receipt' ? parent.id : null,
           parentSrc === 'entry' ? parent.id : null,
-          partyName, challanNo,
+          partyName, challanNo, challanType, outboundBillNo,
           numbering.prefixId, numbering.incomingNo,
-          sentQty, receivedQty, processRate, afterRate, Number(req.body.checked_by),
+          sentQty, receivedQty, receivedDozens, processRate, afterRate, checkedBy,
           req.user.id, req.user.id, req.user.id,
         ],
       });
@@ -786,10 +985,15 @@ async function update(req, res, next) {
     const next = {
       party_name: has('party_name') ? trimOrNull(req.body.party_name) : current.party_name,
       challan_no: has('challan_no') ? trimOrNull(req.body.challan_no) : current.challan_no,
+      challan_type: has('challan_type') ? trimOrNull(req.body.challan_type) : current.challan_type,
+      outbound_bill_no: has('outbound_bill_no')
+        ? trimOrNull(req.body.outbound_bill_no) : current.outbound_bill_no,
       incoming_prefix_id: has('incoming_prefix_id') ? numOrNull(req.body.incoming_prefix_id) : current.incoming_prefix_id,
       incoming_no: has('incoming_no') ? trimOrNull(req.body.incoming_no) : current.incoming_no,
       sent_qty: nextSentQty,
       received_qty: nextReceivedQty,
+      received_dozens: has('received_dozens')
+        ? numOrNull(req.body.received_dozens) : current.received_dozens,
       process_rate: nextProcessRate,
       after_rate: nextAfterRate,
       checked_by: has('checked_by') ? Number(req.body.checked_by) : current.checked_by,
@@ -801,13 +1005,15 @@ async function update(req, res, next) {
     try {
       if (changes.length) {
         await tx.execute({
-          sql: `UPDATE stitching_entries SET party_name = ?, challan_no = ?,
-                  incoming_prefix_id = ?, incoming_no = ?, sent_qty = ?, received_qty = ?,
+          sql: `UPDATE stitching_entries SET party_name = ?, challan_no = ?, challan_type = ?,
+                  outbound_bill_no = ?, incoming_prefix_id = ?, incoming_no = ?,
+                  sent_qty = ?, received_qty = ?, received_dozens = ?,
                   process_rate = ?, after_rate = ?, checked_by = ?,
                   updated_by = ?, updated_at = datetime('now')
                 WHERE id = ?`,
-          args: [next.party_name, next.challan_no, next.incoming_prefix_id,
-            next.incoming_no, next.sent_qty, next.received_qty, next.process_rate,
+          args: [next.party_name, next.challan_no, next.challan_type, next.outbound_bill_no,
+            next.incoming_prefix_id,
+            next.incoming_no, next.sent_qty, next.received_qty, next.received_dozens, next.process_rate,
             next.after_rate, next.checked_by, req.user.id, id],
         });
         await logAction({
@@ -1035,9 +1241,13 @@ async function setClosed(req, res, next, { closing }) {
 
     const lot = await loadLot(ref.src, ref.id);
     if (!lot) return res.status(404).json({ message: 'Lot not found' });
-    if (lot.stage !== 'Packed') {
+    // Panchal, not Packed. Closing means "this stock has left the warehouse",
+    // and the warehouse is where stock lives -- Packed held that role only while
+    // the chain had nowhere else to end. Packed is an ordinary forwarding stage
+    // now and its balance is a real number again.
+    if (lot.stage !== STOCK_STAGE) {
       return res.status(400).json({
-        message: `Only a Packed lot can be ${closing ? 'closed' : 'reopened'} — this one is ${lot.stage}`,
+        message: `Only a ${STOCK_STAGE} lot can be ${closing ? 'closed' : 'reopened'} — this one is ${lot.stage}`,
       });
     }
     if (closing && lot.closed_at) {
@@ -1062,7 +1272,7 @@ async function setClosed(req, res, next, { closing }) {
         client: tx,
         userId: req.user.id,
         actionType: closing ? 'STITCHING_LOT_CLOSE' : 'STITCHING_LOT_REOPEN',
-        description: `${closing ? 'Closed' : 'Reopened'} Packed lot of ${lot.received_qty} `
+        description: `${closing ? 'Closed' : 'Reopened'} ${STOCK_STAGE} lot of ${lot.received_qty} `
           + `at ${lot.party_name} for ${describeLot(lot)}`,
         // Receipts are audited against their PO line, the way every other receipt
         // action in this app already is.
@@ -1189,7 +1399,12 @@ async function journey(req, res, next) {
     else for (const n of nodes.filter(x => !byKey.has(`${x.parent_src}:${x.parent_id}`))) walk(n, 0);
 
     const live = flat.filter(n => !n.deleted);
-    const packed = live.filter(n => n.stage === 'Packed');
+    // Where the chain ENDED, which is no longer one place. Material finishes
+    // either as stock in the warehouse or sold out of the business, and a chain
+    // that branched can do both -- 40 dozen to Panchal and 20 to a buyer is one
+    // origin lot with two endings, so these are two numbers rather than one.
+    const inStock = live.filter(n => n.stage === STOCK_STAGE);
+    const soldOut = live.filter(n => n.stage === EXIT_STAGE);
     res.json({
       anchor: { src: ref.src, id: ref.id },
       nodes: flat,
@@ -1203,9 +1418,16 @@ async function journey(req, res, next) {
         po_order_no: anchor.po_order_no,
         origin_incoming_no: root ? `${root.incoming_prefix || ''}${root.incoming_no || ''}` : null,
         origin_qty: root ? Number(root.received_qty) : null,
-        origin_rate: root ? Number(root.rate) : null,
-        packed_qty: packed.reduce((s, n) => s + Number(n.received_qty || 0), 0),
-        final_rate: packed.length ? Math.max(...packed.map(n => Number(n.after_rate || 0))) : null,
+        origin_rate: root ? Number(root.po_rate) : null,
+        stock_qty: inStock.reduce((s, n) => s + Number(n.received_qty || 0), 0),
+        // What LEFT on the sale, not what came back: nothing comes back from a
+        // sale, so received_qty is not the honest number there.
+        sold_qty: soldOut.reduce((s, n) => s + Number(n.sent_qty || 0), 0),
+        // No final_rate any more. It was the highest after_rate among the packed
+        // leaves -- a running total that rolled every stage into one figure. Each
+        // stage keeps its own rate now, so the ladder on each node IS the answer
+        // and collapsing it back into a single number would throw away exactly
+        // what the user asked to see.
         total_short: Math.round(live.reduce((s, n) => s + (n.short || 0), 0) * 100) / 100,
       },
     });

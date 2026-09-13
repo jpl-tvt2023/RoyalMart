@@ -7,6 +7,7 @@ const categories = require('../controllers/categories.controller');
 const companies = require('../controllers/companies.controller');
 const outboundProducts = require('../controllers/outboundProducts.controller');
 const stitchingPrefixes = require('../controllers/stitchingPrefixes.controller');
+const stitchingParties = require('../controllers/stitchingParties.controller');
 
 const canView  = allowRoles(...ALL_ROLES);
 // Master data is editable by any logged-in user; every change is audited.
@@ -52,6 +53,17 @@ router.get('/stitching-prefixes',        auth, canView,      stitchingPrefixes.l
 router.post('/stitching-prefixes',       auth, canAdminOnly, stitchingPrefixes.create);
 router.patch('/stitching-prefixes/:id',  auth, canAdminOnly, stitchingPrefixes.update);
 router.delete('/stitching-prefixes/:id', auth, canAdminOnly, stitchingPrefixes.remove);
+
+// Stitching parties — the processing houses material is sent to, and the buyers
+// finished goods are sold to. Each carries the destinations it may serve, which
+// is what narrows the challan form's party dropdown to parties that can actually
+// do that job. Admin -> Purchase Config, so writes are Admin/Owner only. The GET
+// stays open for the same reason the prefixes one does: the Stitching challan
+// form needs it on every dispatch.
+router.get('/stitching-parties',        auth, canView,      stitchingParties.list);
+router.post('/stitching-parties',       auth, canAdminOnly, stitchingParties.create);
+router.patch('/stitching-parties/:id',  auth, canAdminOnly, stitchingParties.update);
+router.delete('/stitching-parties/:id', auth, canAdminOnly, stitchingParties.remove);
 
 // Vendors master
 router.get('/vendors',        auth, canView,  vendors.list);

@@ -10,6 +10,7 @@ import {
   EMPTY_RECEIPT, INCOMING_NO_MAX,
   receiptFieldError, withDerivedAfterRate, stageOptionsFor, checkerOptionsFor,
   isFabricLine, outstandingOf, qtyDifference, offeredQtyDiffAction,
+  receiptCountsDozens, metresPerDozen,
 } from './receiptFields';
 
 const inputBase = 'px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
@@ -146,6 +147,10 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
   // Only fabric has a stage and a metres figure. Everything else on an outbound
   // PO is received and done with -- it travels no stage chain.
   const fabric = isFabricLine(line);
+  // Only fabric received AT Stitched or Packed has pieces to count. The stage is
+  // part of the form, so this follows whatever the user has picked.
+  const dozens = receiptCountsDozens(line, form.incoming_stage);
+  const perDozen = metresPerDozen(form.qty_in_metres, form.received_dozens);
 
   // A receipt that never had a bill number (migration 053 synthesized those from
   // the legacy flat `received` value) stays editable without inventing one —
@@ -207,6 +212,8 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
       if (fabric) {
         payload.incoming_stage = form.incoming_stage || null;
         payload.qty_in_metres = form.qty_in_metres === '' ? null : Number(form.qty_in_metres);
+        payload.received_dozens = dozens && form.received_dozens !== ''
+          ? Number(form.received_dozens) : null;
       }
       // Only ever decided on the delivery that raised the difference.
       if (isAdd && form.qty_diff_action) {
@@ -276,6 +283,35 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
                 value={form.qty_in_metres}
                 onChange={e => setField('qty_in_metres', e.target.value)}
                 className={inputCls}
+              />
+            </Field>
+          )}
+
+          {/* Fabric bought in already stitched or already packed arrives as
+              countable pieces, so it carries the same dozen count and yield a
+              challan into those stages does. Nothing earlier in the chain has
+              pieces to count. */}
+          {dozens && (
+            <Field
+              label="Dozens Received"
+              required
+              hint="How many dozen arrived on this delivery"
+            >
+              <input
+                type="number" min={0.01} step="0.01"
+                value={form.received_dozens}
+                onChange={e => setField('received_dozens', e.target.value)}
+                className={inputCls}
+              />
+            </Field>
+          )}
+
+          {dozens && (
+            <Field label="Metre per Dozen" hint="Metres divided by dozens — worked out for you">
+              <input
+                value={perDozen == null ? '' : fmtNum(perDozen)}
+                disabled
+                className={`${inputCls} bg-gray-50 text-gray-500`}
               />
             </Field>
           )}

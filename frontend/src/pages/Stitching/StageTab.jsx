@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { Plus, Trash2, ExternalLink, Route, PackageCheck, RotateCcw, Undo2, Download, Ban } from 'lucide-react';
+import { Plus, Pencil, Trash2, ExternalLink, Route, PackageCheck, RotateCcw, Undo2, Download, Ban } from 'lucide-react';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
@@ -13,7 +13,10 @@ import {
   listStitchingLots, listStitchingStageCounts, deleteStitchingLot,
   closeStitchingLot, reopenStitchingLot,
 } from '../../api/stitching.api';
-import { STATUSES, STATUS_COLORS, fmtNum, fmtQty, EPSILON, ALL_TAB } from '../../utils/stitching';
+import {
+  STATUSES, STATUS_COLORS, fmtNum, fmtQty, EPSILON, ALL_TAB,
+  STAGES, EXIT_STAGE, STOCK_STAGE, rateLadderStages, countsDozens,
+} from '../../utils/stitching';
 import { formatDateTime } from '../../utils/formatters';
 import JourneyModal from './JourneyModal';
 import ChallanModal from './ChallanModal';
@@ -55,17 +58,23 @@ const EXPORT_COLUMNS = [
   { key: 'status', header: 'Status' },
   { key: 'sent_qty', header: 'Sent' },
   { key: 'received_qty', header: 'Qty' },
+  { key: 'received_dozens', header: 'Dozens' },
+  { key: 'metres_per_dozen', header: 'M/Dozen' },
   { key: 'short', header: 'Short' },
   { key: 'balance', header: 'Balance' },
   { key: 'unit_metric', header: 'Unit' },
-  { key: 'rate', header: 'Rate' },
-  { key: 'process_rate', header: 'Process Rate' },
+  { key: 'po_rate', header: 'PO Rate' },
+  // One column per stage the material passed through, flattened out of
+  // rate_ladder below. A spreadsheet cannot nest, and the whole point of the
+  // ladder is comparing the stages side by side.
+  ...STAGES.filter(st => st !== EXIT_STAGE).map(st => ({ key: `rate_${st}`, header: `${st} Rate` })),
   // The challan this row was sent under. It is off the table on purpose — a lot
   // has many, and they read better nested — but a spreadsheet has no nesting, so
   // here it belongs on the row it describes. Blank on an origin lot, which
   // nobody sent.
   { key: 'challan_no', header: 'Challan No' },
-  { key: 'after_rate', header: 'After Rate' },
+  { key: 'challan_type', header: 'Challan Type' },
+  { key: 'outbound_bill_no', header: 'Outbound Bill No' },
   { key: 'incoming_no', header: 'Incoming No' },
   { key: 'checked_by_name', header: 'Checked By' },
   { key: 'updated_by_name', header: 'Updated By' },
@@ -74,7 +83,7 @@ const EXPORT_COLUMNS = [
 
 export default function StageTab({ stage, onOpenCounts }) {
   const pageSizeKey = 'stitching.pageSize';
-  const [filters, setFilters] = useSessionState(`stitching.filters.${stage}`, EMPTY_FILTERS);
+  const [filters, setFilters] = useSessionState(`stitching.filters.v2.${stage}`, EMPTY_FILTERS);
   // Draft is what the inputs hold; `filters` is what has actually been searched.
   // Text filters apply on Enter or the Search button, never on every keystroke —
   // same convention as the outbound PO list.
@@ -91,14 +100,34 @@ export default function StageTab({ stage, onOpenCounts }) {
   const [challanFor, setChallanFor] = useState(null);
   const [writingOff, setWritingOff] = useState(null);
   const [removing, setRemoving] = useState(null);
+  // { lot, challan } -- the modal needs the parent to check the balance against,
+  // and the row to correct.
+  const [editingChallan, setEditingChallan] = useState(null);
   const [busyKey, setBusyKey] = useState(null);
   const [downloading, setDownloading] = useState(false);
 
   // "All" is a view across every stage, not a stage the server knows about.
   const isAll = stage === ALL_TAB;
+  // The exit tab is a record of goods that have left: no balance to work down,
+  // no stage rate still to be agreed, and nothing to forward.
+  const isExitTab = stage === EXIT_STAGE;
+  // Dozens and yield only mean something where there are pieces to count. Left
+  // off the All view, where most rows would be blank.
+  const showsDozens = countsDozens(stage);
+
+  // Which stage-rate columns this tab shows. On a stage tab, only the stages a
+  // lot could actually have travelled to get here — a Stitched lot cannot have a
+  // Packed rate. The All view spans everything.
+  const ladderStages = isAll
+    ? STAGES.filter(st => st !== EXIT_STAGE)
+    : rateLadderStages(stage);
+
   // Stage only earns a column when rows can differ — on a stage tab every row
-  // would repeat the tab's own name.
-  const COLUMN_COUNT = isAll ? 14 : 13;
+  // would repeat the tab's own name. Counted rather than hardcoded now that the
+  // rate columns vary by tab: Sr, Party, Article, Status, Qty, Short, Balance,
+  // Incoming No, Checked By, Actions is the fixed spine.
+  const COLUMN_COUNT = 10 + (isAll ? 1 : 0) + 1 + ladderStages.length
+    + (isExitTab ? 1 : 0) + (showsDozens ? 2 : 0);
 
   // Params are built once and reused by the export, so what downloads is exactly
   // what the filters describe.
@@ -159,13 +188,20 @@ export default function StageTab({ stage, onOpenCounts }) {
         // exists to sum this, which "5 pcs" in the cell would prevent.
         sent_qty: r.sent_qty,
         received_qty: r.received_qty,
+        received_dozens: r.received_dozens ?? '',
+        metres_per_dozen: r.metres_per_dozen ?? '',
         short: r.short,
         balance: r.balance,
         unit_metric: r.unit_metric || '',
-        rate: r.rate,
-        process_rate: r.process_rate,
-        after_rate: r.after_rate,
+        po_rate: r.po_rate,
+        // Flatten the ladder into one column per stage. A stage the lot never
+        // travelled stays blank rather than becoming 0 — it was not charged
+        // nothing, it was never there.
+        ...Object.fromEntries(STAGES.filter(st => st !== EXIT_STAGE)
+          .map(st => [`rate_${st}`, r.rate_ladder?.[st] ?? ''])),
         challan_no: r.challan_no || '',
+        challan_type: r.challan_type || '',
+        outbound_bill_no: r.outbound_bill_no || '',
         incoming_no: `${r.incoming_prefix || ''}${r.incoming_no || ''}`,
         checked_by_name: r.checked_by_name || '',
         updated_by_name: r.updated_by_name || '',
@@ -263,11 +299,18 @@ export default function StageTab({ stage, onOpenCounts }) {
                 <th className={thCls}>Article</th>
                 <th className={thCls}>Status</th>
                 <th className={thCls}>Qty</th>
+                {showsDozens && <th className={thCls}>Dozens</th>}
+                {showsDozens && <th className={thCls}>M/Dozen</th>}
                 <th className={thCls}>Short</th>
                 <th className={thCls}>Balance</th>
-                <th className={thCls}>Rate</th>
-                <th className={thCls}>Process Rate</th>
-                <th className={thCls}>After Rate</th>
+                {isExitTab && <th className={thCls}>Outbound Bill No</th>}
+                <th className={thCls}>PO Rate</th>
+                {/* One column per stage travelled, rather than a single running
+                    total. The old After Rate rolled every stage into one number,
+                    which is exactly what hid what each one charged. */}
+                {ladderStages.map(st => (
+                  <th key={st} className={thCls}>{st} Rate</th>
+                ))}
                 {/* No Challan No. A lot has many challans and they sit nested
                     beneath it, so a single column here could only ever show one
                     of them — and on an origin lot it showed a stale number the
@@ -314,15 +357,40 @@ export default function StageTab({ stage, onOpenCounts }) {
                     {/* What was sent but never arrived. Spelled out with its unit
                         because it is the one number here that gets read aloud,
                         and the unit is the PO line's, never an assumed metre. */}
+                    {showsDozens && (
+                      <td className={`${tdCls} text-gray-600`}>
+                        {r.received_dozens == null ? '' : fmtNum(r.received_dozens)}
+                      </td>
+                    )}
+                    {showsDozens && (
+                      <td className={`${tdCls} text-gray-600`}>
+                        {/* The yield, derived server-side from the two numbers
+                            beside it so a stored copy can never disagree. */}
+                        {r.metres_per_dozen == null ? '' : fmtNum(r.metres_per_dozen)}
+                      </td>
+                    )}
                     <td className={`${tdCls} whitespace-nowrap ${Number(r.short) > EPSILON ? 'text-amber-600 font-medium' : 'text-gray-300'}`}>
                       {Number(r.short) > EPSILON ? fmtQty(r.short, r.unit_metric) : '—'}
                     </td>
                     <td className={`${tdCls} font-semibold whitespace-nowrap ${Number(r.balance) > EPSILON ? 'text-amber-700' : 'text-gray-400'}`}>
                       {fmtNum(r.balance)}
                     </td>
-                    <td className={`${tdCls} text-gray-600`}>{fmtNum(r.rate)}</td>
-                    <td className={`${tdCls} text-gray-600`}>{fmtNum(r.process_rate)}</td>
-                    <td className={`${tdCls} font-medium text-[#003049]`}>{fmtNum(r.after_rate)}</td>
+                    {isExitTab && (
+                      <td className={`${tdCls} font-mono text-[#003049]`}>
+                        {r.outbound_bill_no || '—'}
+                      </td>
+                    )}
+                    <td className={`${tdCls} text-gray-600`}>{fmtNum(r.po_rate)}</td>
+                    {ladderStages.map(st => (
+                      <td
+                        key={st}
+                        className={`${tdCls} ${st === r.stage ? 'font-medium text-[#003049]' : 'text-gray-600'}`}
+                      >
+                        {/* Blank, not 0, for a stage this lot never travelled:
+                            it was not charged nothing, it was never there. */}
+                        {r.rate_ladder?.[st] == null ? '' : fmtNum(r.rate_ladder[st])}
+                      </td>
+                    ))}
                     <td className={`${tdCls} whitespace-nowrap`}>
                       {r.incoming_prefix || r.incoming_no
                         ? <span className="font-mono text-xs">{r.incoming_prefix || ''}{r.incoming_no || ''}</span>
@@ -333,7 +401,7 @@ export default function StageTab({ stage, onOpenCounts }) {
                       <div className="flex items-center gap-1">
                         {/* Material that will never move on: ruined at rest, or
                             gone. Not a stage move, so it names no destination. */}
-                        {Number(r.balance) > EPSILON && (
+                        {Number(r.balance) > EPSILON && !r.is_exit && (
                           <button
                             type="button"
                             onClick={() => setWritingOff(r)}
@@ -343,7 +411,7 @@ export default function StageTab({ stage, onOpenCounts }) {
                             <Ban size={14} />
                           </button>
                         )}
-                        {r.stage === 'Packed' && !r.closed_at && (
+                        {r.stage === STOCK_STAGE && !r.closed_at && (
                           <button
                             type="button"
                             onClick={() => setClosing(r)}
@@ -353,7 +421,7 @@ export default function StageTab({ stage, onOpenCounts }) {
                             <PackageCheck size={13} />Close
                           </button>
                         )}
-                        {r.stage === 'Packed' && r.closed_at && (
+                        {r.stage === STOCK_STAGE && r.closed_at && (
                           <button
                             type="button"
                             onClick={() => reopen(r)}
@@ -367,7 +435,7 @@ export default function StageTab({ stage, onOpenCounts }) {
                         <button
                           type="button"
                           onClick={() => setJourneyFor(r)}
-                          title="Trace this lot from the PO receipt to Packed"
+                          title="Trace this lot from the PO receipt to where it ended up"
                           className="p-1.5 rounded hover:bg-gray-100 text-gray-500"
                         >
                           <Route size={14} />
@@ -421,13 +489,28 @@ export default function StageTab({ stage, onOpenCounts }) {
                             <>
                               <span className="text-gray-400">Challan</span>
                               <span className="font-mono text-[#003049]">{c.challan_no || '—'}</span>
+                              {c.challan_type && (
+                                <Badge color="gray">{c.challan_type}</Badge>
+                              )}
+                              {/* Where it went. Obvious on a one-destination
+                                  stage, load-bearing anywhere the lot branched. */}
+                              <span className="text-gray-400">
+                                → <span className="text-gray-600">{c.stage}</span>
+                              </span>
                               <span className="text-gray-500">{c.party_name}</span>
+                              {c.outbound_bill_no && (
+                                <span className="text-gray-400">
+                                  bill <span className="font-mono text-gray-600">{c.outbound_bill_no}</span>
+                                </span>
+                              )}
                               <span className="text-gray-400">
                                 sent <span className="font-medium text-gray-700">{fmtQty(c.sent_qty, r.unit_metric)}</span>
                               </span>
-                              <span className="text-gray-400">
-                                back <span className="font-medium text-gray-700">{fmtQty(c.received_qty, r.unit_metric)}</span>
-                              </span>
+                              {!c.is_exit && (
+                                <span className="text-gray-400">
+                                  back <span className="font-medium text-gray-700">{fmtQty(c.received_qty, r.unit_metric)}</span>
+                                </span>
+                              )}
                               {Number(c.short) > EPSILON && (
                                 <span className="text-amber-600 font-medium">
                                   {fmtQty(c.short, r.unit_metric)} short
@@ -443,6 +526,23 @@ export default function StageTab({ stage, onOpenCounts }) {
                       </td>
                       <td className={tdCls}>
                         <div className="flex items-center gap-1">
+                          {/* Correct a challan in place -- a wrong number, party
+                              or quantity. Gated the same way withdrawing is:
+                              once material has moved on from this challan, or it
+                              has been closed, changing what it says would leave
+                              the chain describing something that did not happen.
+                              A write-off has no fields worth editing, so it is
+                              withdrawn and re-raised instead. */}
+                          {c.can_remove && !c.is_write_off && (
+                            <button
+                              type="button"
+                              onClick={() => setEditingChallan({ lot: r, challan: c })}
+                              title="Edit this challan"
+                              className="p-1.5 rounded hover:bg-blue-50 text-blue-600"
+                            >
+                              <Pencil size={14} />
+                            </button>
+                          )}
                           {/* A correction: the challan was entered against the
                               wrong lot, or the write-off was wrong. Nothing
                               travels anywhere -- the quantity stops counting as
@@ -478,8 +578,13 @@ export default function StageTab({ stage, onOpenCounts }) {
                           className="inline-flex items-center gap-1 ml-4 px-2 py-1 rounded text-xs text-[#c1121f] hover:bg-red-50"
                         >
                           <Plus size={13} />Add Challan
+                          {/* The destinations are named here rather than just
+                              the next one, because there is now a choice and it
+                              is made inside the modal. Seeing it up front is
+                              what stops the modal being a surprise. */}
                           <span className="text-gray-400">
-                            · {fmtQty(r.balance, r.unit_metric)} left to send to {r.next_stage}
+                            · {fmtQty(r.balance, r.unit_metric)} left to send to{' '}
+                            {(r.destinations || []).join(', ') || r.next_stage}
                           </span>
                         </button>
                       </td>
@@ -540,6 +645,15 @@ export default function StageTab({ stage, onOpenCounts }) {
           lot={challanFor}
           onClose={() => setChallanFor(null)}
           onSaved={() => { setChallanFor(null); load(); }}
+        />
+      )}
+
+      {editingChallan && (
+        <ChallanModal
+          lot={editingChallan.lot}
+          challan={editingChallan.challan}
+          onClose={() => setEditingChallan(null)}
+          onSaved={() => { setEditingChallan(null); load(); }}
         />
       )}
 

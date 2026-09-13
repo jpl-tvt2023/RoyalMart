@@ -38,8 +38,14 @@ export async function removeStitchingChallan(id, reason) {
   return data;
 }
 
-export async function listStitchingParties() {
-  const { data } = await api.get('/stitching/parties');
+// The party names offered for a dispatch, from the master. Pass `use` -- the
+// destination being sent to -- to get only parties tagged for that job. Without
+// it you get every active party, which is what an unfiltered view wants.
+//
+// Named ...Names to keep it apart from listStitchingParties in
+// stitchingParties.api.js, which returns the full master rows for the admin tab.
+export async function listStitchingPartyNames(use) {
+  const { data } = await api.get('/stitching/parties', { params: use ? { use } : {} });
   return data;
 }
 

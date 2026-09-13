@@ -2,6 +2,7 @@ import AppShell from '../../components/layout/AppShell';
 import MasterTab from '../Configurations/MasterTab';
 import OutboundProductsTab from '../Configurations/OutboundProductsTab';
 import StitchingPrefixesTab from '../Configurations/StitchingPrefixesTab';
+import StitchingPartiesTab from '../Configurations/StitchingPartiesTab';
 import { useSessionState } from '../../hooks/useSessionState';
 import {
   listCompanies, createCompany, updateCompany, deleteCompany,
@@ -11,12 +12,14 @@ const TABS = [
   { key: 'global', label: 'Global' },
   { key: 'outboundProducts', label: 'Outbound Product List' },
   { key: 'stitchingPrefixes', label: 'Stitching Prefixes' },
+  { key: 'stitchingParties', label: 'Stitching Parties' },
 ];
 
 const SUBTITLES = {
   global: 'Company master data',
   outboundProducts: 'The Category · Item Name · Unit Metric taxonomy that packaging products are onboarded against',
   stitchingPrefixes: 'Incoming-number prefixes, and the processing stage each one records',
+  stitchingParties: 'Who material is sent to, and which jobs each party may be given',
 };
 
 export default function PurchaseConfig() {
@@ -58,6 +61,7 @@ export default function PurchaseConfig() {
       )}
       {tab === 'outboundProducts' && <OutboundProductsTab />}
       {tab === 'stitchingPrefixes' && <StitchingPrefixesTab />}
+      {tab === 'stitchingParties' && <StitchingPartiesTab />}
     </AppShell>
   );
 }

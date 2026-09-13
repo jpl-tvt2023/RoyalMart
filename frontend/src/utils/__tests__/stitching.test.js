@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import {
-  STAGES, STAGE_TABS, ALL_TAB, nextStage, prevStage,
+  STAGES, STAGE_TABS, ALL_TAB, nextStage, DESTINATIONS, destinationsFor, canSendTo,
+  EXIT_STAGE, STOCK_STAGE, PARTY_USE_STAGES, rateLadderStages,
   carriedIncomingNo, soleActivePrefix,
   challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX, fmtQty,
   writeOffReasonError, WRITE_OFF_REASON_MAX, shortOf, STATUSES, OPEN_STATUSES,
@@ -12,23 +13,65 @@ describe('STAGE_TABS', () => {
     expect(STAGE_TABS[STAGE_TABS.length - 1]).toBe(ALL_TAB);
   });
 
-  // The guard that matters: STAGES is the domain chain that nextStage/prevStage
-  // walk and the DB CHECK constraints mirror. "All" is a view and must never
-  // leak into it.
+  // The guard that matters: STAGES is the domain chain the DB CHECK constraints
+  // mirror. "All" is a view and must never leak into it.
   test('All is not a stage', () => {
     expect(STAGES).not.toContain(ALL_TAB);
     expect(nextStage(ALL_TAB)).toBeNull();
-    expect(prevStage(ALL_TAB)).toBeNull();
+    expect(destinationsFor(ALL_TAB)).toEqual([]);
   });
 });
 
-describe('prevStage', () => {
-  test('is the inverse of nextStage, and null at the head of the chain', () => {
-    expect(prevStage('Gray')).toBeNull();
-    expect(prevStage('nope')).toBeNull();
-    for (const stage of STAGES.slice(0, -1)) {
-      expect(prevStage(nextStage(stage))).toBe(stage);
+// The chain branches now, so "where can this go" is a lookup rather than a step.
+// This is the client half of the same guard the server's destination-graph test
+// makes: keep the two tables in step.
+describe('DESTINATIONS', () => {
+  test('every stage has an entry, and every destination is a real stage', () => {
+    for (const stage of STAGES) {
+      expect(DESTINATIONS).toHaveProperty(stage);
+      for (const dest of DESTINATIONS[stage]) expect(STAGES).toContain(dest);
     }
+  });
+
+  // Material never goes backwards. It may SKIP a stage — Processed straight to
+  // Packed is a real route — but it never returns to one it has left.
+  test('material only ever moves forward along the chain', () => {
+    for (const stage of STAGES) {
+      for (const dest of DESTINATIONS[stage]) {
+        expect(STAGES.indexOf(dest)).toBeGreaterThan(STAGES.indexOf(stage));
+      }
+    }
+  });
+
+  test('the two terminal stages lead nowhere', () => {
+    expect(destinationsFor(STOCK_STAGE)).toEqual([]);
+    expect(destinationsFor(EXIT_STAGE)).toEqual([]);
+  });
+
+  test('Gray has exactly one destination, so the chooser can pre-select it', () => {
+    expect(destinationsFor('Gray')).toEqual(['Processed']);
+    expect(nextStage('Gray')).toBe('Processed');
+  });
+
+  test('canSendTo rejects a route that is not in the table', () => {
+    expect(canSendTo('Processed', 'Packed')).toBe(true);
+    expect(canSendTo('Gray', 'Packed')).toBe(false);
+    expect(canSendTo('Packed', 'Stitched')).toBe(false);
+  });
+
+  // Gray falls out on its own: nothing is ever SENT to Gray, because material
+  // enters the chain there on a receipt.
+  test('party use tags are exactly the destinations', () => {
+    expect(PARTY_USE_STAGES).not.toContain('Gray');
+    expect(PARTY_USE_STAGES).toEqual([...new Set(Object.values(DESTINATIONS).flat())]);
+  });
+});
+
+describe('rateLadderStages', () => {
+  // A lot can only have been charged for stages it has actually reached.
+  test('covers the stages travelled so far and no further', () => {
+    expect(rateLadderStages('Gray')).toEqual(['Gray']);
+    expect(rateLadderStages('Stitched')).toEqual(['Gray', 'Processed', 'Stitched']);
   });
 });
 
@@ -161,5 +204,12 @@ describe('statuses', () => {
 
   test('every open status is a real status', () => {
     for (const s of OPEN_STATUSES) expect(STATUSES).toContain(s);
+  });
+
+  // Sold is terminal: the goods are not ours, so there is nothing outstanding
+  // about them and they must never be counted as open work.
+  test('Sold is a status but is not open work', () => {
+    expect(STATUSES).toContain('Sold');
+    expect(OPEN_STATUSES).not.toContain('Sold');
   });
 });

@@ -19,3 +19,11 @@ royalmart-billing-structure.html
 # Agent-facing working docs -- kept local, not committed.
 CLAUDE.md
 docs/DOMAIN.md
+docs/RUNBOOK.md
+
+# Stale READMEs superseded by the agent docs above -- kept local only. These
+# were tracked before this rule, so the patterns below do not untrack them on
+# their own: that was done separately with `git rm --cached`.
+backend/tests/README.md
+frontend/README.md
+frontend/src/test/README.md

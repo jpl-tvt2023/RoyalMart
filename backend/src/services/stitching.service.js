@@ -14,7 +14,48 @@
 // rows written by other endpoints, and a stored copy would need invalidating
 // across every one of them.
 
-const STAGES = ['Gray', 'Processed', 'Stitched', 'Packed'];
+// Listed in CHAIN ORDER, which STAGE_ORDER_SQL in the controller is generated
+// from -- a plain alphabetical sort would read Gray, Packed, Panchal, Processed,
+// Stitched and put the end of the chain second.
+//
+// Panchal is our own warehouse and is where stock actually sits. Third Party is
+// not a processing stage at all: it is the exit, where goods leave the business
+// against an outbound bill.
+const STAGES = ['Gray', 'Processed', 'Stitched', 'Packed', 'Panchal', 'Third Party'];
+
+// Where a lot at each stage may be sent. THE single source of truth: the
+// destination chooser renders from it, create() validates the caller's target
+// against it, can_forward is derived from it, and the party master's use tags
+// are its distinct values.
+//
+// The chain used to be a strict line, which is why the target was always
+// nextStage(parent.stage) and the user never picked one. It branches now --
+// finished goods can skip a stage, go to the warehouse, or be sold straight out
+// -- and a single next-stage function cannot express that.
+//
+// Two stages lead nowhere, for different reasons. Panchal is the warehouse: what
+// arrives there is stock, and it leaves by being closed, not forwarded. Third
+// Party is the exit: the goods are gone. Selling stock out of Panchal later is a
+// real possibility the user considered and declined for now -- when they want
+// it, it is 'Third Party' added to the Panchal array and nothing else.
+const DESTINATIONS = {
+  Gray: ['Processed'],
+  Processed: ['Stitched', 'Packed', 'Panchal', 'Third Party'],
+  Stitched: ['Packed', 'Panchal', 'Third Party'],
+  Packed: ['Panchal', 'Third Party'],
+  Panchal: [],
+  'Third Party': [],
+};
+
+// The stage material physically LEAVES the business at. It takes no incoming
+// number (nothing arrives), carries an outbound bill number instead, and can
+// never be forwarded out of.
+const EXIT_STAGE = 'Third Party';
+
+// The stage finished goods sit at as stock, and the only one where closing means
+// anything. Packed held this role until Panchal existed -- migration 070 gave it
+// an In Stock status precisely because the chain had nowhere else to end.
+const STOCK_STAGE = 'Panchal';
 
 // Half a paisa, half a millimetre, half a piece. Quantities and rates round-trip
 // through SQLite REAL, so exact comparisons would call 100 and 99.99999999
@@ -28,39 +69,82 @@ const STATUS = {
   FORWARDED: 'Forwarded',
   IN_STOCK: 'In Stock',
   CLOSED: 'Closed',
+  // Terminal. The goods left the business against an outbound bill, so there is
+  // no balance to draw down and nothing left to decide.
+  SOLD: 'Sold',
 };
 
-// Outstanding work: a lot still holding quantity at its stage, or finished goods
-// packed but not yet dispatched. Forwarded means the lot fully moved on, and
-// Closed means someone confirmed it is done with -- neither needs attention.
+// Outstanding work: a lot still holding quantity at its stage, or stock sitting
+// in the warehouse not yet closed out. Forwarded means the lot fully moved on,
+// Closed means someone confirmed it is done with, and Sold means it is not ours
+// any more -- none of the three needs attention.
 const OPEN_STATUSES = [STATUS.PENDING, STATUS.PARTIAL, STATUS.IN_STOCK];
+
+// The destinations a party may be tagged as serving, and the twin of migration
+// 079's CHECK on stitching_party_uses.
+//
+// Gray is absent on purpose: nothing is ever sent TO Gray. Material enters the
+// chain there on an outbound PO receipt, so a party tagged for Gray would be one
+// nobody could ever pick.
+//
+// Panchal and Third Party are listed before they become real stages, so an admin
+// can tag parties for them ahead of the stage graph landing. Once it has, this
+// list is exactly "every value that appears in DESTINATIONS".
+// Derived from the graph rather than listed again: a party may be tagged for
+// exactly those places something can be SENT. Gray falls out on its own -- it is
+// never a destination, because material enters the chain there on a receipt.
+const PARTY_USE_STAGES = [...new Set(Object.values(DESTINATIONS).flat())];
+
+const isValidPartyUse = (s) => PARTY_USE_STAGES.includes(s);
+
+// The kinds of goods a challan may carry. A quality grade chosen per dispatch,
+// not per lot: one lot can go out Fresh to one party and Second to another.
+const CHALLAN_TYPES = ['Fresh', 'Second', 'Third'];
+
+const isValidChallanType = (s) => CHALLAN_TYPES.includes(s);
+
+// The stages where finished goods are counted in dozens as well as measured in
+// metres. Before Stitched there are no pieces to count -- fabric is just fabric.
+//
+// The stage rate is PER DOZEN at these two and per metre everywhere else, which
+// is the practical reason the count has to exist: a stitcher is paid by the
+// dozen, a dyer by the metre.
+const DOZEN_STAGES = ['Stitched', 'Packed'];
+
+const countsDozens = (stage) => DOZEN_STAGES.includes(stage);
+
+// Yield: how many metres it took to make a dozen. NOT STORED -- derived here and
+// on the client from the two numbers that are, to two places.
+//
+// Null rather than 0 or Infinity when either half is missing or the dozens are
+// zero, so the UI renders a blank instead of a number that means nothing.
+const metresPerDozen = (receivedQty, receivedDozens) => {
+  const qty = Number(receivedQty);
+  const dz = Number(receivedDozens);
+  if (!Number.isFinite(qty) || !Number.isFinite(dz) || dz <= 0) return null;
+  return Math.round((qty / dz) * 100) / 100;
+};
 
 const isValidStage = (s) => STAGES.includes(s);
 
-// The stage a lot moves to next, or null at the end of the chain. Forwarding
-// never lets the user pick the target -- material physically goes through every
-// stage in order, so the target is always a function of where the lot is now.
-const nextStage = (stage) => {
-  const i = STAGES.indexOf(stage);
-  return i === -1 ? null : (STAGES[i + 1] || null);
-};
+// Where a lot at this stage may be sent. Empty at the two terminal stages.
+const destinationsFor = (stage) => DESTINATIONS[stage] || [];
 
-// The stage a quantity CAME FROM, or null at the head of the chain.
-//
-// Describes history only. Material flows one way -- Gray to Processed to
-// Stitched to Packed -- and nothing anywhere moves a lot to an earlier stage, so
-// this is never a destination. It is safe as a stand-in for "what stage is my
-// parent at" because create() derives its target from nextStage(parent.stage)
-// and never accepts a caller-supplied stage, so every entry sits exactly one
-// stage after its parent. A test pins that.
-const prevStage = (stage) => {
-  const i = STAGES.indexOf(stage);
-  return i <= 0 ? null : STAGES[i - 1];
-};
+const canSendTo = (fromStage, toStage) => destinationsFor(fromStage).includes(toStage);
 
-// Withdrawing a challan is a correction, so the reason is the whole point of the
-// record -- "why is there a withdrawn challan here" has to be answerable without
-// asking anyone. Hence required, unlike every other free-text field here.
+// The FIRST destination, which is the one the chooser pre-selects. It is no
+// longer "the next stage" in any binding sense: the user picks, and create()
+// validates the pick against destinationsFor(). Kept under the old name because
+// a single-destination stage like Gray still has exactly one answer, and the
+// form wants it selected rather than making someone click the only option.
+const nextStage = (stage) => destinationsFor(stage)[0] || null;
+
+// There is deliberately no prevStage any more. It described a strictly linear
+// chain -- "the stage before this one" -- and the chain branches now, so a lot at
+// Packed may have come from Processed or from Stitched and the question has no
+// single answer. Every caller that wanted it actually wanted the parent row,
+// which the lot already carries as parent_src/parent_id.
+
 const REVERT_REASON_MAX = 300;
 
 const revertReasonError = (value) => {
@@ -90,17 +174,22 @@ const balanceOf = (receivedQty, forwarded) => Number(receivedQty || 0) - Number(
 // Mirrors computeLineStatus in outboundPOs.controller.js in spirit: a small pure
 // function over quantities, never a user-supplied value.
 //
-// Packed is the end of the chain, so balance is meaningless there -- a Packed lot
-// has nowhere to forward to. It reads In Stock until someone explicitly closes
-// it, which is what records that the goods left the building. Before migration
-// 070 it returned Closed unconditionally, which made the status constant and
-// hid packed stock from any "what is outstanding" count.
+// The two terminal stages are special, and only they are. Panchal is the
+// warehouse: balance is meaningless there because nothing forwards out, so it
+// reads In Stock until someone closes it, which is what records the goods
+// leaving. Third Party is the exit and reads Sold flat -- there is no state to
+// track once material is not ours.
+//
+// Packed carried the In Stock rule until Panchal existed, because the chain had
+// nowhere else to end. It is an ordinary forwarding stage now and reads
+// Pending/Partial/Forwarded like Gray and Processed do.
 // There is no In Transit here, and that is a decision rather than an omission.
 // Adding a challan IS sending the lot on, so a row never exists in a state where
 // the goods have left but not arrived. Shortage is a quantity, not a state: a
 // challan sent 40 and back 38 is an ordinary lot holding 38 with 2 short.
 const computeStatus = ({ stage, receivedQty, forwarded, closedAt }) => {
-  if (stage === 'Packed') return closedAt ? STATUS.CLOSED : STATUS.IN_STOCK;
+  if (stage === EXIT_STAGE) return STATUS.SOLD;
+  if (stage === STOCK_STAGE) return closedAt ? STATUS.CLOSED : STATUS.IN_STOCK;
   const balance = balanceOf(receivedQty, forwarded);
   if (balance <= EPSILON) return STATUS.FORWARDED;
   if (Number(forwarded || 0) > EPSILON) return STATUS.PARTIAL;
@@ -113,7 +202,8 @@ const computeStatus = ({ stage, receivedQty, forwarded, closedAt }) => {
 // pages. A parity test pins the two together, exactly as outboundPOFlags.js
 // does for its flag predicates.
 const statusSql = (stageCol, qtyCol, forwardedCol, closedAtCol) => `CASE
-  WHEN ${stageCol} = 'Packed' THEN
+  WHEN ${stageCol} = '${EXIT_STAGE}' THEN '${STATUS.SOLD}'
+  WHEN ${stageCol} = '${STOCK_STAGE}' THEN
     CASE WHEN ${closedAtCol} IS NOT NULL THEN '${STATUS.CLOSED}' ELSE '${STATUS.IN_STOCK}' END
   WHEN ${qtyCol} - ${forwardedCol} <= ${EPSILON} THEN '${STATUS.FORWARDED}'
   WHEN ${forwardedCol} > ${EPSILON} THEN '${STATUS.PARTIAL}'
@@ -194,8 +284,10 @@ const qtyError = (value, label) => {
 
 module.exports = {
   STAGES, STATUS, OPEN_STATUSES, EPSILON,
+  DESTINATIONS, EXIT_STAGE, STOCK_STAGE, DOZEN_STAGES, PARTY_USE_STAGES, CHALLAN_TYPES,
   REVERT_REASON_MAX, WRITE_OFF_REASON_MAX, CHALLAN_MAX,
-  isValidStage, nextStage, prevStage,
+  isValidStage, isValidPartyUse, isValidChallanType, countsDozens, metresPerDozen,
+  nextStage, destinationsFor, canSendTo,
   effectiveAfterRate, balanceOf, computeStatus, statusSql,
   moneyError, qtyError, revertReasonError, writeOffReasonError, challanError,
 };

@@ -2,24 +2,61 @@
 // always the authority — these copies exist so the page can label a stage, show
 // the next one, and pre-fill a rate without a round trip. Keep the two in step.
 
-export const STAGES = ['Gray', 'Processed', 'Stitched', 'Packed'];
+// Chain order, matching the server. Panchal is our warehouse and is where stock
+// actually sits. Third Party is not a processing stage at all — it is the exit,
+// where goods leave the business against an outbound bill.
+export const STAGES = ['Gray', 'Processed', 'Stitched', 'Packed', 'Panchal', 'Third Party'];
 
-// "All" is a VIEW, not a stage, so it is deliberately kept out of STAGES —
-// nextStage/prevStage walk that list and the DB CHECK constraints mirror it, so
-// a fifth member there would corrupt the chain rather than add a tab. It sits
-// last: the stage tabs are the daily work, All is for following one PO through
-// every stage at once.
+// Twin of DESTINATIONS on the server: where a lot at each stage may be sent.
+// The destination chooser renders straight from this, so a stage with one
+// destination shows one tile and a terminal stage shows none.
+export const DESTINATIONS = {
+  Gray: ['Processed'],
+  Processed: ['Stitched', 'Packed', 'Panchal', 'Third Party'],
+  Stitched: ['Packed', 'Panchal', 'Third Party'],
+  Packed: ['Panchal', 'Third Party'],
+  Panchal: [],
+  'Third Party': [],
+};
+
+export const EXIT_STAGE = 'Third Party';
+export const STOCK_STAGE = 'Panchal';
+
+// What each destination tile says under its name, so the person picking does not
+// have to know the chain by heart.
+export const DESTINATION_HINTS = {
+  Processed: 'next stage',
+  Stitched: 'next stage',
+  Packed: 'next stage',
+  Panchal: 'our warehouse',
+  'Third Party': 'sold out, needs a bill no',
+};
+
+// "All" is a VIEW, not a stage, so it is deliberately kept out of STAGES — the
+// DB CHECK constraints mirror that list, so a member here that is not a real
+// stage would corrupt the chain rather than add a tab. It sits last: the stage
+// tabs are the daily work, All is for following one PO through every stage.
 export const ALL_TAB = 'All';
 export const STAGE_TABS = [...STAGES, ALL_TAB];
 
 // No In Transit, deliberately. Adding a challan IS sending the lot on, so no row
 // ever sits between the two. Shortage is a quantity in its own column, not a
 // state: sent 40 and back 38 is an ordinary lot holding 38 with 2 short.
-export const STATUSES = ['Pending', 'Partial', 'Forwarded', 'In Stock', 'Closed'];
+export const STATUSES = ['Pending', 'Partial', 'Forwarded', 'In Stock', 'Closed', 'Sold'];
 
 // Outstanding work: still holding stock, or packed but not yet dispatched. Twin
 // of OPEN_STATUSES in the backend service, keep in step.
 export const OPEN_STATUSES = ['Pending', 'Partial', 'In Stock'];
+
+// Twin of PARTY_USE_STAGES in the backend service and of migration 079's CHECK
+// on stitching_party_uses. Gray is absent on purpose: nothing is ever sent TO
+// Gray, so a party tagged for it could never be picked.
+export const PARTY_USE_STAGES = [...new Set(Object.values(DESTINATIONS).flat())];
+
+// The kinds of goods a challan may carry. Twin of CHALLAN_TYPES on the server.
+// Nothing is pre-selected in the form: a grade the user did not choose is worse
+// than one they have to pick.
+export const CHALLAN_TYPES = ['Fresh', 'Second', 'Third'];
 
 export const STATUS_COLORS = {
   Pending: 'blue',
@@ -27,18 +64,59 @@ export const STATUS_COLORS = {
   Forwarded: 'green',
   'In Stock': 'purple',
   Closed: 'navy',
+  Sold: 'orange',
 };
 
-export const nextStage = (stage) => {
-  const i = STAGES.indexOf(stage);
-  return i === -1 ? null : (STAGES[i + 1] || null);
+// The stages where finished goods are counted in dozens as well as measured in
+// metres. Twin of DOZEN_STAGES on the server. Before Stitched there are no
+// pieces to count — fabric is just fabric.
+//
+// The stage rate is PER DOZEN at these two and per metre everywhere else, which
+// is the practical reason the count exists: a stitcher is paid by the dozen, a
+// dyer by the metre.
+export const DOZEN_STAGES = ['Stitched', 'Packed'];
+
+export const countsDozens = (stage) => DOZEN_STAGES.includes(stage);
+
+// Yield: how many metres it took to make a dozen. Never stored — derived here
+// and on the server from the two numbers that are, to two places. Null rather
+// than 0 or Infinity when either half is missing, so the field renders blank
+// instead of a number that means nothing.
+export const metresPerDozen = (receivedQty, receivedDozens) => {
+  const qty = Number(receivedQty);
+  const dz = Number(receivedDozens);
+  if (!Number.isFinite(qty) || !Number.isFinite(dz) || dz <= 0) return null;
+  return Math.round((qty / dz) * 100) / 100;
 };
 
-// Twin of prevStage on the server. The stage a quantity came FROM — history,
-// never a destination. Material only ever flows forward.
-export const prevStage = (stage) => {
+// What a stage's rate is quoted per. Job work at Stitched and Packed is paid by
+// the dozen, everything else by the metre.
+export const rateUnitFor = (stage) => (countsDozens(stage) ? 'dozen' : 'metre');
+
+export const destinationsFor = (stage) => DESTINATIONS[stage] || [];
+
+export const canSendTo = (fromStage, toStage) => destinationsFor(fromStage).includes(toStage);
+
+// The first destination, which is what the chooser pre-selects. No longer "the
+// next stage" in any binding sense — the user picks, and the server validates
+// the pick. Kept because a single-destination stage like Gray still has one
+// answer and the form should not make someone click the only option.
+export const nextStage = (stage) => destinationsFor(stage)[0] || null;
+
+// prevStage is gone. It described a strictly linear chain, and the chain
+// branches now: a lot at Packed may have come from Processed or from Stitched,
+// so "the stage before this one" has no single answer.
+
+// Rates no longer accumulate — each stage keeps its own. This reads one rung off
+// a lot's ladder, which the server assembles from the stages it actually
+// travelled, so a lot that skipped Stitched has no Stitch Rate rather than a 0.
+export const rateAt = (lot, stage) => lot?.rate_ladder?.[stage] ?? null;
+
+// The stages to show rate columns for on a given tab: everything up to and
+// including it. A Stitched lot cannot have a Packed rate yet.
+export const rateLadderStages = (stage) => {
   const i = STAGES.indexOf(stage);
-  return i <= 0 ? null : STAGES[i - 1];
+  return i === -1 ? STAGES.filter(s => s !== EXIT_STAGE) : STAGES.slice(0, i + 1);
 };
 
 // The suffix to offer at the next stage, so GRY123 becomes PRC123 rather than
