@@ -168,7 +168,6 @@ export default function JourneyModal({ src, id, onClose }) {
                         {n.outbound_bill_no && (
                           <span>bill <span className="font-mono">{n.outbound_bill_no}</span></span>
                         )}
-                        {n.checked_by_name && <span>entered by {n.checked_by_name}</span>}
                         {n.closed_at && (
                           <span className="text-gray-400">
                             closed by {n.closed_by_name || 'unknown'} · {formatDateTime(n.closed_at)}

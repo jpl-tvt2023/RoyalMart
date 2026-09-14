@@ -1795,4 +1795,92 @@ describe('Outbound PO lines — unit metric selection', () => {
       expect(res.body.lines[0]).toMatchObject({ qty: 4, unit_metric: 'mtrs' });
     });
   });
+
+  // Migration 084. A receipt records the unit it was counted in rather than
+  // borrowing the line's at render time, so a later edit to the line cannot
+  // reinterpret a delivery already taken.
+  describe('the unit a RECEIPT was counted in', () => {
+    const receiptOf = async (poId, lineId) => {
+      const po = await getPO(poId);
+      const line = po.body.lines.find(l => l.id === lineId);
+      return line.receipts[line.receipts.length - 1];
+    };
+
+    test('defaults to the unit the line was written in', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'mtrs' });
+      expect((await postReceipt(poId, lineId, { received_qty: 2 })).status).toBe(201);
+      expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
+    });
+
+    test('stores a supplied metric, in the canonical casing of the master', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      expect((await postReceipt(poId, lineId, { received_qty: 2, unit_metric: 'MTRS' })).status).toBe(201);
+      expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
+    });
+
+    test('refuses a metric the article is not listed under', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      const res = await postReceipt(poId, lineId, { received_qty: 2, unit_metric: 'furlongs' });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/not a listed unit metric/i);
+    });
+
+    // The rule is appended AFTER the existing ones on both sides, because the
+    // first error a body with several omissions returns is the contract the
+    // client mirrors. A bad metric must not mask a missing Bill No.
+    test('is reported after the older required fields', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      const res = await request(app)
+        .post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ received_qty: 2, received_rate: 10, checked_by: warehousePocId, unit_metric: 'furlongs' });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/Bill No is required/);
+    });
+
+    test('an edit can change it, and the change is audited', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      const created = await postReceipt(poId, lineId, { received_qty: 2 });
+      expect((await receiptOf(poId, lineId)).unit_metric).toBe('Taga');
+
+      const res = await request(app)
+        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ unit_metric: 'mtrs' });
+      expect(res.status).toBe(200);
+      expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
+
+      const audit = await request(app).get('/api/audit-logs')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ entity_type: 'outbound_po_line', entity_id: lineId });
+      const rows = audit.body.rows || audit.body;
+      const entry = rows.find(r => r.action_type === 'OUTBOUND_PO_LINE_RECEIPT_UPDATE');
+      expect(entry.changes.some(c => c.field === 'unit_metric' && c.new === 'mtrs')).toBe(true);
+    });
+
+    // Grandfathering, on the same principle as the line rule above: a receipt
+    // must stay editable in the unit it was taken in.
+    test('a receipt keeps its metric after that metric is retired from the master', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      const created = await postReceipt(poId, lineId, { received_qty: 2, unit_metric: 'mtrs' });
+      expect(created.status).toBe(201);
+      await db.execute({
+        sql: 'DELETE FROM outbound_products WHERE category = ? AND unit_metric = ?',
+        args: [article.category, 'mtrs'],
+      });
+
+      const res = await request(app)
+        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ unit_metric: 'mtrs', received_qty: 3 });
+      expect(res.status).toBe(200);
+      expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
+    });
+  });
 });

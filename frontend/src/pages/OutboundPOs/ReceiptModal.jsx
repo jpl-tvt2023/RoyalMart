@@ -138,7 +138,7 @@ function QtyDifference({ form, setField, line, isAdd }) {
  * the PO detail grid past the width it had, and a form gives each field a label
  * and room to breathe. `receipt` null means add mode.
  */
-export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) {
+export default function ReceiptModal({ poId, line, receipt, metricOptions = [], onClose, onSaved }) {
   const isAdd = !receipt;
   const [form, setForm] = useState(EMPTY_RECEIPT);
   const [saving, setSaving] = useState(false);
@@ -158,8 +158,11 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
   const hadBillNo = !isAdd && !!String(receipt.bill_no ?? '').trim();
 
   useEffect(() => {
-    setForm(isAdd ? EMPTY_RECEIPT : {
+    setForm(isAdd ? { ...EMPTY_RECEIPT, unit_metric: line.unit_metric || '' } : {
       received_qty: receipt.received_qty ?? '',
+      // A receipt taken before migration 084 has none of its own, so it shows
+      // the line's -- which is the unit it was counted in, just never recorded.
+      unit_metric: receipt.unit_metric || line.unit_metric || '',
       received_rate: receipt.received_rate ?? '',
       bill_no: receipt.bill_no ?? '',
       incoming_no: receipt.incoming_no ?? '',
@@ -173,7 +176,7 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
       qty_diff_action: receipt.qty_diff_action ?? '',
       qty_diff_reason: receipt.qty_diff_reason ?? '',
     });
-  }, [receipt, isAdd]);
+  }, [receipt, isAdd, line.unit_metric]);
 
   // Options are fetched every time the modal opens rather than once on page
   // mount: the prefix master and the Warehouse_POC list can change under an
@@ -203,6 +206,7 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
       const billNo = String(form.bill_no ?? '').trim();
       const payload = {
         received_qty: Number(form.received_qty),
+        unit_metric: form.unit_metric || null,
         received_rate: Number(form.received_rate),
         checked_by: Number(form.checked_by),
         incoming_no: String(form.incoming_no ?? '').trim() || null,
@@ -267,6 +271,42 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
               required
               autoFocus
             />
+          </Field>
+
+          {/* The unit the quantity above is in, recorded on the receipt rather
+              than inferred from the line. Pre-filled with the line's own, which
+              is the answer on almost every delivery — the field exists so the
+              row can say what it means without reaching back to the line, and so
+              a later edit to the line cannot reinterpret a past delivery.
+
+              A select, never free text: the options are what the Outbound
+              Product List publishes for this article, which is the same set the
+              server accepts. An article listed under one metric has nothing to
+              choose, so it shows the value plainly instead of a one-item menu. */}
+          <Field
+            label="UM"
+            required
+            hint={metricOptions.length > 1
+              ? 'The unit this delivery was counted in'
+              : 'From the line — this article is listed in one unit'}
+          >
+            {metricOptions.length > 1 ? (
+              <select
+                value={form.unit_metric || ''}
+                onChange={e => setField('unit_metric', e.target.value)}
+                className={inputCls}
+                required
+              >
+                <option value="">Select...</option>
+                {metricOptions.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            ) : (
+              <input
+                value={form.unit_metric || ''}
+                disabled
+                className={`${inputCls} bg-gray-50 text-gray-500`}
+              />
+            )}
           </Field>
 
           {/* Fabric is bought in taga and worked in metres, and no factor

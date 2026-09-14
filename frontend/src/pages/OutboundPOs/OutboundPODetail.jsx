@@ -463,6 +463,11 @@ export default function OutboundPODetail() {
                             ReceiptModal. Asterisks still mark what the modal will
                             not save without. */}
                         <th className={`${thCls} w-16`}>Recd Qty <span className="text-red-500">*</span></th>
+                        {/* The unit Recd Qty is in, as the RECEIPT recorded it.
+                            Usually the line's UM a few columns left, but stored
+                            per receipt so a later edit to the line cannot
+                            reinterpret a delivery already taken. */}
+                        <th className={`${thCls} w-14`}>UM <span className="text-red-500">*</span></th>
                         {/* Fabric is bought in taga and worked in metres, so the
                             two sit side by side. Blank on anything else, which
                             travels no stage chain and has no metres. */}
@@ -603,6 +608,13 @@ export default function OutboundPODetail() {
                                 {receipt ? (
                                   <>
                                     <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{num(receipt.received_qty)}</td>
+                                    <td className={`${tdCls} text-gray-600 ${receipt.deleted_at ? 'opacity-50' : ''}`}>
+                                      {/* Falls back to the line's for a receipt
+                                          taken before migration 084 — that IS
+                                          the unit it was counted in, it was just
+                                          never written down. */}
+                                      {receipt.unit_metric || l.unit_metric || '—'}
+                                    </td>
                                     <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>
                                       {l.goes_to_stitching ? num(receipt.qty_in_metres) : ''}
                                     </td>
@@ -704,6 +716,7 @@ export default function OutboundPODetail() {
           poId={id}
           line={receiptModal.line}
           receipt={receiptModal.receipt}
+          metricOptions={metricOptionsFor(receiptModal.line)}
           onClose={() => setReceiptModal(null)}
           onSaved={() => { setReceiptModal(null); load(); }}
         />
@@ -731,8 +744,8 @@ const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2 whitespace-nowrap';
 
 // Receipt-side column count, for the colSpan on the "Add receipt" and
 // "No receipts yet" rows. Keep in step with the receipt <th> block above:
-// Recd Qty, Qty in metres, Dozens, Rate, Process, After, Bill No, Incoming No,
-// Checked By, Updated, Actions. The Updated column is hidden below 1600px but
+// Recd Qty, UM, Qty in metres, Dozens, Rate, Process, After, Bill No,
+// Incoming No, Checked By, Updated, Actions. The Updated column is hidden below 1600px but
 // still occupies a slot in the colSpan, which is correct — a spanned cell counts
 // hidden columns.
 //
@@ -740,7 +753,7 @@ const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2 whitespace-nowrap';
 // Stitching page, which is where material is dispatched to a processor and so
 // where a challan is actually raised — Bill No already covers what a PO receipt
 // needs to record.
-const RECEIPT_COLSPAN = 11;
+const RECEIPT_COLSPAN = 12;
 
 // Cell chrome WITHOUT a width. cellCls keeps w-full for the single-control
 // cells; a cell packing two controls composes from cellBase and sizes them

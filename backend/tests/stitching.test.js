@@ -8,6 +8,14 @@ let untaggedUserId;
 let prefixes;
 
 const uid = () => Math.random().toString(36).slice(2, 8);
+
+// A challan number nobody else will use. Since migration 085 the pair
+// (challan_no, party_name) is unique across the whole business, and this suite
+// deliberately never resets stitching_entries -- so two tests that both reach
+// for a tidy literal like 'C1' against the same party collide, and the second
+// one fails on a duplicate rather than on what it was actually testing. Tests
+// that assert ON the number capture this in a const, the rest just call it.
+const challanNo = (tag = 'C') => `${tag}-${uid()}`;
 const A = (r) => r.set('Authorization', `Bearer ${token}`);
 
 const { DESTINATIONS, DOZEN_STAGES } = require('../src/services/stitching.service');
@@ -1362,17 +1370,18 @@ describe('Challans — a lot moves on only under one', () => {
 
   test('the challan is the next-stage lot, complete from the moment it exists', async () => {
     const { receiptId } = await grayLot({ qty: 100, process_rate: 5 });
+    const challan = challanNo();
     const d = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
       sent_qty: 40, received_qty: 38, process_rate: 7,
-      checked_by: warehousePocId, challan_no: 'C1',
+      checked_by: warehousePocId, challan_no: challan,
     });
     const row = await lotRow('Processed', 'entry', d.body.id);
     expect(row.status).toBe('Pending');
     expect(row.received_qty).toBe(38);
     expect(row.sent_qty).toBe(40);
     expect(row.short).toBe(2);
-    expect(row.challan_no).toBe('C1');
+    expect(row.challan_no).toBe(challan);
     expect(row.rate).toBe(55);       // the Gray lot's after rate, carried in
     expect(row.after_rate).toBe(62); // 55 + 7
     // It holds material, so it can be sent on immediately -- no second step.
@@ -1383,7 +1392,7 @@ describe('Challans — a lot moves on only under one', () => {
     const { receiptId } = await grayLot({ qty: 100 });
     const d = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
-      sent_qty: 40, received_qty: 40, checked_by: warehousePocId, challan_no: 'C1',
+      sent_qty: 40, received_qty: 40, checked_by: warehousePocId, challan_no: challanNo(),
     });
     const row = await lotRow('Processed', 'entry', d.body.id);
     expect(row.status).not.toBe('In Transit');
@@ -1397,11 +1406,11 @@ describe('Challans — a lot moves on only under one', () => {
     const { receiptId } = await grayLot({ qty: 100 });
     const d = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
-      sent_qty: 40, received_qty: 40, checked_by: warehousePocId, challan_no: 'C1',
+      sent_qty: 40, received_qty: 40, checked_by: warehousePocId, challan_no: challanNo(),
     });
     const onward = await api.forward({
       parent_src: 'entry', parent_id: d.body.id, party_name: 'Stitch',
-      sent_qty: 10, received_qty: 10, checked_by: warehousePocId, challan_no: 'C2',
+      sent_qty: 10, received_qty: 10, checked_by: warehousePocId, challan_no: challanNo(),
     });
     expect(onward.status).toBe(201);
     expect(onward.body.stage).toBe('Stitched');
@@ -1449,7 +1458,7 @@ describe('Challans — a lot moves on only under one', () => {
     const { receiptId } = await grayLot({ qty: 100 });
     const res = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
-      sent_qty: 120, received_qty: 120, checked_by: warehousePocId, challan_no: 'C1',
+      sent_qty: 120, received_qty: 120, checked_by: warehousePocId, challan_no: challanNo(),
     });
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/only 100 is left/);
@@ -1459,7 +1468,7 @@ describe('Challans — a lot moves on only under one', () => {
     const { receiptId } = await grayLot({ qty: 100 });
     const res = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
-      sent_qty: 40, received_qty: 41, checked_by: warehousePocId, challan_no: 'C1',
+      sent_qty: 40, received_qty: 41, checked_by: warehousePocId, challan_no: challanNo(),
     });
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/cannot be more than Sent Qty/i);
@@ -1469,7 +1478,7 @@ describe('Challans — a lot moves on only under one', () => {
     const { receiptId } = await grayLot({ qty: 100 });
     const d = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
-      sent_qty: 10, received_qty: 10, checked_by: warehousePocId, challan_no: 'C1',
+      sent_qty: 10, received_qty: 10, checked_by: warehousePocId, challan_no: challanNo(),
       // Both ignored: the stage decides the prefix and the number carries down.
       incoming_prefix_id: prefixes.Packed.id, incoming_no: 'SPOOFED',
     });
@@ -1534,7 +1543,37 @@ describe('Challans — a lot moves on only under one', () => {
       expect(rowB.incoming_prefix).toBe('PRC');
     });
 
-    test('the same challan number twice on one lot is refused', async () => {
+    test('a challan omitting Received Qty records what was sent', async () => {
+      const { receiptId } = await grayLot({ qty: 100 });
+      // No received_qty at all -- the form stopped asking for it. Sending is
+      // receiving, so nothing is short and the lot's Balance is the number that
+      // shows material still to come.
+      const d = await A(request(app).post('/api/stitching')).send({
+        parent_src: 'receipt', parent_id: receiptId, party_name: 'A',
+        sent_qty: 40, challan_type: 'Fresh', challan_no: challanNo(),
+      });
+      expect(d.status).toBe(201);
+      const row = await lotRow('Processed', 'entry', d.body.id);
+      expect(row.sent_qty).toBe(40);
+      expect(row.received_qty).toBe(40);
+      expect(row.short).toBe(0);
+      expect(row.balance).toBe(40);
+    });
+
+    // Still honoured when a caller supplies one, so a genuine shortfall can be
+    // recorded through the API or a later correction.
+    test('an explicit Received Qty still records a shortfall', async () => {
+      const { receiptId } = await grayLot({ qty: 100 });
+      const d = await api.forward({
+        parent_src: 'receipt', parent_id: receiptId, party_name: 'A',
+        sent_qty: 40, received_qty: 38, checked_by: warehousePocId, challan_no: challanNo(),
+      });
+      const row = await lotRow('Processed', 'entry', d.body.id);
+      expect(row.received_qty).toBe(38);
+      expect(row.short).toBe(2);
+    });
+
+    test('the same challan number twice to the same party is refused', async () => {
       const { receiptId } = await grayLot({ qty: 100 });
       const base = {
         parent_src: 'receipt', parent_id: receiptId, party_name: 'A',
@@ -1543,19 +1582,36 @@ describe('Challans — a lot moves on only under one', () => {
       expect((await api.forward({ ...base, sent_qty: 40 })).status).toBe(201);
       const again = await api.forward({ ...base, sent_qty: 40 });
       expect(again.status).toBe(400);
-      expect(again.body.message).toMatch(/already been used on this lot/i);
+      expect(again.body.message).toMatch(/already been used for A/i);
     });
 
-    test('the same number on a different lot is fine', async () => {
+    // The pair is the key, so the number alone is not. Two parties number their
+    // challan books from 1 independently and always did.
+    test('the same number to a different party is fine, even on one lot', async () => {
+      const { receiptId } = await grayLot({ qty: 100 });
+      const base = {
+        parent_src: 'receipt', parent_id: receiptId,
+        sent_qty: 10, received_qty: 10, checked_by: warehousePocId, challan_no: 'SHARED',
+      };
+      expect((await api.forward({ ...base, party_name: 'A' })).status).toBe(201);
+      expect((await api.forward({ ...base, party_name: 'B' })).status).toBe(201);
+    });
+
+    // WAS "the same number on a different lot is fine". Migration 085 widened
+    // the key from (lot, number) to (number, party) across the whole business:
+    // a challan number is printed once on a document handed to one party, and a
+    // party's challan book does not restart per lot.
+    test('the same number to the same party is refused on a DIFFERENT lot too', async () => {
       const one = await grayLot({ qty: 100 });
       const two = await grayLot({ qty: 100 });
-      for (const { receiptId } of [one, two]) {
-        const res = await api.forward({
-          parent_src: 'receipt', parent_id: receiptId, party_name: 'A',
-          sent_qty: 10, received_qty: 10, checked_by: warehousePocId, challan_no: 'SHARED',
-        });
-        expect(res.status).toBe(201);
-      }
+      const base = {
+        parent_src: 'receipt', party_name: 'A',
+        sent_qty: 10, received_qty: 10, checked_by: warehousePocId, challan_no: 'CROSS-LOT',
+      };
+      expect((await api.forward({ ...base, parent_id: one.receiptId })).status).toBe(201);
+      const res = await api.forward({ ...base, parent_id: two.receiptId });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/already been used for A/i);
     });
 
     test('withdrawing a challan frees its number for the corrected entry', async () => {
@@ -1573,12 +1629,37 @@ describe('Challans — a lot moves on only under one', () => {
     });
 
     test('an edit is held to the same rule', async () => {
-      const { a, b } = await split();
-      const res = await api.patchLot(b, { challan_no: 'CH-A' });
+      const { receiptId } = await grayLot({ qty: 100 });
+      const base = {
+        parent_src: 'receipt', parent_id: receiptId, party_name: 'A',
+        sent_qty: 40, received_qty: 40, checked_by: warehousePocId,
+      };
+      const first = challanNo('EDIT-A');
+      const second = challanNo('EDIT-B');
+      const a = await api.forward({ ...base, challan_no: first });
+      const b = await api.forward({ ...base, challan_no: second });
+
+      const res = await api.patchLot(b.body.id, { challan_no: first });
       expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/already been used on this lot/i);
+      expect(res.body.message).toMatch(/already been used for A/i);
       // Its own number is not a clash with itself.
-      expect((await api.patchLot(a, { challan_no: 'CH-A' })).status).toBe(200);
+      expect((await api.patchLot(a.body.id, { challan_no: first })).status).toBe(200);
+    });
+
+    // Renaming the party can collide just as easily as renumbering, so the edit
+    // re-checks when EITHER half of the pair moves.
+    test('moving a challan onto a party that already has that number is refused', async () => {
+      const { receiptId } = await grayLot({ qty: 100 });
+      const base = {
+        parent_src: 'receipt', parent_id: receiptId,
+        sent_qty: 40, received_qty: 40, checked_by: warehousePocId, challan_no: 'DUP',
+      };
+      await api.forward({ ...base, party_name: 'A' });
+      const b = await api.forward({ ...base, party_name: 'B' });
+
+      const res = await api.patchLot(b.body.id, { party_name: 'A' });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/already been used for A/i);
     });
   });
 
@@ -1778,13 +1859,18 @@ describe('Short — sent but never arrived', () => {
 });
 
 describe('Withdrawing a wrongly entered challan', () => {
+  // A fresh number every call. One of the tests below RESTORES the challan it
+  // withdrew, which puts that (number, party) pair back in play -- with a fixed
+  // literal the next test's dispatch would be refused as a duplicate and fail
+  // on a 404 further down, nowhere near the cause.
   const dispatched = async (qty = 100, sent = 40) => {
     const { receiptId } = await grayLot({ qty });
+    const challan = challanNo('WRONG');
     const d = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'Dyeing House',
-      sent_qty: sent, received_qty: sent, checked_by: warehousePocId, challan_no: 'WRONG-1',
+      sent_qty: sent, received_qty: sent, checked_by: warehousePocId, challan_no: challan,
     });
-    return { receiptId, challanId: d.body.id };
+    return { receiptId, challanId: d.body.id, challanNo: challan };
   };
 
   const grayRow = async (receiptId) =>
@@ -1834,7 +1920,7 @@ describe('Withdrawing a wrongly entered challan', () => {
     });
     await api.forward({
       parent_src: 'entry', parent_id: first.body.id, party_name: 'S',
-      sent_qty: 50, received_qty: 50, checked_by: warehousePocId, challan_no: 'C2',
+      sent_qty: 50, received_qty: 50, checked_by: warehousePocId, challan_no: challanNo(),
     });
     const res = await api.removeChallan(first.body.id, 'too late');
     expect(res.status).toBe(400);
@@ -1900,12 +1986,13 @@ describe('Withdrawing a wrongly entered challan', () => {
   });
 
   test('re-entering it against the right lot afterwards is an ordinary dispatch', async () => {
-    const { receiptId, challanId } = await dispatched();
+    const { receiptId, challanId, challanNo: wrongNo } = await dispatched();
     await api.removeChallan(challanId, 'wrong PO');
 
+    // The SAME number again -- withdrawing frees it, which is the whole point.
     const again = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'Right Processor',
-      sent_qty: 40, received_qty: 40, checked_by: warehousePocId, challan_no: 'WRONG-1',
+      sent_qty: 40, received_qty: 40, checked_by: warehousePocId, challan_no: wrongNo,
     });
     expect(again.status).toBe(201);
     expect((await grayRow(receiptId)).balance).toBe(60);
@@ -1973,7 +2060,7 @@ describe('Material only ever flows forward', () => {
     const { receiptId } = await grayLot({ qty: 100 });
     const d = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'D',
-      sent_qty: 40, received_qty: 40, challan_no: 'C1', stage: 'Gray',
+      sent_qty: 40, received_qty: 40, challan_no: challanNo(), stage: 'Gray',
     });
     expect(d.status).toBe(201);
     // A bare `stage` in the body is ignored -- only target_stage is read, and

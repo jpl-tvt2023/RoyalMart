@@ -144,24 +144,67 @@ const eqMetric = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? 
 // tuple grandfathering in validateLines -- editing a master must never leave an
 // existing PO unsaveable. The vendor listing mirrors this set in
 // withUnitMetrics, so the dropdown offers precisely what this accepts.
-function resolveLineMetric(l, idx, umMap, metricsByPair, storedMetric) {
+// The metrics an article may be recorded in, and the catalog's own answer for
+// it. Split out of resolveLineMetric because a RECEIPT now has to apply the same
+// rule as the line it hangs off -- see resolveReceiptMetric below. One copy, so
+// the two cannot drift into accepting different sets.
+//
+// `extras` are grandfathered on top of the published list, on the principle
+// described at resolveLineMetric: editing a master must never leave an existing
+// row unsaveable.
+function allowedMetricsFor(l, umMap, metricsByPair, ...extras) {
   const exact = umMap.get(lineKey(l));
   const fallback = umMap.get(lineKey({ category: l.category, item_name: l.item_name, variant: '' }));
   const catalogDefault = exact ?? fallback ?? null;
 
+  const allowed = [...(metricsByPair.get(pairKey(l.category, l.item_name)) || [])];
+  for (const extra of [catalogDefault, ...extras]) {
+    if (extra && !allowed.some(m => eqMetric(m, extra))) allowed.push(extra);
+  }
+  return { catalogDefault, allowed };
+}
+
+function resolveLineMetric(l, idx, umMap, metricsByPair, storedMetric) {
+  const { catalogDefault, allowed } = allowedMetricsFor(l, umMap, metricsByPair, storedMetric);
+
   const submitted = String(l.unit_metric ?? '').trim();
   if (!submitted) return { metric: catalogDefault };
 
-  const allowed = [...(metricsByPair.get(pairKey(l.category, l.item_name)) || [])];
-  for (const extra of [catalogDefault, storedMetric]) {
-    if (extra && !allowed.some(m => eqMetric(m, extra))) allowed.push(extra);
-  }
   const match = allowed.find(m => eqMetric(m, submitted));
   if (match) return { metric: match };
 
   const label = `${String(l.category || '').trim()} / ${String(l.item_name || '').trim()}`;
   const options = allowed.length ? ` (${allowed.join(', ')})` : '';
   return { error: `Line ${idx + 1}: "${submitted}" is not a listed unit metric for "${label}"${options}` };
+}
+
+// The unit a RECEIPT was counted in, resolved against the same published list as
+// the line, and stored in the master's canonical casing.
+//
+// The line's own metric is always acceptable, which is the whole point: a
+// receipt defaults to it, so a delivery counted exactly as the PO was written
+// can never be refused -- not even when the article has since been retired from
+// the Outbound Product List. Everything beyond that must be a metric the list
+// actually publishes for the (category, item_name) pair, so the column cannot
+// fragment into free text the way migration 064 set out to prevent.
+//
+// Returns { metric } or { error }.
+async function resolveReceiptMetric(submittedRaw, line) {
+  const submitted = String(submittedRaw ?? '').trim();
+  const [umMap, metricsByPair] = await Promise.all([catalogUnitMetrics(), unitMetricsByPair()]);
+  // line_unit_metric is set on the update path, where `line` is the receipt row
+  // joined to its line and unit_metric is the RECEIPT's own. Both are
+  // grandfathered: a receipt must stay saveable in the unit it was taken in, and
+  // in the unit its line was written in.
+  const { allowed } = allowedMetricsFor(
+    line, umMap, metricsByPair, line?.unit_metric, line?.line_unit_metric,
+  );
+
+  const match = allowed.find(m => eqMetric(m, submitted));
+  if (match) return { metric: match };
+
+  const options = allowed.length ? ` (${allowed.join(', ')})` : '';
+  return { error: `"${submitted}" is not a listed unit metric for this article${options}` };
 }
 
 function normLine(l, idx, unitMetric) {
@@ -379,6 +422,23 @@ async function validateReceiptFields(body, { requireAll, line }) {
     }
   }
 
+  // The unit the delivery was counted in, recorded on the receipt rather than
+  // read off the line (migration 084 says why).
+  //
+  // Absent means "the line's own metric" -- the same answer the form pre-fills,
+  // and the same leniency resolveLineMetric gives a blank line metric. That is
+  // what keeps every existing API caller working, and it is the honest default:
+  // a receipt entered against a line IS in that line's unit unless someone says
+  // otherwise. The form still asks for it and will not submit it blank.
+  //
+  // A SUPPLIED value is held to the published list for the article. Last in this
+  // function for the reason given above -- the first error a multi-omission body
+  // returns is the contract.
+  if (present('unit_metric') && !blank(body?.unit_metric)) {
+    const { error } = await resolveReceiptMetric(body.unit_metric, line);
+    if (error) return error;
+  }
+
   return null;
 }
 
@@ -472,7 +532,7 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
     const receiptDeletedClause = includeDeleted ? '' : 'AND r.deleted_at IS NULL';
     const { rows: receipts } = await executor.execute({
       sql: `SELECT r.id, r.line_id, r.received_qty, r.received_rate, r.bill_no,
-                   r.checked_by, r.incoming_no, r.qty_in_metres, r.received_dozens,
+                   r.checked_by, r.incoming_no, r.unit_metric, r.qty_in_metres, r.received_dozens,
                    r.qty_diff_action, r.qty_diff_reason,
                    r.process_rate, r.after_rate, r.incoming_prefix_id,
                    sp.prefix AS incoming_prefix, sp.stage AS incoming_stage,
@@ -1160,6 +1220,16 @@ async function createReceipt(req, res, next) {
     const pairError = incomingPairError(incomingNo, prefixId);
     if (pairError) return res.status(400).json({ message: pairError });
 
+    // The unit this delivery was counted in. Defaults to the line's own, which
+    // is what the form pre-fills -- a receipt is in the line's unit unless
+    // someone says otherwise.
+    let unitMetric = line.unit_metric;
+    if (req.body?.unit_metric != null && String(req.body.unit_metric).trim() !== '') {
+      const { metric, error: metricError } = await resolveReceiptMetric(req.body.unit_metric, line);
+      if (metricError) return res.status(400).json({ message: metricError });
+      unitMetric = metric;
+    }
+
     // Fabric only, and the number the whole Stitching page counts in.
     const qtyInMetres = isStitchingLine(line)
       && req.body?.qty_in_metres != null && req.body.qty_in_metres !== ''
@@ -1192,11 +1262,11 @@ async function createReceipt(req, res, next) {
     try {
       const { rows: inserted } = await tx.execute({
         sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, checked_by, incoming_no,
-                process_rate, after_rate, incoming_prefix_id, qty_in_metres, received_dozens,
+                process_rate, after_rate, incoming_prefix_id, unit_metric, qty_in_metres, received_dozens,
                 qty_diff_action, qty_diff_reason, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
         args: [lineId, receivedQty, receivedRate, billNo, checkedBy, incomingNo,
-          processRate, afterRate, prefixId, qtyInMetres, receivedDozens,
+          processRate, afterRate, prefixId, unitMetric, qtyInMetres, receivedDozens,
           diffAction, diffReason, req.user.id, req.user.id],
       });
 
@@ -1247,9 +1317,9 @@ async function updateReceipt(req, res, next) {
     const { rows: receiptRows } = await db.execute({
       sql: `SELECT r.id, r.received_qty, r.received_rate, r.bill_no, r.checked_by, r.incoming_no,
                    r.process_rate, r.after_rate, r.incoming_prefix_id, r.qty_in_metres,
-                   r.received_dozens,
+                   r.received_dozens, r.unit_metric,
                    sp.stage AS incoming_stage,
-                   l.category, l.item_name, l.variant, l.unit_metric,
+                   l.category, l.item_name, l.variant, l.unit_metric AS line_unit_metric,
                    COALESCE((SELECT op.goes_to_stitching FROM outbound_products op
                               WHERE op.category = l.category AND op.item_name = l.item_name
                                 AND op.unit_metric = l.unit_metric), 0) AS goes_to_stitching
@@ -1329,6 +1399,20 @@ async function updateReceipt(req, res, next) {
     const pairError = incomingPairError(nextIncomingNo, nextPrefixId);
     if (pairError) return res.status(400).json({ message: pairError });
 
+    // Left alone unless the edit names it. A receipt taken in a unit keeps that
+    // unit -- an older row that predates migration 084 and still has none falls
+    // back to its line's, which is what the read path shows anyway.
+    let nextUnitMetric = receipt.unit_metric ?? receipt.line_unit_metric;
+    if (has('unit_metric')) {
+      if (req.body.unit_metric == null || String(req.body.unit_metric).trim() === '') {
+        nextUnitMetric = receipt.line_unit_metric;
+      } else {
+        const { metric, error: metricError } = await resolveReceiptMetric(req.body.unit_metric, receipt);
+        if (metricError) return res.status(400).json({ message: metricError });
+        nextUnitMetric = metric;
+      }
+    }
+
     // Guards against re-cutting the ground under lots already forwarded on the
     // Stitching page. Both are only reachable once something has been forwarded,
     // so an ordinary receipt edit never sees them.
@@ -1381,12 +1465,14 @@ async function updateReceipt(req, res, next) {
     // short already absorbed. Corrections go through the inline Short cell on
     // the line, which is what updateLineShort is for.
     const RECEIPT_FIELDS = ['received_qty', 'received_rate', 'bill_no', 'checked_by', 'incoming_no',
-      'process_rate', 'after_rate', 'incoming_prefix_id', 'qty_in_metres', 'received_dozens'];
+      'process_rate', 'after_rate', 'incoming_prefix_id', 'unit_metric', 'qty_in_metres',
+      'received_dozens'];
     const changes = diffFields(receipt, {
       received_qty: nextQty, received_rate: nextRate, bill_no: nextBillNo,
       checked_by: nextCheckedBy, incoming_no: nextIncomingNo,
       process_rate: nextProcessRate, after_rate: nextAfterRate,
-      incoming_prefix_id: nextPrefixId, qty_in_metres: nextQtyInMetres,
+      incoming_prefix_id: nextPrefixId, unit_metric: nextUnitMetric,
+      qty_in_metres: nextQtyInMetres,
       received_dozens: nextReceivedDozens,
     }, RECEIPT_FIELDS);
 
@@ -1396,10 +1482,11 @@ async function updateReceipt(req, res, next) {
         await tx.execute({
           sql: `UPDATE outbound_po_line_receipts SET received_qty = ?, received_rate = ?, bill_no = ?,
                   checked_by = ?, incoming_no = ?, process_rate = ?, after_rate = ?,
-                  incoming_prefix_id = ?, qty_in_metres = ?, received_dozens = ?,
+                  incoming_prefix_id = ?, unit_metric = ?, qty_in_metres = ?, received_dozens = ?,
                   updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
           args: [nextQty, nextRate, nextBillNo, nextCheckedBy, nextIncomingNo,
-            nextProcessRate, nextAfterRate, nextPrefixId, nextQtyInMetres, nextReceivedDozens,
+            nextProcessRate, nextAfterRate, nextPrefixId, nextUnitMetric,
+            nextQtyInMetres, nextReceivedDozens,
             req.user.id, receiptId],
         });
         await logAction({

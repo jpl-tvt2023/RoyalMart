@@ -221,14 +221,5 @@ export const fmtQty = (value, unit) => {
   return unit ? `${n} ${unit}` : n;
 };
 
-// What was sent but never arrived. Null on an origin lot, which nobody sent, so
-// the column renders blank rather than as a zero. Twin of the `short` expression
-// in LOT_SELECT -- the server is the authority, this is for a form that has not
-// submitted yet.
-export const shortOf = (sentQty, receivedQty) => {
-  if (sentQty == null || sentQty === '' || receivedQty == null || receivedQty === '') return null;
-  return Math.round((Number(sentQty) - Number(receivedQty)) * 100) / 100;
-};
-
 export const fullIncomingNo = (row) =>
   `${row.incoming_prefix || ''}${row.incoming_no || ''}` || null;

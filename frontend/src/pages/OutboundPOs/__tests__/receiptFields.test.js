@@ -11,7 +11,7 @@ const packaging = { qty: 100, received: 0, short: 0 };
 
 // The minimum a receipt needs before the fabric rules are the thing failing.
 const valid = {
-  received_qty: 10, received_rate: 10, checked_by: 1, bill_no: 'B-1',
+  received_qty: 10, unit_metric: 'taga', received_rate: 10, checked_by: 1, bill_no: 'B-1',
   incoming_no: 'IN-1', incoming_stage: 'Gray', qty_in_metres: 400,
 };
 
@@ -93,9 +93,25 @@ describe('receiptFieldError', () => {
 
   test('a packaging receipt needs none of them', () => {
     const bare = {
-      received_qty: 10, received_rate: 10, checked_by: 1, bill_no: 'B-1',
+      received_qty: 10, unit_metric: 'pcs', received_rate: 10, checked_by: 1, bill_no: 'B-1',
     };
     expect(receiptFieldError(bare, { line: packaging })).toBeNull();
+  });
+
+  // Every receipt carries the unit it was counted in, fabric or not -- the form
+  // pre-fills it from the line, so a blank one means the user cleared it.
+  //
+  // LAST of the rules, matching where the server puts it: a body missing both
+  // this and something earlier must report the earlier one, because the first
+  // error is the contract both sides reproduce.
+  test('UM is required on every receipt, and reported last', () => {
+    expect(receiptFieldError({ ...valid, unit_metric: '' }, { line: fabric }))
+      .toMatch(/UM is required/);
+    expect(receiptFieldError({ ...valid, unit_metric: '   ' }, { line: packaging }))
+      .toMatch(/UM is required/);
+    // Qty in metres is checked before it, so that is what comes back.
+    expect(receiptFieldError({ ...valid, unit_metric: '', qty_in_metres: '' }, { line: fabric }))
+      .toMatch(/Qty in metres is required/);
   });
 
   test('a ticked box demands a reason', () => {

@@ -57,10 +57,9 @@ const EXPORT_COLUMNS = [
   { key: 'po_order_no', header: 'PO' },
   { key: 'status', header: 'Status' },
   { key: 'sent_qty', header: 'Sent' },
-  { key: 'received_qty', header: 'Qty' },
+  { key: 'received_qty', header: 'Qty in metres' },
   { key: 'received_dozens', header: 'Dozens' },
   { key: 'metres_per_dozen', header: 'M/Dozen' },
-  { key: 'short', header: 'Short' },
   { key: 'balance', header: 'Balance' },
   { key: 'unit_metric', header: 'Unit' },
   { key: 'po_rate', header: 'PO Rate' },
@@ -76,7 +75,6 @@ const EXPORT_COLUMNS = [
   { key: 'challan_type', header: 'Challan Type' },
   { key: 'outbound_bill_no', header: 'Outbound Bill No' },
   { key: 'incoming_no', header: 'Incoming No' },
-  { key: 'checked_by_name', header: 'Checked By' },
   { key: 'updated_by_name', header: 'Updated By' },
   { key: 'updated_at', header: 'Updated At' },
 ];
@@ -124,9 +122,9 @@ export default function StageTab({ stage, onOpenCounts }) {
 
   // Stage only earns a column when rows can differ — on a stage tab every row
   // would repeat the tab's own name. Counted rather than hardcoded now that the
-  // rate columns vary by tab: Sr, Party, Article, Status, Qty, Short, Balance,
-  // Incoming No, Checked By, Actions is the fixed spine.
-  const COLUMN_COUNT = 10 + (isAll ? 1 : 0) + 1 + ladderStages.length
+  // rate columns vary by tab: Sr, Party, Article, Status, Qty in metres, Balance,
+  // Incoming No, Actions is the fixed spine.
+  const COLUMN_COUNT = 8 + (isAll ? 1 : 0) + 1 + ladderStages.length
     + (isExitTab ? 1 : 0) + (showsDozens ? 2 : 0);
 
   // Params are built once and reused by the export, so what downloads is exactly
@@ -190,7 +188,6 @@ export default function StageTab({ stage, onOpenCounts }) {
         received_qty: r.received_qty,
         received_dozens: r.received_dozens ?? '',
         metres_per_dozen: r.metres_per_dozen ?? '',
-        short: r.short,
         balance: r.balance,
         unit_metric: r.unit_metric || '',
         po_rate: r.po_rate,
@@ -203,7 +200,6 @@ export default function StageTab({ stage, onOpenCounts }) {
         challan_type: r.challan_type || '',
         outbound_bill_no: r.outbound_bill_no || '',
         incoming_no: `${r.incoming_prefix || ''}${r.incoming_no || ''}`,
-        checked_by_name: r.checked_by_name || '',
         updated_by_name: r.updated_by_name || '',
         updated_at: r.updated_at || '',
       }));
@@ -298,10 +294,18 @@ export default function StageTab({ stage, onOpenCounts }) {
                 <th className={thCls}>Party Name</th>
                 <th className={thCls}>Article</th>
                 <th className={thCls}>Status</th>
-                <th className={thCls}>Qty</th>
+                {/* Every quantity on this page is metres. The receipt side is
+                    qty_in_metres and the entry side inherits it, so the header
+                    names the unit rather than leaving it to the Article
+                    sub-line. */}
+                <th className={thCls}>Qty in metres</th>
                 {showsDozens && <th className={thCls}>Dozens</th>}
                 {showsDozens && <th className={thCls}>M/Dozen</th>}
-                <th className={thCls}>Short</th>
+                {/* No Short. A challan records what was SENT and nothing else,
+                    so short is 0 on every one of them and was always NULL on an
+                    origin lot nobody sent — Balance is what shows material still
+                    to come. The column stays in the API, where the journey
+                    summary still totals it. */}
                 <th className={thCls}>Balance</th>
                 {isExitTab && <th className={thCls}>Outbound Bill No</th>}
                 <th className={thCls}>PO Rate</th>
@@ -316,7 +320,10 @@ export default function StageTab({ stage, onOpenCounts }) {
                     of them — and on an origin lot it showed a stale number the
                     PO screen no longer manages. */}
                 <th className={thCls}>Incoming No</th>
-                <th className={thCls}>Checked By</th>
+                {/* No Checked By. Nothing asks for it any more — the server
+                    takes it from the session — so the column could only ever
+                    repeat whoever typed the row, which the History drawer
+                    already records. */}
                 <th className={thCls}>Actions</th>
               </tr>
             </thead>
@@ -354,9 +361,6 @@ export default function StageTab({ stage, onOpenCounts }) {
                         <div className="text-[11px] text-gray-400">sent {fmtNum(r.sent_qty)}</div>
                       )}
                     </td>
-                    {/* What was sent but never arrived. Spelled out with its unit
-                        because it is the one number here that gets read aloud,
-                        and the unit is the PO line's, never an assumed metre. */}
                     {showsDozens && (
                       <td className={`${tdCls} text-gray-600`}>
                         {r.received_dozens == null ? '' : fmtNum(r.received_dozens)}
@@ -369,9 +373,6 @@ export default function StageTab({ stage, onOpenCounts }) {
                         {r.metres_per_dozen == null ? '' : fmtNum(r.metres_per_dozen)}
                       </td>
                     )}
-                    <td className={`${tdCls} whitespace-nowrap ${Number(r.short) > EPSILON ? 'text-amber-600 font-medium' : 'text-gray-300'}`}>
-                      {Number(r.short) > EPSILON ? fmtQty(r.short, r.unit_metric) : '—'}
-                    </td>
                     <td className={`${tdCls} font-semibold whitespace-nowrap ${Number(r.balance) > EPSILON ? 'text-amber-700' : 'text-gray-400'}`}>
                       {fmtNum(r.balance)}
                     </td>
@@ -396,7 +397,6 @@ export default function StageTab({ stage, onOpenCounts }) {
                         ? <span className="font-mono text-xs">{r.incoming_prefix || ''}{r.incoming_no || ''}</span>
                         : <span className="text-gray-300">—</span>}
                     </td>
-                    <td className={`${tdCls} text-gray-600 whitespace-nowrap`}>{r.checked_by_name || '—'}</td>
                     <td className={tdCls}>
                       <div className="flex items-center gap-1">
                         {/* Material that will never move on: ruined at rest, or
@@ -506,16 +506,6 @@ export default function StageTab({ stage, onOpenCounts }) {
                               <span className="text-gray-400">
                                 sent <span className="font-medium text-gray-700">{fmtQty(c.sent_qty, r.unit_metric)}</span>
                               </span>
-                              {!c.is_exit && (
-                                <span className="text-gray-400">
-                                  back <span className="font-medium text-gray-700">{fmtQty(c.received_qty, r.unit_metric)}</span>
-                                </span>
-                              )}
-                              {Number(c.short) > EPSILON && (
-                                <span className="text-amber-600 font-medium">
-                                  {fmtQty(c.short, r.unit_metric)} short
-                                </span>
-                              )}
                               <Badge color={STATUS_COLORS[c.status] || 'gray'}>{c.status}</Badge>
                               <span className="font-mono text-[11px] text-gray-400">
                                 {c.incoming_prefix || ''}{c.incoming_no || ''}

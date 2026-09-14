@@ -549,13 +549,25 @@ async function validateEntryFields(body, { requireAll = false, targetStage } = {
     const err = qtyError(body?.sent_qty, 'Sent Qty');
     if (err) return err;
   }
-  if (requireAll || present('received_qty')) {
+  // NO LONGER ASKED FOR, and no longer required on create.
+  //
+  // The form used to ask what came BACK as well as what went out, and stored the
+  // difference as this hop's Short. In practice the two were the same number on
+  // every ordinary challan and the field was answered by copying the one above
+  // it. A challan records what was SENT -- that is what the document says -- so
+  // received_qty now defaults to sent_qty in create() and the lot's Balance is
+  // what shows material still to come.
+  //
+  // Still honoured when supplied, so an API caller or a correction can record a
+  // genuine shortfall, and so every existing caller keeps working. The column
+  // stays, and short stays derived from it.
+  if (present('received_qty')) {
     const err = qtyError(body?.received_qty, 'Received Qty');
     if (err) return err;
   }
   // Short is derived, so the only thing to check is that it is not negative:
   // more coming back than went out is a typo, not a windfall.
-  if ((requireAll || (present('sent_qty') && present('received_qty')))
+  if (present('sent_qty') && present('received_qty')
       && Number(body?.received_qty) - Number(body?.sent_qty) > EPSILON) {
     return 'Received Qty cannot be more than Sent Qty';
   }
@@ -765,17 +777,21 @@ async function create(req, res, next) {
     // Checked here as well as by the unique index, so the user gets a sentence
     // rather than a raw constraint failure surfacing as a 500. The index is what
     // actually guarantees it -- this is the readable half.
-    const duplicate = await findDuplicateChallan(parentSrc, parent.id, challanNo);
+    const duplicate = await findDuplicateChallan(challanNo, partyName);
     if (duplicate) {
       return res.status(400).json({
-        message: `Challan ${challanNo} has already been used on this lot`,
+        message: `Challan ${challanNo} has already been used for ${partyName}`,
       });
     }
 
     const [numbering, numberingError] = await deriveIncomingNo(targetStage, parent);
     if (numberingError) return res.status(400).json({ message: numberingError });
 
-    const receivedQty = Number(req.body.received_qty);
+    // Defaults to what was sent: the form no longer asks, and a challan that
+    // says nothing about a shortfall is not claiming one.
+    const receivedQty = req.body.received_qty != null && req.body.received_qty !== ''
+      ? Number(req.body.received_qty)
+      : sentQty;
     const processRate = numOrNull(req.body.process_rate);
     // Same default the form pre-fills: the rate carried in from the parent plus
     // what this stage cost. Stored, because the user may overwrite it.
@@ -824,16 +840,24 @@ async function create(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// Whether this lot already has a live challan under the same number. Mirrors the
-// partial unique indexes from migration 073 -- scoped to one lot, and to live
-// rows, so withdrawing a challan frees its number for the corrected entry.
-async function findDuplicateChallan(parentSrc, parentId, challanNo, excludeId = null) {
+// Whether this number has already been raised to this party, anywhere. Mirrors
+// the partial unique index from migration 085 -- the readable half of it, so a
+// clash comes back as a sentence rather than a raw constraint failure surfacing
+// as a 500.
+//
+// (challan_no, party_name), NOT scoped to a lot. A challan number is printed
+// once on a document handed to one party, so the pair is what identifies it, and
+// a party's challan book does not restart per lot. The same number to a
+// DIFFERENT party is fine -- two parties number from 1 independently.
+//
+// Live rows only, carried over from migration 073's rule and for its reason:
+// withdrawing a challan frees its number for the corrected entry.
+async function findDuplicateChallan(challanNo, partyName, excludeId = null) {
   if (!challanNo) return null;
-  const parentCol = parentSrc === 'receipt' ? 'parent_receipt_id' : 'parent_entry_id';
   const { rows } = await db.execute({
     sql: `SELECT id FROM stitching_entries
-           WHERE ${parentCol} = ? AND challan_no = ? AND deleted_at IS NULL AND id <> ?`,
-    args: [parentId, challanNo, excludeId ?? -1],
+           WHERE challan_no = ? AND party_name = ? AND deleted_at IS NULL AND id <> ?`,
+    args: [challanNo, partyName, excludeId ?? -1],
   });
   return rows[0] || null;
 }
@@ -951,17 +975,16 @@ async function update(req, res, next) {
         message: `Received Qty cannot be less than ${lot.forwarded}, already forwarded from this lot`,
       });
     }
-    // The challan number is what tells two dispatches out of one lot apart, so an
-    // edit is held to the same rule as the insert.
-    if (has('challan_no')) {
-      const parentSrc = current.parent_receipt_id != null ? 'receipt' : 'entry';
-      const nextChallan = trimOrNull(req.body.challan_no);
-      const duplicate = await findDuplicateChallan(
-        parentSrc, current.parent_receipt_id ?? current.parent_entry_id, nextChallan, Number(id),
-      );
+    // The (number, party) pair is what identifies a challan, so an edit is held
+    // to the same rule as the insert -- and it has to re-check when EITHER half
+    // moves. Renaming the party alone can collide just as easily as renumbering.
+    if (has('challan_no') || has('party_name')) {
+      const nextChallan = has('challan_no') ? trimOrNull(req.body.challan_no) : current.challan_no;
+      const nextParty = has('party_name') ? trimOrNull(req.body.party_name) : current.party_name;
+      const duplicate = await findDuplicateChallan(nextChallan, nextParty, Number(id));
       if (duplicate) {
         return res.status(400).json({
-          message: `Challan ${nextChallan} has already been used on this lot`,
+          message: `Challan ${nextChallan} has already been used for ${nextParty}`,
         });
       }
     }

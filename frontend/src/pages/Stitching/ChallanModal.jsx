@@ -7,7 +7,7 @@ import {
 } from '../../api/stitching.api';
 import {
   CHALLAN_MAX, CHALLAN_TYPES, challanError, qtyError, moneyError, fmtNum, fmtQty, EPSILON,
-  destinationsFor, nextStage, shortOf, EXIT_STAGE, DESTINATION_HINTS,
+  destinationsFor, nextStage, EXIT_STAGE, DESTINATION_HINTS,
   countsDozens, metresPerDozen, rateUnitFor,
 } from '../../utils/stitching';
 
@@ -15,7 +15,7 @@ const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm foc
 const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
 
 const EMPTY = {
-  challan_no: '', party_name: '', sent_qty: '', received_qty: '',
+  challan_no: '', party_name: '', sent_qty: '',
   // Nothing pre-selected, deliberately. A grade the user did not choose is
   // worse than one they have to pick, so this stays blank until they do.
   challan_type: '',
@@ -84,7 +84,8 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
   // Pieces only exist once there are pieces: Stitched and Packed count dozens,
   // and their rate is quoted per dozen rather than per metre.
   const isDozenStage = countsDozens(target);
-  const perDozen = metresPerDozen(form.received_qty, form.received_dozens);
+  // Counted off what was SENT — the only quantity this form records now.
+  const perDozen = metresPerDozen(form.sent_qty, form.received_dozens);
   // What this challan may draw on. On an edit the row's own sent_qty is already
   // counted in the parent's forwarded total, so add it back — the same
   // arithmetic the server's update() does.
@@ -122,7 +123,6 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
       challan_no: challan.challan_no ?? '',
       party_name: challan.party_name ?? '',
       sent_qty: challan.sent_qty ?? '',
-      received_qty: challan.received_qty ?? '',
       challan_type: challan.challan_type ?? '',
       received_dozens: challan.received_dozens ?? '',
       process_rate: challan.process_rate ?? '',
@@ -132,15 +132,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [challan?.id]);
 
-  const setField = (k, v) => setForm(f => {
-    const next = { ...f, [k]: v };
-    // Received defaults to what was sent, since nothing short is the normal
-    // case. Typing over it is what records a shortage.
-    if (!isEdit && k === 'sent_qty' && (f.received_qty === '' || f.received_qty === f.sent_qty)) {
-      next.received_qty = v;
-    }
-    return next;
-  });
+  const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   // Mirrors the server's rules AND their order, so the message shown here is the
   // one the server would have returned.
@@ -149,13 +141,6 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     if (!String(form.challan_no || '').trim()) return 'Challan No is required';
     const sentErr = qtyError(form.sent_qty, 'Sent Qty');
     if (sentErr) return sentErr;
-    if (!isExit) {
-      const recdErr = qtyError(form.received_qty, 'Received Qty');
-      if (recdErr) return recdErr;
-      if (Number(form.received_qty) - Number(form.sent_qty) > EPSILON) {
-        return 'Received Qty cannot be more than Sent Qty';
-      }
-    }
     if (isDozenStage && qtyError(form.received_dozens, 'Dozens Received')) {
       return qtyError(form.received_dozens, 'Dozens Received');
     }
@@ -182,9 +167,8 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
       challan_no: form.challan_no.trim(),
       party_name: form.party_name.trim(),
       sent_qty: Number(form.sent_qty),
-      // Nothing comes BACK from a sale — the goods left for good. Sent is what
-      // reached the buyer, so the shortfall is 0 rather than the whole quantity.
-      received_qty: isExit ? Number(form.sent_qty) : Number(form.received_qty),
+      // received_qty is deliberately NOT sent. The server defaults it to
+      // sent_qty, and letting it do so keeps one rule rather than two.
       challan_type: form.challan_type,
       received_dozens: isDozenStage && form.received_dozens !== ''
         ? Number(form.received_dozens) : null,
@@ -215,7 +199,6 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
   };
 
   if (!lot) return null;
-  const short = shortOf(form.sent_qty, form.received_qty);
 
   return (
     <Modal isOpen onClose={onClose} title={isEdit ? 'Edit Challan' : 'Add Challan'} size="lg">
@@ -335,32 +318,15 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             </select>
           </Field>
 
-          {/* Nothing comes back from a sale, so there is nothing to ask. */}
-          {!isExit && (
-            <Field
-              label={`Received Qty (${unit})`}
-              required
-              hint={short != null && short > 0
-                ? `${fmtQty(short, unit)} short`
-                : 'What actually came back'}
-            >
-              <input
-                type="number" min={0.01} step="0.01"
-                value={form.received_qty}
-                onChange={e => setField('received_qty', e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-          )}
-
           {/* Dozens sit under the metres they are counted from, and the yield
               sits beside them, so the arithmetic is visible as it is typed
-              rather than discovered later on a report. */}
+              rather than discovered later on a report. Counted off Sent Qty,
+              which is the only quantity this form records. */}
           {isDozenStage && !isExit && (
             <Field
               label="Dozens Received"
               required
-              hint="How many dozen came back on this challan"
+              hint="How many dozen are on this challan"
             >
               <input
                 type="number" min={0.01} step="0.01"
@@ -403,12 +369,19 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
           {/* Named for the stage the work lands at, and holding only that
               stage's charge. Rates no longer roll up into a running total — each
               stage keeps its own, and the lot's ladder shows them side by side
-              against the PO rate. */}
+              against the PO rate.
+
+              "Rate for X" rather than "X Rate" because the form is raised from
+              the tab of the stage the goods are LEAVING: standing on Gray and
+              being asked for a bare "Processed Rate" reads like the gray goods
+              in hand are being priced. The gray charge came in on the PO receipt
+              and is already shown as Gray Rate. The hint names the column this
+              number lands in, so the two cannot be confused. */}
           <Field
-            label={`${target} Rate${isDozenStage && !isExit ? ' (per dozen)' : ''}`}
+            label={`Rate for ${target}${isDozenStage && !isExit ? ' (per dozen)' : ''}`}
             hint={isExit
               ? 'What this sale is booked at, per metre'
-              : `What ${target?.toLowerCase()} costs per ${rateUnitFor(target)}`}
+              : `What ${target?.toLowerCase()} costs per ${rateUnitFor(target)} — shows as ${target} Rate`}
           >
             <input
               type="number" min={0} step="0.01"

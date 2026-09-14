@@ -14,7 +14,7 @@ import {
 export const INCOMING_NO_MAX = 50;
 
 export const EMPTY_RECEIPT = {
-  received_qty: '', received_rate: '', bill_no: '', incoming_no: '', checked_by: '',
+  received_qty: '', unit_metric: '', received_rate: '', bill_no: '', incoming_no: '', checked_by: '',
   process_rate: '', after_rate: '', incoming_stage: '',
   qty_in_metres: '', received_dozens: '', qty_diff_action: '', qty_diff_reason: '',
 };
@@ -162,6 +162,16 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
       return 'Reason can be at most 300 characters';
     }
   }
+
+  // The unit the delivery was counted in. LAST, in the same slot the server
+  // gives it, because the first error a body with several omissions produces is
+  // the contract on both sides.
+  //
+  // Stricter here than on the server on purpose: the server treats a missing UM
+  // as "the line's own", which is what an API caller omitting it means, while
+  // the form has already pre-filled that same value and so can insist on one.
+  if (!String(v.unit_metric ?? '').trim()) return 'UM is required';
+
   return null;
 }
 

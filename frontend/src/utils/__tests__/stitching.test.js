@@ -5,7 +5,7 @@ import {
   DOZEN_STAGES, countsDozens, metresPerDozen, rateUnitFor,
   carriedIncomingNo, soleActivePrefix,
   challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX, fmtQty,
-  writeOffReasonError, WRITE_OFF_REASON_MAX, shortOf, STATUSES, OPEN_STATUSES,
+  writeOffReasonError, WRITE_OFF_REASON_MAX, STATUSES, OPEN_STATUSES,
 } from '../stitching';
 
 describe('STAGE_TABS', () => {
@@ -197,25 +197,6 @@ describe('fmtQty', () => {
     // The em-dash placeholder must not pick up a unit.
     expect(fmtQty(null, 'pcs')).toBe('—');
     expect(fmtQty('', 'pcs')).toBe('—');
-  });
-});
-
-describe('shortOf', () => {
-  test('is what was sent minus what came back', () => {
-    expect(shortOf(40, 38)).toBe(2);
-    expect(shortOf(40, 40)).toBe(0);
-  });
-
-  // An origin lot was never sent by anyone, so its short is absent rather than
-  // zero -- the column renders blank instead of claiming a clean hop.
-  test('is null when there is no dispatch to compare against', () => {
-    expect(shortOf(null, 38)).toBeNull();
-    expect(shortOf(40, null)).toBeNull();
-    expect(shortOf('', '')).toBeNull();
-  });
-
-  test('rounds to 2dp rather than trailing float error', () => {
-    expect(shortOf(0.3, 0.1)).toBe(0.2);
   });
 });
 

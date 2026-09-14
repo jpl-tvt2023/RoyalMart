@@ -97,6 +97,51 @@ need one-time setup via Admin → User Management: tag a test user
       — currently these two fields aren't in the label-resolution map used by
       other entity types, so expect raw IDs unless that's been fixed.
 
+## Receipt UM, Stitching columns, and the challan key
+
+New in this change — see migrations `084` and `085`.
+
+- [ ] **Add Receipt asks for UM**, sitting right after Received Qty and
+      pre-filled with the line's own unit (`taga` on the two fabric articles).
+      It is required — clearing it blocks submit client-side with "UM is
+      required", before any network call.
+- [ ] An article listed under ONE unit shows UM as a plain disabled box, not a
+      one-item dropdown. An article listed under several shows a real select
+      offering exactly those units.
+- [ ] The saved receipt shows its UM in the new column **between Recd Qty and
+      Qty in metres** on the PO detail grid. The "Add receipt" row still spans
+      the full receipt block (colspan bumped to 12 — check nothing is off by
+      one column).
+- [ ] Editing a receipt keeps the stored UM rather than resetting to the line's.
+      Changing it shows a `unit_metric` old → new diff in the History drawer.
+- [ ] A receipt entered BEFORE this change shows the line's unit rather than a
+      dash (migration 084 backfilled it).
+- [ ] **Stitching page**: the quantity column header reads **Qty in metres**;
+      there is no **Checked By** column and no **Short** column on any tab
+      (Gray, Processed, Stitched, Packed, Panchal, Third Party, All). Stitched
+      and Packed still add Dozens + M/Dozen, Third Party still adds Outbound
+      Bill No, and the columns still line up with their headers on every tab.
+- [ ] The Journey drawer no longer prints "entered by …".
+- [ ] Download XLSX from a Stitching tab: no `Checked By` and no `Short`
+      column, and the quantity column is headed `Qty in metres`.
+- [ ] **Add Challan has no Received Qty field.** After sending, the lot's
+      Balance falls by the sent quantity and the nested challan row reads
+      `sent …` with no `back …` and no `… short`.
+- [ ] The challan rate field reads **"Rate for Processed"** (not "Processed
+      Rate") on a Gray → Processed challan, and its hint says it shows as
+      Processed Rate. The value still lands in the **Processed Rate** column,
+      and **Gray Rate still comes from the PO receipt's Process Rate** — the
+      ladder did not move.
+- [ ] At Stitched/Packed the rate label reads "Rate for Packed (per dozen)" and
+      Metre per Dozen is derived from **Sent Qty** divided by Dozens.
+- [ ] **Challan key**: raising the same challan number twice to the SAME party
+      is refused with "Challan X has already been used for <party>" — including
+      when the two are on different lots. The same number to a DIFFERENT party
+      is accepted, even on one lot.
+- [ ] Editing a challan onto a number+party pair that already exists is refused;
+      renaming just the party onto a clashing pair is refused too.
+- [ ] Withdrawing a challan still frees its number for re-entry to that party.
+
 ## Copy issues (not functional bugs — flag, don't spend test time here)
 
 - [ ] `frontend/src/utils/roles.js`: the "Purchase Orders" nav item
