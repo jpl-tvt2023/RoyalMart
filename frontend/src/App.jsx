@@ -21,6 +21,7 @@ import ProductList from './pages/products/ProductList';
 import ProcurementPage from './pages/Procurement/ProcurementPage';
 import OutboundVendorsPage from './pages/OutboundVendors/OutboundVendorsPage';
 import OutboundPOList from './pages/OutboundPOs/OutboundPOList';
+import StitchingPage from './pages/Stitching/StitchingPage';
 import OutboundPODetail from './pages/OutboundPOs/OutboundPODetail';
 import PackagingList from './pages/packaging/PackagingList';
 import { ALL_ROLES, ADMIN_ONLY } from './utils/roles';
@@ -112,6 +113,9 @@ export default function App() {
           } />
           <Route path="/outbound/purchase-orders/:id" element={
             <ProtectedRoute roles={ALL_ROLES}><OutboundPODetail /></ProtectedRoute>
+          } />
+          <Route path="/outbound/stitching" element={
+            <ProtectedRoute roles={ALL_ROLES}><StitchingPage /></ProtectedRoute>
           } />
           <Route path="/outbound/vendors" element={
             <ProtectedRoute roles={ALL_ROLES}><OutboundVendorsPage /></ProtectedRoute>

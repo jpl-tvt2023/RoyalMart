@@ -1,0 +1,38 @@
+-- Dozens: how finished goods are actually counted, once there are pieces to count.
+--
+-- Metres remain the currency of the whole chain. Every challan still sends and
+-- receives metres, every balance is metres, and nothing about how material draws
+-- down changes. What changes is that at Stitched and Packed the goods have
+-- become countable things -- stitched pieces, packed pieces -- and the trade
+-- counts those in dozens.
+--
+-- So this is an EXTRA COUNT riding alongside the metres, not a second unit for
+-- the chain. The alternative considered was switching the unit at Stitched, so a
+-- Stitched lot's balance would be in dozens and everything downstream with it.
+-- That was rejected: it makes balance arithmetic change unit mid-chain, and it
+-- throws away the metres at exactly the point they become interesting, because
+--
+-- METRES PER DOZEN IS THE YIELD, and the yield is the reason to record any of
+-- this. 96 metres back as 40 dozen is 2.40 metres a dozen -- the number that says
+-- whether the cutting was tight or wasteful, and the number a stitcher is
+-- argued with. It is NOT STORED: it is received_qty / received_dozens to two
+-- places, derived at read time like every other computed value in this module
+-- (status, balance, short, the rate ladder). A stored copy would need
+-- invalidating on every edit to either half.
+--
+-- WHY REAL AND NOT INTEGER. Half and quarter dozens are ordinary in this trade,
+-- and an INTEGER column would silently truncate 40.5 to 40 -- the same affinity
+-- trap migration 066 hit when leading zeros vanished off incoming numbers.
+--
+-- Nullable, no backfill, and required only for the two stages that have pieces
+-- to count -- enforced in validateEntryFields, because rows written before this
+-- have no dozens and inventing a number for them would be a lie.
+ALTER TABLE stitching_entries ADD COLUMN received_dozens REAL;
+
+-- The receipt side needs it too, for the same reason migration 070 put closed_at
+-- on both tables: fabric can be BOUGHT IN already stitched or already packed, and
+-- such a lot is an outbound_po_line_receipts row that never passes through
+-- stitching_entries at all. Without this column those origin lots would sit on
+-- the Stitched and Packed tabs as the only rows with no dozens and no yield,
+-- which reads as missing data rather than as a different kind of row.
+ALTER TABLE outbound_po_line_receipts ADD COLUMN received_dozens REAL

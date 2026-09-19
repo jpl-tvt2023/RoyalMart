@@ -1,0 +1,19 @@
+-- Why a hop was sent back to its parent stage.
+--
+-- Sending a lot back is a CORRECTION, not rework -- nothing physically moves.
+-- Someone recorded a forward against the wrong lot or the wrong stage, and the
+-- hop has to be undone. Retiring it returns its metre to the parent for free,
+-- because `forwarded` only ever sums children with deleted_at IS NULL, so the
+-- parent goes back to Pending or Partial and becomes forwardable again with no
+-- write of its own.
+--
+-- WHY NO is_reverted FLAG. A soft-deleted row WITH a reason was sent back as a
+-- correction, one WITHOUT a reason was a plain delete. That is derivable from
+-- the two columns already present, and this feature keeps status, balance and
+-- direction out of the schema for exactly that reason -- a stored copy would be
+-- one more thing to keep true.
+--
+-- Cleared on restore: a row that is live again is not retired, and a reason left
+-- behind on it would read as a lie. The audit entry keeps the reason permanently
+-- either way, so nothing is lost.
+ALTER TABLE stitching_entries ADD COLUMN revert_reason TEXT

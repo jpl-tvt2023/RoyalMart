@@ -1,0 +1,17 @@
+-- What kind of goods a challan carries: Fresh, Second or Third.
+--
+-- A quality grade, chosen per dispatch rather than per lot. One lot of stitched
+-- goods can go out as Fresh to one party and as Second to another, so the grade
+-- belongs to the hand-over, exactly as challan_no and party_name already do.
+--
+-- NO CHECK CONSTRAINT HERE, deliberately. SQLite cannot add one with ALTER, and
+-- migration 082 rebuilds this table to widen the stage CHECK for Panchal and
+-- Third Party -- so the enum CHECK is folded into that rebuild and costs
+-- nothing. Until then the controller is the only enforcement, which is the same
+-- arrangement every other hand-rolled validator in this codebase relies on.
+--
+-- Nullable because every row that already exists predates the field. It is
+-- required on create from the controller's side only, the same way bill_no is
+-- required on a new receipt but tolerated as NULL on the rows migration 053
+-- synthesised.
+ALTER TABLE stitching_entries ADD COLUMN challan_type TEXT

@@ -6,6 +6,8 @@ const vendors = require('../controllers/vendors.controller');
 const categories = require('../controllers/categories.controller');
 const companies = require('../controllers/companies.controller');
 const outboundProducts = require('../controllers/outboundProducts.controller');
+const stitchingPrefixes = require('../controllers/stitchingPrefixes.controller');
+const stitchingParties = require('../controllers/stitchingParties.controller');
 
 const canView  = allowRoles(...ALL_ROLES);
 // Master data is editable by any logged-in user; every change is audited.
@@ -41,6 +43,27 @@ router.get('/outbound-products',        auth, canView,      outboundProducts.lis
 router.post('/outbound-products',       auth, canAdminOnly, outboundProducts.create);
 router.patch('/outbound-products/:id',  auth, canAdminOnly, outboundProducts.update);
 router.delete('/outbound-products/:id', auth, canAdminOnly, outboundProducts.remove);
+
+// Stitching incoming-number prefixes — each declares the stage a lot was
+// received at, which is what routes it to a tab on the Stitching page. Also on
+// Admin -> Purchase Config, so writes are Admin/Owner only. The GET stays open:
+// the outbound PO receipt row and the Stitching forward form both need it for
+// their prefix dropdowns.
+router.get('/stitching-prefixes',        auth, canView,      stitchingPrefixes.list);
+router.post('/stitching-prefixes',       auth, canAdminOnly, stitchingPrefixes.create);
+router.patch('/stitching-prefixes/:id',  auth, canAdminOnly, stitchingPrefixes.update);
+router.delete('/stitching-prefixes/:id', auth, canAdminOnly, stitchingPrefixes.remove);
+
+// Stitching parties — the processing houses material is sent to, and the buyers
+// finished goods are sold to. Each carries the destinations it may serve, which
+// is what narrows the challan form's party dropdown to parties that can actually
+// do that job. Admin -> Purchase Config, so writes are Admin/Owner only. The GET
+// stays open for the same reason the prefixes one does: the Stitching challan
+// form needs it on every dispatch.
+router.get('/stitching-parties',        auth, canView,      stitchingParties.list);
+router.post('/stitching-parties',       auth, canAdminOnly, stitchingParties.create);
+router.patch('/stitching-parties/:id',  auth, canAdminOnly, stitchingParties.update);
+router.delete('/stitching-parties/:id', auth, canAdminOnly, stitchingParties.remove);
 
 // Vendors master
 router.get('/vendors',        auth, canView,  vendors.list);

@@ -1061,6 +1061,241 @@ describe('Outbound POs API', () => {
     });
   });
 
+  // Fabric is the only thing that travels the Stitching stages, it is bought in
+  // taga and worked in metres, and a delivery that does not match what was
+  // outstanding has to say what is being done about it. All three are properties
+  // of the RECEIPT, so they live together here.
+  describe('Fabric receipts', () => {
+    async function fabricLine(qty = 100) {
+      const vendor = await createVendor([
+        { category: 'Raw Material', item_name: 'Handkerchief - Cloth Fabrics' },
+      ]);
+      const created = await createPO({
+        vendor_id: vendor.body.id, lines: [lineFor(vendor.body.articles[0], { qty, rate: 10 })],
+      });
+      const [lineId] = await lineIdsOf(created.body.id);
+      return { poId: created.body.id, lineId };
+    }
+
+    async function packagingLine(qty = 100) {
+      const vendor = await createVendor();
+      const created = await createPO({
+        vendor_id: vendor.body.id, lines: [lineFor(vendor.body.articles[0], { qty, rate: 10 })],
+      });
+      const [lineId] = await lineIdsOf(created.body.id);
+      return { poId: created.body.id, lineId };
+    }
+
+    const fabricBody = (overrides = {}) => ({
+      received_qty: 100, received_rate: 10, bill_no: `B-${uid()}`, checked_by: warehousePocId,
+      incoming_no: `IN-${uid()}`, incoming_stage: 'Gray', qty_in_metres: 400,
+      ...overrides,
+    });
+
+    const getPO = (poId) => request(app).get(`/api/outbound-pos/${poId}`)
+      .set('Authorization', `Bearer ${token}`);
+    const lineOf = async (poId) => (await getPO(poId)).body.lines[0];
+
+    describe('what a fabric receipt must carry', () => {
+      test('stage, incoming no and metres are all required', async () => {
+        const { poId, lineId } = await fabricLine();
+        for (const [omit, message] of [
+          ['incoming_stage', /Stage is required/],
+          ['incoming_no', /Incoming No is required/],
+          ['qty_in_metres', /Qty in metres is required/],
+        ]) {
+          const res = await postReceipt(poId, lineId, fabricBody({ [omit]: '' }));
+          expect(res.status).toBe(400);
+          expect(res.body.message).toMatch(message);
+        }
+      });
+
+      test('the stage picks the prefix — the client never names one', async () => {
+        const { poId, lineId } = await fabricLine();
+        // Packed is one of the two stages that count pieces, so the delivery
+        // carries a dozen count as well as its metres.
+        const created = await postReceipt(poId, lineId,
+          fabricBody({ incoming_stage: 'Packed', received_dozens: 20 }));
+        expect(created.status).toBe(201);
+        const receipt = (await lineOf(poId)).receipts[0];
+        expect(receipt.incoming_stage).toBe('Packed');
+        expect(receipt.incoming_prefix).toBeTruthy();
+        expect(receipt.received_dozens).toBe(20);
+      });
+
+      // Migration 081 made Panchal receivable: fabric can be bought straight
+      // into the warehouse. Third Party never can — that is where goods leave.
+      test('Panchal is receivable and Third Party is not', async () => {
+        const { poId, lineId } = await fabricLine();
+        const ok = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Panchal' }));
+        expect(ok.status).toBe(201);
+
+        const { poId: p2, lineId: l2 } = await fabricLine();
+        const refused = await postReceipt(p2, l2, fabricBody({ incoming_stage: 'Third Party' }));
+        expect(refused.status).toBe(400);
+        expect(refused.body.message).toMatch(/Stage must be one of/);
+      });
+
+      test('dozens are required when the goods arrive already made up', async () => {
+        const { poId, lineId } = await fabricLine();
+        const res = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Stitched' }));
+        expect(res.status).toBe(400);
+        expect(res.body.message).toMatch(/Dozens Received is required/);
+      });
+
+      test('an unknown stage is refused', async () => {
+        const { poId, lineId } = await fabricLine();
+        const res = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Nowhere' }));
+        expect(res.status).toBe(400);
+        expect(res.body.message).toMatch(/Stage must be one of/);
+      });
+
+      // Third Party is where material LEAVES us. Nothing is ever bought into it.
+      test('Third Party is not a stage anything can be received at', async () => {
+        const { poId, lineId } = await fabricLine();
+        const res = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Third Party' }));
+        expect(res.status).toBe(400);
+      });
+
+      test('metres are kept apart from the taga delivered', async () => {
+        const { poId, lineId } = await fabricLine();
+        await postReceipt(poId, lineId, fabricBody({ received_qty: 7, qty_in_metres: 355.5 }));
+        const receipt = (await lineOf(poId)).receipts[0];
+        expect(receipt.received_qty).toBe(7);
+        expect(receipt.qty_in_metres).toBe(355.5);
+      });
+    });
+
+    describe('what a packaging receipt must not carry', () => {
+      test('a stage is refused', async () => {
+        const { poId, lineId } = await packagingLine();
+        const res = await postReceipt(poId, lineId, {
+          received_qty: 1, received_rate: 10, incoming_stage: 'Gray',
+        });
+        expect(res.status).toBe(400);
+        expect(res.body.message).toMatch(/fabric articles/i);
+      });
+
+      test('metres are refused', async () => {
+        const { poId, lineId } = await packagingLine();
+        const res = await postReceipt(poId, lineId, {
+          received_qty: 1, received_rate: 10, qty_in_metres: 40,
+        });
+        expect(res.status).toBe(400);
+        expect(res.body.message).toMatch(/fabric articles only/i);
+      });
+
+      test('a plain free-text incoming no still saves', async () => {
+        const { poId, lineId } = await packagingLine();
+        const res = await postReceipt(poId, lineId, {
+          received_qty: 1, received_rate: 10, incoming_no: 'GATE-99',
+        });
+        expect(res.status).toBe(201);
+      });
+    });
+
+    describe('qty difference, write-off and rollover', () => {
+      // Measured against what is still OUTSTANDING, not the whole order, so a
+      // part delivery does not read as a shortfall.
+      test('a short delivery can be written off, which closes the line', async () => {
+        const { poId, lineId } = await fabricLine(100);
+        const res = await postReceipt(poId, lineId, fabricBody({
+          received_qty: 60, qty_diff_action: 'write_off', qty_diff_reason: 'mill cannot supply the rest',
+        }));
+        expect(res.status).toBe(201);
+
+        const detail = await getPO(poId);
+        expect(detail.body.lines[0].received).toBe(60);
+        expect(detail.body.lines[0].short).toBe(40);
+        // received + short covers the order, so the PO rolls up to Closed.
+        expect(detail.body.status).toBe('Closed');
+      });
+
+      test('the write-off is measured against what was still due, not the order', async () => {
+        const { poId, lineId } = await fabricLine(100);
+        await postReceipt(poId, lineId, fabricBody({ received_qty: 40 }));
+        // 60 was still due and 55 turned up, so 5 is written off -- not 60.
+        await postReceipt(poId, lineId, fabricBody({
+          received_qty: 55, qty_diff_action: 'write_off', qty_diff_reason: 'balance short',
+        }));
+        const detail = await getPO(poId);
+        expect(detail.body.lines[0].short).toBe(5);
+        expect(detail.body.status).toBe('Closed');
+      });
+
+      test('an over delivery can be rolled over, and nothing is written off', async () => {
+        const { poId, lineId } = await fabricLine(100);
+        const res = await postReceipt(poId, lineId, fabricBody({
+          received_qty: 110, qty_diff_action: 'rollover', qty_diff_reason: 'mill sent a full taga',
+        }));
+        expect(res.status).toBe(201);
+
+        const line = await lineOf(poId);
+        expect(line.received).toBe(110);
+        expect(line.short).toBe(0);
+      });
+
+      test('a reason is required, and capped', async () => {
+        const { poId, lineId } = await fabricLine(100);
+        for (const reason of [undefined, '', '   ']) {
+          const res = await postReceipt(poId, lineId, fabricBody({
+            received_qty: 60, qty_diff_action: 'write_off', qty_diff_reason: reason,
+          }));
+          expect(res.status).toBe(400);
+          expect(res.body.message).toMatch(/reason is required/i);
+        }
+        const long = await postReceipt(poId, lineId, fabricBody({
+          received_qty: 60, qty_diff_action: 'write_off', qty_diff_reason: 'x'.repeat(301),
+        }));
+        expect(long.status).toBe(400);
+        expect(long.body.message).toMatch(/at most 300 characters/);
+      });
+
+      // Only one box is ever offered, and the server holds to the same rule.
+      test('the box has to match the difference it claims to explain', async () => {
+        const { poId, lineId } = await fabricLine(100);
+        const surplus = await postReceipt(poId, lineId, fabricBody({
+          received_qty: 110, qty_diff_action: 'write_off', qty_diff_reason: 'wrong box',
+        }));
+        expect(surplus.status).toBe(400);
+        expect(surplus.body.message).toMatch(/not short/i);
+
+        const shortfall = await postReceipt(poId, lineId, fabricBody({
+          received_qty: 60, qty_diff_action: 'rollover', qty_diff_reason: 'wrong box',
+        }));
+        expect(shortfall.status).toBe(400);
+        expect(shortfall.body.message).toMatch(/not over/i);
+      });
+
+      test('an exact delivery has nothing to explain', async () => {
+        const { poId, lineId } = await fabricLine(100);
+        const res = await postReceipt(poId, lineId, fabricBody({
+          received_qty: 100, qty_diff_action: 'write_off', qty_diff_reason: 'nothing to write off',
+        }));
+        expect(res.status).toBe(400);
+      });
+
+      test('an unknown action is refused', async () => {
+        const { poId, lineId } = await fabricLine(100);
+        const res = await postReceipt(poId, lineId, fabricBody({
+          received_qty: 60, qty_diff_action: 'shrug', qty_diff_reason: 'why not',
+        }));
+        expect(res.status).toBe(400);
+        expect(res.body.message).toMatch(/must be one of/);
+      });
+
+      test('the action and its reason are kept on the receipt', async () => {
+        const { poId, lineId } = await fabricLine(100);
+        await postReceipt(poId, lineId, fabricBody({
+          received_qty: 60, qty_diff_action: 'write_off', qty_diff_reason: 'mill cannot supply',
+        }));
+        const receipt = (await lineOf(poId)).receipts[0];
+        expect(receipt.qty_diff_action).toBe('write_off');
+        expect(receipt.qty_diff_reason).toBe('mill cannot supply');
+      });
+    });
+  });
+
   describe('Exception flags', () => {
     // `approved` matters since not_approved became a flag: a PO created without
     // an approver is never "clean", so any test about clean POs must opt in.
@@ -1137,6 +1372,86 @@ describe('Outbound POs API', () => {
       expect(detail.body.lines[0].receipts[0].flags).toContain('missing_incoming_no');
     });
 
+    // missing_incoming_stage is FABRIC-ONLY. Only fabric travels the stage chain,
+    // so a stage is meaningless on a receipt of corrugated boxes -- and without
+    // that narrowing every packaging receipt ever recorded would raise it. These
+    // tests therefore need a fabric line, and reach the legacy shape by clearing
+    // the column, since the API will not create a fabric receipt without a stage.
+    async function setupFabricLine() {
+      const vendor = await createVendor([
+        { category: 'Raw Material', item_name: 'Handkerchief - Bundle Fabric' },
+      ]);
+      const created = await createPO({
+        vendor_id: vendor.body.id, lines: [lineFor(vendor.body.articles[0], { qty: 5 })],
+      });
+      const [lineId] = await lineIdsOf(created.body.id);
+      return { poId: created.body.id, lineId };
+    }
+
+    const fabricReceipt = (poId, lineId, overrides = {}) => postReceipt(poId, lineId, {
+      received_qty: 1, incoming_no: `IN-${uid()}`, incoming_stage: 'Gray', qty_in_metres: 40,
+      ...overrides,
+    });
+
+    const unstageReceipt = (receiptId) => db.execute({
+      sql: 'UPDATE outbound_po_line_receipts SET incoming_prefix_id = NULL WHERE id = ?',
+      args: [receiptId],
+    });
+
+    test('an incoming number with no stage prefix raises missing_incoming_stage', async () => {
+      const { poId, lineId } = await setupFabricLine();
+      const created = await fabricReceipt(poId, lineId, { incoming_no: 'LEGACY-1' });
+      await unstageReceipt(created.body.id);
+      const detail = await getPO(poId);
+      const receipt = detail.body.lines[0].receipts[0];
+      expect(receipt.flags).toContain('missing_incoming_stage');
+      // One omission, one flag — a number IS present, so the other one is wrong.
+      expect(receipt.flags).not.toContain('missing_incoming_no');
+      expect(detail.body.lines[0].flags).toContain('missing_incoming_stage');
+    });
+
+    test('a receipt on a non-fabric line never raises missing_incoming_stage', async () => {
+      const { poId, lineId } = await setupLine();
+      await postReceipt(poId, lineId, { received_qty: 1, incoming_no: 'IN-PACKAGING' });
+      const detail = await getPO(poId);
+      expect(detail.body.lines[0].receipts[0].flags).not.toContain('missing_incoming_stage');
+    });
+
+    test('no incoming number at all raises only missing_incoming_no, not both', async () => {
+      const { poId, lineId } = await setupLine();
+      await postReceipt(poId, lineId, { received_qty: 1 });
+      const detail = await getPO(poId);
+      expect(detail.body.lines[0].receipts[0].flags).not.toContain('missing_incoming_stage');
+    });
+
+    test('assigning a stage clears missing_incoming_stage', async () => {
+      const { poId, lineId } = await setupFabricLine();
+      const created = await fabricReceipt(poId, lineId, { incoming_no: 'LEGACY-2' });
+      await unstageReceipt(created.body.id);
+      expect((await getPO(poId)).body.lines[0].receipts[0].flags).toContain('missing_incoming_stage');
+
+      await request(app)
+        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ incoming_stage: 'Gray' });
+      const detail = await getPO(poId);
+      expect(detail.body.lines[0].receipts[0].flags).not.toContain('missing_incoming_stage');
+      expect(detail.body.lines[0].receipts[0].incoming_prefix).toBeTruthy();
+    });
+
+    test('?flag=missing_incoming_stage returns only POs with an unstaged incoming number', async () => {
+      const staged = await setupFabricLine();
+      await fabricReceipt(staged.poId, staged.lineId, { incoming_no: 'IN-STAGED' });
+      const unstaged = await setupFabricLine();
+      const legacy = await fabricReceipt(unstaged.poId, unstaged.lineId, { incoming_no: 'IN-UNSTAGED' });
+      await unstageReceipt(legacy.body.id);
+
+      const list = await listPOs({ flag: 'missing_incoming_stage', page_size: 'all' });
+      const ids = list.body.rows.map(r => r.id);
+      expect(ids).toContain(unstaged.poId);
+      expect(ids).not.toContain(staged.poId);
+    });
+
     // The test that would catch a regression from derived to stored flags.
     test('soft-deleting a flagged receipt clears the flag; restoring brings it back', async () => {
       const { poId, lineId } = await setupLine();
@@ -1156,7 +1471,11 @@ describe('Outbound POs API', () => {
       const dirty = await setupLine();
       await postReceipt(dirty.poId, dirty.lineId, { received_qty: 1 }); // no incoming_no
       const clean = await setupLine({ approved: true });
-      await postReceipt(clean.poId, clean.lineId, { received_qty: 1, incoming_no: 'IN-7' });
+      // Genuinely clean needs a stage too — an incoming number without one
+      // raises missing_incoming_stage and would keep this PO out of ?flag=none.
+      await postReceipt(clean.poId, clean.lineId, {
+        received_qty: 1, incoming_no: 'IN-7',
+      });
 
       const flagged = await listPOs({ flag: 'missing_incoming_no', page_size: 'all' });
       const flaggedIds = flagged.body.rows.map(r => r.id);
@@ -1240,14 +1559,28 @@ describe('Outbound POs API', () => {
       }
     });
 
+    // A FABRIC receipt carrying an incoming_no but no incoming_prefix_id is the
+    // state every receipt written before the Stitching work is in, so it raises
+    // missing_incoming_stage. The cases that are only about rate therefore pin a
+    // prefix, to keep one flag's fixtures from testing another flag by accident.
+    // goes_to_stitching on the line is what makes the flag applicable at all.
     test.each([
-      [{ received_rate: 12, incoming_no: 'IN-1' }, { rate: 10 }, ['rate_mismatch']],
-      [{ received_rate: 10, incoming_no: 'IN-1' }, { rate: 10 }, []],
-      [{ received_rate: 12, incoming_no: 'IN-1' }, { rate: 0 }, []],
+      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, ['rate_mismatch']],
+      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, []],
+      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 0 }, []],
       [{ received_rate: 10, incoming_no: null }, { rate: 10 }, ['missing_incoming_no']],
       [{ received_rate: 12, incoming_no: null }, { rate: 10 }, ['rate_mismatch', 'missing_incoming_no']],
-      [{ received_rate: null, incoming_no: 'IN-1' }, { rate: 10 }, []],
+      [{ received_rate: null, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, []],
       [{ received_rate: 10, incoming_no: '   ' }, { rate: 10 }, ['missing_incoming_no']],
+      // A number with no stage behind it — the legacy shape, on fabric.
+      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10, goes_to_stitching: 1 }, ['missing_incoming_stage']],
+      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10, goes_to_stitching: 1 }, ['rate_mismatch', 'missing_incoming_stage']],
+      // The same receipt on anything that is not fabric travels no stage
+      // chain, so there is no stage to be missing.
+      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10 }, []],
+      // No number at all raises missing_incoming_no only — one omission must not
+      // light up two flags.
+      [{ received_rate: 10, incoming_no: null, incoming_prefix_id: null }, { rate: 10 }, ['missing_incoming_no']],
     ])('receipt %j against line %j yields %j', (receipt, line, expected) => {
       const actual = RECEIPT_FLAG_KEYS.filter(k => FLAGS[k].js(receipt, line));
       expect(actual.sort()).toEqual([...expected].sort());
@@ -1460,6 +1793,94 @@ describe('Outbound PO lines — unit metric selection', () => {
       });
       expect(res.status).toBe(200);
       expect(res.body.lines[0]).toMatchObject({ qty: 4, unit_metric: 'mtrs' });
+    });
+  });
+
+  // Migration 084. A receipt records the unit it was counted in rather than
+  // borrowing the line's at render time, so a later edit to the line cannot
+  // reinterpret a delivery already taken.
+  describe('the unit a RECEIPT was counted in', () => {
+    const receiptOf = async (poId, lineId) => {
+      const po = await getPO(poId);
+      const line = po.body.lines.find(l => l.id === lineId);
+      return line.receipts[line.receipts.length - 1];
+    };
+
+    test('defaults to the unit the line was written in', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'mtrs' });
+      expect((await postReceipt(poId, lineId, { received_qty: 2 })).status).toBe(201);
+      expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
+    });
+
+    test('stores a supplied metric, in the canonical casing of the master', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      expect((await postReceipt(poId, lineId, { received_qty: 2, unit_metric: 'MTRS' })).status).toBe(201);
+      expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
+    });
+
+    test('refuses a metric the article is not listed under', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      const res = await postReceipt(poId, lineId, { received_qty: 2, unit_metric: 'furlongs' });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/not a listed unit metric/i);
+    });
+
+    // The rule is appended AFTER the existing ones on both sides, because the
+    // first error a body with several omissions returns is the contract the
+    // client mirrors. A bad metric must not mask a missing Bill No.
+    test('is reported after the older required fields', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      const res = await request(app)
+        .post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ received_qty: 2, received_rate: 10, checked_by: warehousePocId, unit_metric: 'furlongs' });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/Bill No is required/);
+    });
+
+    test('an edit can change it, and the change is audited', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      const created = await postReceipt(poId, lineId, { received_qty: 2 });
+      expect((await receiptOf(poId, lineId)).unit_metric).toBe('Taga');
+
+      const res = await request(app)
+        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ unit_metric: 'mtrs' });
+      expect(res.status).toBe(200);
+      expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
+
+      const audit = await request(app).get('/api/audit-logs')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ entity_type: 'outbound_po_line', entity_id: lineId });
+      const rows = audit.body.rows || audit.body;
+      const entry = rows.find(r => r.action_type === 'OUTBOUND_PO_LINE_RECEIPT_UPDATE');
+      expect(entry.changes.some(c => c.field === 'unit_metric' && c.new === 'mtrs')).toBe(true);
+    });
+
+    // Grandfathering, on the same principle as the line rule above: a receipt
+    // must stay editable in the unit it was taken in.
+    test('a receipt keeps its metric after that metric is retired from the master', async () => {
+      const article = await twoMetricArticle();
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      const created = await postReceipt(poId, lineId, { received_qty: 2, unit_metric: 'mtrs' });
+      expect(created.status).toBe(201);
+      await db.execute({
+        sql: 'DELETE FROM outbound_products WHERE category = ? AND unit_metric = ?',
+        args: [article.category, 'mtrs'],
+      });
+
+      const res = await request(app)
+        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ unit_metric: 'mtrs', received_qty: 3 });
+      expect(res.status).toBe(200);
+      expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
     });
   });
 });
