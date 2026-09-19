@@ -33,6 +33,29 @@ function extractBlinkitParty(flat) {
   return null;
 }
 
+// pdf-parse starts a new line on every Y-transform change, so a number that
+// wraps inside a narrow table cell arrives split across two lines — a row's
+// Total Amt showing up as "…106848.0" then "0". An unrepaired tail fails
+// QTY_TAIL_SHAPE below, and the row scanner then walks on and swallows the NEXT
+// row's tail, which desynchronises the serial counter and silently drops every
+// remaining row. Rejoin the fragments before anything else looks at the lines.
+//
+// The guard is deliberately narrow — the previous line must end in a decimal
+// point, or in a single digit that follows one — so it never welds an item-code
+// fragment ("11019228" / "3") or a UPC ("9000009" / "9") onto its neighbour.
+// Those wrap the same way and must stay split for the head matcher.
+function rejoinWrappedNumbers(lines) {
+  const out = [];
+  for (const l of lines) {
+    if (out.length && /\.\d?$/.test(out[out.length - 1]) && /^\d{1,2}$/.test(l)) {
+      out[out.length - 1] += l;
+    } else {
+      out.push(l);
+    }
+  }
+  return out;
+}
+
 function findMultilineField(lines, labelParts) {
   for (let i = 0; i < lines.length - labelParts.length; i++) {
     let ok = true;
@@ -51,7 +74,7 @@ function findMultilineField(lines, labelParts) {
 
 async function parseBlinkit(buffer) {
   const { text } = await pdf(buffer);
-  const flat = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const flat = rejoinWrappedNumbers(text.split(/\r?\n/).map(l => l.trim()).filter(Boolean));
 
   const vendor_po_id = (fieldByLine(flat, 'R\\.O\\.\\s*Number') || '').replace(/\s+/g, '');
   let dateRaw = fieldByLine(flat, 'Date');
@@ -132,6 +155,29 @@ async function parseBlinkit(buffer) {
     }
     expectedSr++;
     i = j;
+  }
+
+  // The R.O. prints its own totals in the footer, so check the parse against
+  // them. Without this a layout the scanner half-understands yields a
+  // well-formed PO that is quietly missing rows — the failure mode that shipped
+  // a 1-line preview of a 10-line PO, with a real item code and a real quantity
+  // that belonged to a different row, ready to be approved. A loud parse error
+  // is always the better outcome. Only assert when both totals were found, so
+  // an unseen footer degrades instead of hard-failing.
+  const joined = flat.join('\n');
+  const footerNum = (label) => {
+    const m = joined.match(new RegExp(`Total\\s*${label}\\s*:?\\s*(\\d+)`, 'i'));
+    return m ? parseInt(m[1], 10) : null;
+  };
+  const totalItems = footerNum('Items');
+  const totalQty = footerNum('Quantity');
+  const parsedQty = lines.reduce((sum, l) => sum + l.qty, 0);
+  if (totalItems != null && totalQty != null
+      && (lines.length !== totalItems || parsedQty !== totalQty)) {
+    throw new Error(
+      `Blinkit PDF line table not fully recognised: parsed ${lines.length} of ${totalItems} items `
+      + `(quantity ${parsedQty} of ${totalQty})`
+    );
   }
 
   const party_name = extractBlinkitParty(flat) || extractShipToParty(flat);

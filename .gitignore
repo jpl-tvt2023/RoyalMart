@@ -16,6 +16,11 @@ PRODUCT_OVERVIEW.html
 PRODUCT_OVERVIEW.md
 royalmart-billing-structure.html
 
+# Billing -- carries bank account no., IFSC and PAN. Never commit to the
+# client's repo. The agent file and its ledger are local-only.
+.claude/agents/billingAgent.md
+.claude/billing/
+
 # Agent-facing working docs -- kept local, not committed.
 CLAUDE.md
 docs/DOMAIN.md
