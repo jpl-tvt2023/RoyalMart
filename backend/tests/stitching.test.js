@@ -2272,6 +2272,120 @@ describe('Dozens and yield at Stitched and Packed', () => {
   });
 });
 
+// Checked By and PCL Inc No are asked at the two destinations where the goods
+// change hands for good -- our warehouse and the exit -- and nowhere else.
+describe('Checked By and PCL Inc No at the two hand-overs', () => {
+  // A lot standing at Processed, which is the only stage that can reach all of
+  // Stitched, Packed, Panchal and Third Party -- so one fixture serves every
+  // case below.
+  const processedLot = async () => {
+    const { receiptId } = await grayLot({ qty: 200 });
+    const d = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye', sent_qty: 200,
+    });
+    expect(d.status).toBe(201);
+    return d.body.id;
+  };
+
+  test('a challan to Panchal needs a checker', async () => {
+    const id = await processedLot();
+    const r = await api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Panchal',
+      party_name: 'Panchal', sent_qty: 10, checked_by: null,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/Checked By is required/);
+  });
+
+  test('a challan to Panchal needs its own incoming number', async () => {
+    const id = await processedLot();
+    const r = await api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Panchal',
+      party_name: 'Panchal', sent_qty: 10, panchal_incoming_no: null,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/PCL Inc No is required when sending to Panchal/);
+  });
+
+  // The whole point of the separate column: the chain's own suffix is what ties
+  // a Panchal lot back to the fabric it was cut from, so the warehouse number
+  // must not overwrite it.
+  test('the PCL number is stored beside the carried incoming no, not over it', async () => {
+    const id = await processedLot();
+    const pcl = `PCL-${uid()}`;
+    const r = await api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Panchal',
+      party_name: 'Panchal', sent_qty: 10,
+      checked_by: warehousePocId, panchal_incoming_no: pcl,
+    });
+    expect(r.status).toBe(201);
+
+    const row = findLot((await api.listStage({ stage: 'Panchal' })).body.rows, 'entry', r.body.id);
+    expect(row.panchal_incoming_no).toBe(pcl);
+    expect(row.incoming_prefix).toBe('PNL');
+    // Still the suffix inherited from the parent, untouched by the PCL number.
+    expect(row.incoming_no).toBeTruthy();
+    expect(row.incoming_no).not.toBe(pcl);
+    expect(row.checked_by_name).toBeTruthy();
+  });
+
+  test('a challan to a third party needs a checker', async () => {
+    const id = await processedLot();
+    const r = await api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Third Party',
+      party_name: 'Buyer', sent_qty: 10,
+      outbound_bill_no: `OB-${uid()}`, checked_by: null,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/Checked By is required/);
+  });
+
+  // The qualification the outbound receipt used to enforce, moved here.
+  test('the checker must actually be tagged Warehouse_POC', async () => {
+    const id = await processedLot();
+    const { rows } = await db.execute({
+      sql: `INSERT INTO users (name, username, email, password_hash, is_first_login)
+            VALUES (?, ?, ?, 'x', 0) RETURNING id`,
+      args: [`Untagged ${uid()}`, `u-${uid()}`, `u-${uid()}@x.com`],
+    });
+    const r = await api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Panchal',
+      party_name: 'Panchal', sent_qty: 10, checked_by: rows[0].id,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/Checked By must be a user tagged Warehouse_POC/);
+  });
+
+  // Refused rather than ignored, the same way a bill number on an internal move
+  // is -- a number typed against the wrong destination is a question, not noise.
+  test('a PCL number is refused anywhere but Panchal', async () => {
+    const id = await processedLot();
+    const r = await api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Stitched',
+      party_name: 'Stitcher', sent_qty: 10, panchal_incoming_no: 'PCL-9',
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/PCL Inc No applies only to goods sent to Panchal/);
+  });
+
+  // An ordinary move between job workers still stamps the session user rather
+  // than asking, and asks for neither of the two fields above.
+  test('an internal move asks for neither, and stamps the session user', async () => {
+    const id = await processedLot();
+    const r = await api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Stitched',
+      party_name: 'Stitcher', sent_qty: 10,
+    });
+    expect(r.status).toBe(201);
+    const { rows } = await db.execute({
+      sql: 'SELECT checked_by, panchal_incoming_no FROM stitching_entries WHERE id = ?',
+      args: [r.body.id],
+    });
+    expect(Number(rows[0].checked_by)).toBe(warehousePocId);
+    expect(rows[0].panchal_incoming_no).toBeNull();
+  });
+});
+
 describe('Status SQL/JS parity', () => {
   const svc = require('../src/services/stitching.service');
 
