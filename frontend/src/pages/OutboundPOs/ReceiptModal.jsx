@@ -2,13 +2,11 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
-import { listUsersLite } from '../../api/users.api';
 import { addOutboundPOLineReceipt, updateOutboundPOLineReceipt } from '../../api/outboundPOs.api';
-import { ROLES } from '../../utils/roles';
 import { fmtNum } from '../../utils/stitching';
 import {
   EMPTY_RECEIPT, INCOMING_NO_MAX,
-  receiptFieldError, withDerivedAfterRate, stageOptionsFor, checkerOptionsFor,
+  receiptFieldError, withDerivedAfterRate, stageOptionsFor,
   isFabricLine, outstandingOf, qtyDifference, offeredQtyDiffAction,
   receiptCountsDozens, metresPerDozen,
 } from './receiptFields';
@@ -142,7 +140,6 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
   const isAdd = !receipt;
   const [form, setForm] = useState(EMPTY_RECEIPT);
   const [saving, setSaving] = useState(false);
-  const [checkers, setCheckers] = useState([]);
 
   // Only fabric has a stage and a metres figure. Everything else on an outbound
   // PO is received and done with -- it travels no stage chain.
@@ -166,34 +163,20 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
       received_rate: receipt.received_rate ?? '',
       bill_no: receipt.bill_no ?? '',
       incoming_no: receipt.incoming_no ?? '',
-      checked_by: receipt.checked_by ?? '',
       process_rate: receipt.process_rate ?? '',
       after_rate: receipt.after_rate ?? '',
       incoming_stage: receipt.incoming_stage ?? '',
       qty_in_metres: receipt.qty_in_metres ?? '',
+      // Omitted here once, which made every dozen-stage receipt uneditable: the
+      // field rendered blank, validation demanded a count, and the real value
+      // sat in the database with no way to retype it.
+      received_dozens: receipt.received_dozens ?? '',
       // Recorded once, when the delivery was entered. Shown on an edit, never
       // re-decided there -- corrections go through the line's Short cell.
       qty_diff_action: receipt.qty_diff_action ?? '',
       qty_diff_reason: receipt.qty_diff_reason ?? '',
     });
   }, [receipt, isAdd, line.unit_metric]);
-
-  // Options are fetched every time the modal opens rather than once on page
-  // mount: the prefix master and the Warehouse_POC list can change under an
-  // already-open tab, and the server validates against the live rows.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const users = await listUsersLite({ role: ROLES.WAREHOUSE_POC });
-        if (cancelled) return;
-        setCheckers(users || []);
-      } catch {
-        if (!cancelled) toast.error('Could not load the form options');
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [receipt?.id, isAdd]);
 
   const setField = (field, value) => setForm(f => withDerivedAfterRate(f, field, value));
 
@@ -208,7 +191,6 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
         received_qty: Number(form.received_qty),
         unit_metric: form.unit_metric || null,
         received_rate: Number(form.received_rate),
-        checked_by: Number(form.checked_by),
         incoming_no: String(form.incoming_no ?? '').trim() || null,
         process_rate: form.process_rate === '' ? null : Number(form.process_rate),
         after_rate: form.after_rate === '' ? null : Number(form.after_rate),
@@ -391,20 +373,6 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
               className={inputCls}
               maxLength={INCOMING_NO_MAX}
             />
-          </Field>
-
-          <Field label="Checked By" required>
-            <select
-              value={form.checked_by || ''}
-              onChange={e => setField('checked_by', e.target.value)}
-              className={inputCls}
-              required
-            >
-              <option value="">Select...</option>
-              {checkerOptionsFor(checkers, receipt?.checked_by, receipt?.checked_by_name).map(o => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
           </Field>
 
           {/* Full width: two controls in one field, and squeezing them into half

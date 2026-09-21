@@ -2,7 +2,7 @@ import { describe, test, expect } from 'vitest';
 import {
   STAGES, STAGE_TABS, ALL_TAB, nextStage, DESTINATIONS, destinationsFor, canSendTo,
   EXIT_STAGE, STOCK_STAGE, PARTY_USE_STAGES, rateLadderStages,
-  DOZEN_STAGES, countsDozens, metresPerDozen, rateUnitFor,
+  DOZEN_STAGES, DOZEN_RATE_STAGES, countsDozens, pricedPerDozen, metresPerDozen, rateUnitFor,
   carriedIncomingNo, soleActivePrefix,
   challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX, fmtQty,
   writeOffReasonError, WRITE_OFF_REASON_MAX, STATUSES, OPEN_STATUSES,
@@ -71,12 +71,26 @@ describe('DESTINATIONS', () => {
 // Metres stay the currency of the chain. Dozens are an extra count that only
 // exists once there are pieces to count, and the yield is what the count is for.
 describe('dozens and yield', () => {
-  test('only Stitched and Packed count pieces', () => {
-    expect(DOZEN_STAGES).toEqual(['Stitched', 'Packed']);
-    expect(countsDozens('Stitched')).toBe(true);
-    expect(countsDozens('Packed')).toBe(true);
-    for (const stage of ['Gray', 'Processed', 'Panchal', 'Third Party']) {
+  test('pieces are counted from Stitched onward, never before', () => {
+    expect(DOZEN_STAGES).toEqual(['Stitched', 'Packed', 'Panchal', 'Third Party']);
+    for (const stage of ['Stitched', 'Packed', 'Panchal', 'Third Party']) {
+      expect(countsDozens(stage)).toBe(true);
+    }
+    // Before Stitched there are no pieces — fabric is just fabric.
+    for (const stage of ['Gray', 'Processed']) {
       expect(countsDozens(stage)).toBe(false);
+    }
+  });
+
+  // The narrower list, and the reason it is a separate one: counting pieces and
+  // charging by the piece are different questions, and they stopped having the
+  // same answer when the count carried past job work.
+  test('only job work is PRICED per dozen', () => {
+    expect(DOZEN_RATE_STAGES).toEqual(['Stitched', 'Packed']);
+    expect(pricedPerDozen('Stitched')).toBe(true);
+    expect(pricedPerDozen('Packed')).toBe(true);
+    for (const stage of ['Gray', 'Processed', 'Panchal', 'Third Party']) {
+      expect(pricedPerDozen(stage)).toBe(false);
     }
   });
 
@@ -98,11 +112,15 @@ describe('dozens and yield', () => {
 
   // A stitcher is paid by the dozen, a dyer by the metre. The label has to say
   // which, because the same field means different money at different stages.
-  test('the rate is per dozen exactly where pieces are counted', () => {
+  test('the rate is per dozen for job work only, not wherever pieces are counted', () => {
     expect(rateUnitFor('Stitched')).toBe('dozen');
     expect(rateUnitFor('Packed')).toBe('dozen');
     expect(rateUnitFor('Processed')).toBe('metre');
+    // These two COUNT dozens but are not PRICED by them — the warehouse and the
+    // sale are still quoted per metre. This is the guard rail on that split:
+    // wire rateUnitFor back to countsDozens and it fails here.
     expect(rateUnitFor('Panchal')).toBe('metre');
+    expect(rateUnitFor('Third Party')).toBe('metre');
   });
 });
 

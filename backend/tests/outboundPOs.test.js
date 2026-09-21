@@ -38,8 +38,10 @@ function lineFor(article, overrides = {}) {
   };
 }
 
-// Billed Rate, Checked By and Bill No are mandatory on every receipt, so default
-// them all in unless a test is specifically exercising their validation.
+// Billed Rate and Bill No are mandatory on every receipt, so default them in
+// unless a test is specifically exercising their validation. Checked By is NOT
+// mandatory any more -- the server stamps the session user -- but it is still
+// supplied here so the rows these tests create carry a realistic checker.
 function receiptBody(overrides = {}) {
   return { received_qty: 1, received_rate: 10, checked_by: warehousePocId, bill_no: 'B-DEF', ...overrides };
 }
@@ -872,27 +874,39 @@ describe('Outbound POs API', () => {
       expect(res.status).toBe(400);
     });
 
-    test('rejects a receipt with no checked_by', async () => {
+    // The form no longer asks. A receipt records who ENTERED it, taken from the
+    // session, so omitting it is the ordinary case rather than an error -- and
+    // the Warehouse_POC qualification moved to the two stitching destinations
+    // where the hand-over is real (see stitching.test.js).
+    test('accepts a receipt with no checked_by, stamping the session user', async () => {
       const { poId, lineId } = await setupLine();
-      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: 10 });
-      expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/Checked By is required/);
+      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: 10, bill_no: 'B-NOCHK' });
+      expect(res.status).toBe(201);
+
+      const { rows } = await db.execute({
+        sql: 'SELECT checked_by FROM outbound_po_line_receipts WHERE id = ?',
+        args: [res.body.id],
+      });
+      expect(Number(rows[0].checked_by)).toBe(adminUserId);
     });
 
-    // The highest-value case: Admin/Owner must NOT implicitly qualify. This
-    // pins userHasRole (strict) rather than userQualifiesAs.
-    test('rejects a checked_by that is a real user without the Warehouse_POC tag', async () => {
+    // No longer a qualification here: an untagged user is an ordinary answer
+    // now that the question records who typed the row.
+    test('accepts a checked_by that is a real user without the Warehouse_POC tag', async () => {
       const { poId, lineId } = await setupLine();
       const { rows } = await db.execute({
         sql: `INSERT INTO users (name, username, email, password_hash, is_first_login)
               VALUES (?, ?, ?, 'x', 0) RETURNING id`,
         args: [`Untagged ${uid()}`, `untagged-${uid()}`, `untagged-${uid()}@x.com`],
       });
-      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: 10, checked_by: rows[0].id });
-      expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/Warehouse_POC/);
+      const res = await rawPost(poId, lineId, {
+        received_qty: 1, received_rate: 10, bill_no: 'B-UNTAGGED', checked_by: rows[0].id,
+      });
+      expect(res.status).toBe(201);
     });
 
+    // Still validated when explicitly supplied, so an API caller cannot attach
+    // a receipt to a user id that does not exist.
     test('rejects a checked_by that resolves to no user', async () => {
       const { poId, lineId } = await setupLine();
       const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: 10, checked_by: 99999 });
@@ -1127,7 +1141,11 @@ describe('Outbound POs API', () => {
       // into the warehouse. Third Party never can — that is where goods leave.
       test('Panchal is receivable and Third Party is not', async () => {
         const { poId, lineId } = await fabricLine();
-        const ok = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Panchal' }));
+        // Panchal counts pieces now, so a receipt straight into the warehouse
+        // carries a dozen count exactly as one at Stitched or Packed does.
+        const ok = await postReceipt(poId, lineId, fabricBody({
+          incoming_stage: 'Panchal', received_dozens: 20,
+        }));
         expect(ok.status).toBe(201);
 
         const { poId: p2, lineId: l2 } = await fabricLine();

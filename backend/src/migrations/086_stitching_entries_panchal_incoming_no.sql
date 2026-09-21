@@ -1,0 +1,24 @@
+-- PCL Inc No: the warehouse's own incoming number for a lot it has just taken in.
+--
+-- WHY THIS IS NOT incoming_no. The chain already carries an incoming number, and
+-- it is deliberately ONE number -- a stage prefix (GRY/PRC/STC/PKD/PNL) plus a
+-- suffix inherited verbatim from the parent, so a single suffix tracks the same
+-- material from the day it was bought to the day it ships. deriveIncomingNo
+-- carries that suffix down untouched and only swaps the prefix.
+--
+-- Panchal needs a second, independent number. It is our warehouse, not a job
+-- worker: what arrives there is filed under the warehouse's own sequence, which
+-- is what gets quoted when someone goes looking for the stock on a shelf. That
+-- number is assigned by the person receiving the goods and has no relationship
+-- to the chain suffix, so writing it into incoming_no would overwrite the one
+-- thing that links a Panchal lot back to the fabric it was cut from.
+--
+-- Additive, so no table rebuild. There is no CHECK to widen -- the column is
+-- free text bounded at TEXT_MAX (50) in the controller, the same cap and the
+-- same reasoning as every other free-text handle in this schema. Nullable
+-- because it applies only at the Panchal stage and every existing row predates
+-- it. The controller requires it on new Panchal challans and rejects it
+-- everywhere else, which is where that rule belongs -- a CHECK here could not
+-- see the target stage at insert time.
+
+ALTER TABLE stitching_entries ADD COLUMN panchal_incoming_no TEXT;

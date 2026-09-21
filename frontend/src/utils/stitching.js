@@ -48,6 +48,12 @@ export const STATUSES = ['Pending', 'Partial', 'Forwarded', 'In Stock', 'Closed'
 // of OPEN_STATUSES in the backend service, keep in step.
 export const OPEN_STATUSES = ['Pending', 'Partial', 'In Stock'];
 
+// A multi-select filter with everything unticked means "match nothing", which
+// an absent param cannot say — omitting status already means "unconstrained".
+// Twin of NONE_SELECTED in backend/src/controllers/stitching.controller.js,
+// keep the two in step.
+export const NONE_SELECTED = '__none_selected__';
+
 // Twin of PARTY_USE_STAGES in the backend service and of migration 079's CHECK
 // on stitching_party_uses. Gray is absent on purpose: nothing is ever sent TO
 // Gray, so a party tagged for it could never be picked.
@@ -69,14 +75,25 @@ export const STATUS_COLORS = {
 
 // The stages where finished goods are counted in dozens as well as measured in
 // metres. Twin of DOZEN_STAGES on the server. Before Stitched there are no
-// pieces to count — fabric is just fabric.
+// pieces to count — fabric is just fabric. From Stitched onward there are, and
+// the count carries all the way through the warehouse and out to the buyer: a
+// lot does not go back to being metres because it moved.
 //
-// The stage rate is PER DOZEN at these two and per metre everywhere else, which
-// is the practical reason the count exists: a stitcher is paid by the dozen, a
-// dyer by the metre.
-export const DOZEN_STAGES = ['Stitched', 'Packed'];
+// COUNTED IS NOT PRICED. These two lists used to be one, which quietly said
+// that anything counted in dozens is also charged by the dozen. That is true of
+// job work and false of everything else — the warehouse and the sale are still
+// quoted per metre — so the rate list stays narrow and rateUnitFor reads from
+// it, never from this one.
+export const DOZEN_STAGES = ['Stitched', 'Packed', 'Panchal', 'Third Party'];
 
 export const countsDozens = (stage) => DOZEN_STAGES.includes(stage);
+
+// The stages whose RATE is quoted per dozen: job work, where a stitcher is paid
+// by the dozen and a dyer by the metre. Deliberately narrower than
+// DOZEN_STAGES — see above. Twin of DOZEN_RATE_STAGES on the server.
+export const DOZEN_RATE_STAGES = ['Stitched', 'Packed'];
+
+export const pricedPerDozen = (stage) => DOZEN_RATE_STAGES.includes(stage);
 
 // Yield: how many metres it took to make a dozen. Never stored — derived here
 // and on the server from the two numbers that are, to two places. Null rather
@@ -97,7 +114,12 @@ export const metresPerDozen = (receivedQty, receivedDozens) => {
 
 // What a stage's rate is quoted per. Job work at Stitched and Packed is paid by
 // the dozen, everything else by the metre.
-export const rateUnitFor = (stage) => (countsDozens(stage) ? 'dozen' : 'metre');
+//
+// Reads DOZEN_RATE_STAGES, never DOZEN_STAGES. Those were the same list once,
+// and wiring this to countsDozens would silently reprice the Panchal rate and
+// the Third Party SALE rate per dozen the moment the count widened past job
+// work.
+export const rateUnitFor = (stage) => (pricedPerDozen(stage) ? 'dozen' : 'metre');
 
 export const destinationsFor = (stage) => DESTINATIONS[stage] || [];
 

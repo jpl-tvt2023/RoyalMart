@@ -116,14 +116,19 @@ New in this change — see migrations `084` and `085`.
       Changing it shows a `unit_metric` old → new diff in the History drawer.
 - [ ] A receipt entered BEFORE this change shows the line's unit rather than a
       dash (migration 084 backfilled it).
-- [ ] **Stitching page**: the quantity column header reads **Qty in metres**;
-      there is no **Checked By** column and no **Short** column on any tab
-      (Gray, Processed, Stitched, Packed, Panchal, Third Party, All). Stitched
-      and Packed still add Dozens + M/Dozen, Third Party still adds Outbound
-      Bill No, and the columns still line up with their headers on every tab.
+- [ ] **Stitching page**: Gray, Processed and All head the quantity column
+      **Qty in metres**. Stitched, Packed, Panchal and Third Party drop that
+      column entirely and show **Dozens + M/Dozen** instead, with the `sent …`
+      sub-line under Dozens and the balance header reading **Balance (m)**.
+      There is no **Short** column on any tab. **Checked By** appears on
+      Panchal and Third Party only; **PCL Inc No** on Panchal only; Outbound
+      Bill No on Third Party only. The columns still line up with their headers
+      on every one of the seven tabs, including the nested challan rows.
 - [ ] The Journey drawer no longer prints "entered by …".
-- [ ] Download XLSX from a Stitching tab: no `Checked By` and no `Short`
-      column, and the quantity column is headed `Qty in metres`.
+- [ ] Download XLSX from a Stitching tab: no `Short` column, the quantity
+      column is still headed `Qty in metres` (the export is deliberately the
+      same on every tab — a saved file outlives the tab it came from), and
+      `PCL Inc No` + `Checked By` are present.
 - [ ] **Add Challan has no Received Qty field.** After sending, the lot's
       Balance falls by the sent quantity and the nested challan row reads
       `sent …` with no `back …` and no `… short`.
@@ -134,6 +139,19 @@ New in this change — see migrations `084` and `085`.
       ladder did not move.
 - [ ] At Stitched/Packed the rate label reads "Rate for Packed (per dozen)" and
       Metre per Dozen is derived from **Sent Qty** divided by Dozens.
+- [ ] **Counted is not priced.** Sending to Panchal or Third Party now asks for
+      Dozens Received, but the rate label reads plain "Rate for Panchal" /
+      "Rate for Third Party" with **no "(per dozen)" suffix** and a hint saying
+      per metre. Those two are counted in dozens and still charged per metre.
+- [ ] **Checked By / PCL Inc No**: a challan to Panchal asks for both, a
+      challan to Third Party asks for Checked By + Outbound Bill No, and
+      neither field appears on a challan to Processed, Stitched or Packed. The
+      Checked By list holds Warehouse_POC users only.
+- [ ] **Add Receipt no longer asks for Checked By.** Saving works without it,
+      and the receipts table on the PO detail page shows your own name in the
+      Checked By column (header no longer carries a `*`).
+- [ ] Editing a receipt that was taken at a dozen stage (incl. Panchal) opens
+      with its Dozens Received filled in and saves without retyping it.
 - [ ] **Challan key**: raising the same challan number twice to the SAME party
       is refused with "Challan X has already been used for <party>" — including
       when the two are on different lots. The same number to a DIFFERENT party

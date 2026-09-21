@@ -5,10 +5,13 @@ import Button from '../../components/ui/Button';
 import {
   listStitchingPartyNames, addStitchingChallan, updateStitchingLot,
 } from '../../api/stitching.api';
+import { listUsersLite } from '../../api/users.api';
+import { ROLES } from '../../utils/roles';
+import { checkerOptionsFor } from '../../utils/checkers';
 import {
   CHALLAN_MAX, CHALLAN_TYPES, challanError, qtyError, moneyError, fmtNum, fmtQty, EPSILON,
-  destinationsFor, nextStage, EXIT_STAGE, DESTINATION_HINTS,
-  countsDozens, metresPerDozen, rateUnitFor,
+  destinationsFor, nextStage, EXIT_STAGE, STOCK_STAGE, DESTINATION_HINTS,
+  countsDozens, pricedPerDozen, metresPerDozen, rateUnitFor,
 } from '../../utils/stitching';
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
@@ -21,6 +24,7 @@ const EMPTY = {
   challan_type: '',
   received_dozens: '',
   process_rate: '', outbound_bill_no: '',
+  checked_by: '', panchal_incoming_no: '',
 };
 
 function Field({ label, required, children, hint }) {
@@ -63,10 +67,17 @@ function Field({ label, required, children, hint }) {
  * stage would relocate a live lot and everything hanging off it, which is not
  * what "fix the challan number" means. Withdraw and re-raise for that.
  *
- * There is no Bill No for an internal move, and no Checked By anywhere. A
- * challan is not a bill — only a sale carries one. And Checked By records who
- * entered the row, which the server takes from the session rather than asking
- * someone to pick their own name from a dropdown.
+ * There is no Bill No for an internal move — a challan is not a bill, only a
+ * sale carries one.
+ *
+ * CHECKED BY is asked at two destinations and nowhere else. On an ordinary
+ * move between job workers the server stamps whoever entered the row, because
+ * asking means picking your own name off a dropdown. It becomes a real
+ * question at the two points where the goods change hands for good: arriving
+ * in OUR warehouse, and leaving the business. Those two get a Warehouse_POC
+ * roster, and Panchal also gets the warehouse's own incoming number — the
+ * carried-down one tracks the material, PCL Inc No is what the warehouse
+ * files it under.
  */
 export default function ChallanModal({ lot, challan = null, onClose, onSaved }) {
   const isEdit = !!challan;
@@ -74,6 +85,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
   const [saving, setSaving] = useState(false);
   const [parties, setParties] = useState([]);
   const [partiesLoaded, setPartiesLoaded] = useState(false);
+  const [checkers, setCheckers] = useState([]);
   // On an edit the destination is fixed — it is where the row already sits.
   const [target, setTarget] = useState(challan?.stage || nextStage(lot?.stage));
 
@@ -81,9 +93,14 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
   const unit = lot?.unit_metric || 'm';
   const poRate = Number(lot?.po_rate || 0);
   const isExit = target === EXIT_STAGE;
-  // Pieces only exist once there are pieces: Stitched and Packed count dozens,
-  // and their rate is quoted per dozen rather than per metre.
+  const isStock = target === STOCK_STAGE;
+  // Pieces exist from Stitched onward, and keep existing through the warehouse
+  // and out to the buyer. Whether the RATE is per dozen is a narrower question
+  // — job work only — which is why the label below asks pricedPerDozen instead.
   const isDozenStage = countsDozens(target);
+  // The two hand-overs that are a real second pair of eyes rather than the
+  // typist's own name: into our warehouse, and out of the business.
+  const needsChecker = isStock || isExit;
   // Counted off what was SENT — the only quantity this form records now.
   const perDozen = metresPerDozen(form.sent_qty, form.received_dozens);
   // What this challan may draw on. On an edit the row's own sent_qty is already
@@ -116,6 +133,22 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     return () => { cancelled = true; };
   }, [lot?.lot_key, target]);
 
+  // Fetched when the modal opens rather than once per page, for the same reason
+  // the party list is: the roster can change under a tab that has been sitting
+  // open, and a stale dropdown offers people who are no longer Warehouse POC.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const users = await listUsersLite({ role: ROLES.WAREHOUSE_POC });
+        if (!cancelled) setCheckers(users || []);
+      } catch {
+        if (!cancelled) toast.error('Could not load the Warehouse POC list');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [challan?.id]);
+
   // Prefill once per challan being edited.
   useEffect(() => {
     if (!challan) return;
@@ -127,6 +160,8 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
       received_dozens: challan.received_dozens ?? '',
       process_rate: challan.process_rate ?? '',
       outbound_bill_no: challan.outbound_bill_no ?? '',
+      checked_by: challan.checked_by ?? '',
+      panchal_incoming_no: challan.panchal_incoming_no ?? '',
     });
     setTarget(challan.stage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -147,8 +182,12 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     if (!form.challan_type) return 'Challan Type is required';
     const procErr = moneyError(form.process_rate, `${target} Rate`);
     if (procErr) return procErr;
+    if (needsChecker && !form.checked_by) return 'Checked By is required';
     if (isExit && !String(form.outbound_bill_no || '').trim()) {
       return 'Outbound Bill No is required when sending to a third party';
+    }
+    if (isStock && !String(form.panchal_incoming_no || '').trim()) {
+      return 'PCL Inc No is required when sending to Panchal';
     }
     const challanErr = challanError(form.challan_no);
     if (challanErr) return challanErr;
@@ -174,6 +213,11 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
         ? Number(form.received_dozens) : null,
       process_rate: form.process_rate === '' ? null : Number(form.process_rate),
       outbound_bill_no: isExit ? form.outbound_bill_no.trim() : null,
+      panchal_incoming_no: isStock ? form.panchal_incoming_no.trim() : null,
+      // Omitted, not nulled, everywhere else: an absent key is what tells the
+      // server to stamp the session user. Sending null would be a request to
+      // blank the column.
+      ...(needsChecker ? { checked_by: Number(form.checked_by) } : {}),
     };
     try {
       if (isEdit) {
@@ -322,7 +366,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
               sits beside them, so the arithmetic is visible as it is typed
               rather than discovered later on a report. Counted off Sent Qty,
               which is the only quantity this form records. */}
-          {isDozenStage && !isExit && (
+          {isDozenStage && (
             <Field
               label="Dozens Received"
               required
@@ -337,7 +381,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             </Field>
           )}
 
-          {isDozenStage && !isExit && (
+          {isDozenStage && (
             <Field
               label="Metre per Dozen"
               hint="Metres divided by dozens — the yield. Worked out for you"
@@ -366,6 +410,46 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             </Field>
           )}
 
+          {/* The warehouse's own number for what it just took in. Separate from
+              the Incoming No carried down the chain, which tracks the material
+              back to the lot it came from — this one is how Panchal files it. */}
+          {isStock && (
+            <Field
+              label="PCL Inc No"
+              required
+              hint="Panchal's incoming number for this lot"
+            >
+              <input
+                value={form.panchal_incoming_no}
+                onChange={e => setField('panchal_incoming_no', e.target.value)}
+                className={inputCls}
+                maxLength={50}
+                placeholder="e.g. 4471"
+              />
+            </Field>
+          )}
+
+          {/* Asked only where the hand-over is real — see the note at the top.
+              Everywhere else the server stamps whoever entered the row. */}
+          {needsChecker && (
+            <Field
+              label="Checked By"
+              required
+              hint={isExit ? 'Who checked the goods out' : 'Who received the goods at Panchal'}
+            >
+              <select
+                value={form.checked_by || ''}
+                onChange={e => setField('checked_by', e.target.value)}
+                className={inputCls}
+              >
+                <option value="">Select...</option>
+                {checkerOptionsFor(checkers, challan?.checked_by, challan?.checked_by_name).map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </Field>
+          )}
+
           {/* Named for the stage the work lands at, and holding only that
               stage's charge. Rates no longer roll up into a running total — each
               stage keeps its own, and the lot's ladder shows them side by side
@@ -378,7 +462,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
               and is already shown as Gray Rate. The hint names the column this
               number lands in, so the two cannot be confused. */}
           <Field
-            label={`Rate for ${target}${isDozenStage && !isExit ? ' (per dozen)' : ''}`}
+            label={`Rate for ${target}${pricedPerDozen(target) ? ' (per dozen)' : ''}`}
             hint={isExit
               ? 'What this sale is booked at, per metre'
               : `What ${target?.toLowerCase()} costs per ${rateUnitFor(target)} — shows as ${target} Rate`}
