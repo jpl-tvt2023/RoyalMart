@@ -481,7 +481,7 @@ export default function OutboundPODetail() {
                         <th className={`${thCls} w-16`}>After</th>
                         <th className={`${thCls} w-24`}>Bill No <span className="text-red-500">*</span></th>
                         <th className={`${thCls} w-28`}>Incoming No</th>
-                        <th className={`${thCls} w-24`}>Checked By <span className="text-red-500">*</span></th>
+                        <th className={`${thCls} w-24`}>Checked By</th>
                         {/* Lowest-value pair, merged and dropped first on narrow
                             screens — the same information is in the History drawer. */}
                         <th className={`${thCls} w-28 hidden min-[1600px]:table-cell`}>Updated</th>

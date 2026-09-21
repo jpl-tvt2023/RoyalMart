@@ -105,13 +105,26 @@ const isValidChallanType = (s) => CHALLAN_TYPES.includes(s);
 
 // The stages where finished goods are counted in dozens as well as measured in
 // metres. Before Stitched there are no pieces to count -- fabric is just fabric.
+// From Stitched onward there are, and the count carries all the way through the
+// warehouse and out to the buyer: a lot does not go back to being metres
+// because it moved.
 //
-// The stage rate is PER DOZEN at these two and per metre everywhere else, which
-// is the practical reason the count has to exist: a stitcher is paid by the
-// dozen, a dyer by the metre.
-const DOZEN_STAGES = ['Stitched', 'Packed'];
+// COUNTED IS NOT PRICED. These two lists used to be one, which quietly said
+// that anything counted in dozens is also charged by the dozen. That is true of
+// job work and false of everything else -- the warehouse and the sale are still
+// quoted per metre -- so the rate list stays narrow and rateUnitFor reads from
+// it, never from this one.
+const DOZEN_STAGES = ['Stitched', 'Packed', 'Panchal', 'Third Party'];
 
 const countsDozens = (stage) => DOZEN_STAGES.includes(stage);
+
+// The stages whose RATE is quoted per dozen: job work, where a stitcher is paid
+// by the dozen and a dyer by the metre. Deliberately narrower than DOZEN_STAGES
+// -- see above. Twin of DOZEN_RATE_STAGES on the client, which is where
+// rateUnitFor lives.
+const DOZEN_RATE_STAGES = ['Stitched', 'Packed'];
+
+const pricedPerDozen = (stage) => DOZEN_RATE_STAGES.includes(stage);
 
 // Yield: how many metres it took to make a dozen. NOT STORED -- derived here and
 // on the client from the two numbers that are, to two places.
@@ -290,9 +303,10 @@ const qtyError = (value, label) => {
 
 module.exports = {
   STAGES, STATUS, OPEN_STATUSES, EPSILON,
-  DESTINATIONS, EXIT_STAGE, STOCK_STAGE, DOZEN_STAGES, PARTY_USE_STAGES, CHALLAN_TYPES,
+  DESTINATIONS, EXIT_STAGE, STOCK_STAGE, DOZEN_STAGES, DOZEN_RATE_STAGES,
+  PARTY_USE_STAGES, CHALLAN_TYPES,
   REVERT_REASON_MAX, WRITE_OFF_REASON_MAX, CHALLAN_MAX,
-  isValidStage, isValidPartyUse, isValidChallanType, countsDozens, metresPerDozen,
+  isValidStage, isValidPartyUse, isValidChallanType, countsDozens, pricedPerDozen, metresPerDozen,
   nextStage, destinationsFor, canSendTo,
   effectiveAfterRate, balanceOf, computeStatus, statusSql,
   moneyError, qtyError, revertReasonError, writeOffReasonError, challanError,

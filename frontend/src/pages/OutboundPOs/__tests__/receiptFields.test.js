@@ -11,7 +11,7 @@ const packaging = { qty: 100, received: 0, short: 0 };
 
 // The minimum a receipt needs before the fabric rules are the thing failing.
 const valid = {
-  received_qty: 10, unit_metric: 'taga', received_rate: 10, checked_by: 1, bill_no: 'B-1',
+  received_qty: 10, unit_metric: 'taga', received_rate: 10, bill_no: 'B-1',
   incoming_no: 'IN-1', incoming_stage: 'Gray', qty_in_metres: 400,
 };
 
@@ -93,7 +93,7 @@ describe('receiptFieldError', () => {
 
   test('a packaging receipt needs none of them', () => {
     const bare = {
-      received_qty: 10, unit_metric: 'pcs', received_rate: 10, checked_by: 1, bill_no: 'B-1',
+      received_qty: 10, unit_metric: 'pcs', received_rate: 10, bill_no: 'B-1',
     };
     expect(receiptFieldError(bare, { line: packaging })).toBeNull();
   });

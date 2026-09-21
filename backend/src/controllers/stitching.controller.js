@@ -1,9 +1,10 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
+const { userHasRole } = require('../services/userRoles.service');
 const {
   STAGES, OPEN_STATUSES, EPSILON, isValidStage, nextStage,
   DESTINATIONS, EXIT_STAGE, STOCK_STAGE, destinationsFor, canSendTo,
-  countsDozens, metresPerDozen,
+  countsDozens, DOZEN_STAGES, metresPerDozen,
   PARTY_USE_STAGES, CHALLAN_TYPES, isValidPartyUse, isValidChallanType,
   effectiveAfterRate, statusSql, moneyError, qtyError, challanError,
   revertReasonError, writeOffReasonError,
@@ -103,7 +104,8 @@ WITH lots AS (
     -- worked in metres, and every stage here counts the metres -- so the origin
     -- lot's quantity is the conversion the user entered on the receipt.
     r.qty_in_metres AS received_qty,
-    -- Only ever set on a receipt bought straight in at Stitched or Packed.
+    -- Only ever set on a receipt bought straight in at a stage that counts
+    -- dozens, which is everything from Stitched on.
     r.received_dozens AS received_dozens,
     r.received_rate AS rate,
     -- THE PO RATE: what the fabric was billed at on the purchase order. It is
@@ -123,6 +125,9 @@ WITH lots AS (
     r.process_rate AS process_rate,
     COALESCE(r.after_rate, r.received_rate + COALESCE(r.process_rate, 0)) AS after_rate,
     NULL AS outbound_bill_no, NULL AS party_id,
+    -- The warehouse's own number, set only on a challan sent to Panchal. An
+    -- origin receipt was never sent anywhere, so it has none.
+    NULL AS panchal_incoming_no,
     r.checked_by AS checked_by, kb.name AS checked_by_name,
     r.closed_at AS closed_at, r.closed_by AS closed_by, clb.name AS closed_by_name,
     -- An origin lot arrived on a PO, so it was never written off by us.
@@ -174,6 +179,7 @@ WITH lots AS (
     e.process_rate AS process_rate,
     COALESCE(e.after_rate, 0) AS after_rate,
     e.outbound_bill_no AS outbound_bill_no, e.party_id AS party_id,
+    e.panchal_incoming_no AS panchal_incoming_no,
     e.checked_by AS checked_by, kb.name AS checked_by_name,
     e.closed_at AS closed_at, e.closed_by AS closed_by, clb.name AS closed_by_name,
     -- Present means this row is a write-off rather than a dispatch. One column,
@@ -581,7 +587,9 @@ async function validateEntryFields(body, { requireAll = false, targetStage } = {
       if (err) return err;
     }
   } else if (present('received_dozens') && body.received_dozens != null && body.received_dozens !== '') {
-    return 'Dozens are only counted at the Stitched and Packed stages';
+    // Named off the constant rather than spelled out, because the list has
+    // already grown once and a hand-written message drifts silently.
+    return `Dozens are only counted at ${DOZEN_STAGES.join(', ')}`;
   }
 
   // Sits next to Sent Qty on the form, and is validated here so the first error
@@ -603,17 +611,34 @@ async function validateEntryFields(body, { requireAll = false, targetStage } = {
     if (err) return err;
   }
 
-  // Checked By is no longer asked for, and no longer a qualification.
+  // Checked By is asked at two destinations and stamped everywhere else.
   //
-  // It used to be a required dropdown of Warehouse_POC users, which made every
-  // dispatch wait on picking a name that the person filling the form already
-  // knew: their own. It now records WHO ENTERED THE CHALLAN, taken from the
-  // session, and every logged-in user qualifies to have done that. The column
-  // and the table page's Checked By stay -- only the question goes.
+  // It used to be a required dropdown on every hand-over, which made each one
+  // wait on picking a name the person filling the form already knew: their own.
+  // For a move between job workers it still records WHO ENTERED THE CHALLAN,
+  // taken from the session, and every logged-in user qualifies to have done
+  // that.
   //
-  // Still validated when explicitly supplied, so an API caller cannot attach a
-  // challan to a user id that does not exist.
-  if (present('checked_by') && body.checked_by != null && body.checked_by !== '') {
+  // The two exceptions are the hand-overs that are a genuine second pair of
+  // eyes rather than the typist's own name: goods arriving in OUR warehouse,
+  // and goods leaving the business. There it is a real qualification again, and
+  // the same one the outbound receipt used to enforce -- a user tagged
+  // Warehouse_POC -- with the message strings reproduced verbatim so both
+  // modules reject in identical wording.
+  //
+  // Outside those two it is still validated when explicitly supplied, so an API
+  // caller cannot attach a challan to a user id that does not exist.
+  const checkerRequired = targetStage === STOCK_STAGE || targetStage === EXIT_STAGE;
+  if (checkerRequired && (requireAll || present('checked_by'))) {
+    if (body?.checked_by == null || String(body.checked_by).trim() === '') {
+      return 'Checked By is required';
+    }
+    const { rows } = await db.execute({ sql: 'SELECT id FROM users WHERE id = ?', args: [body.checked_by] });
+    if (!rows.length) return 'Checked By: user not found';
+    if (!(await userHasRole(rows[0].id, 'Warehouse_POC'))) {
+      return 'Checked By must be a user tagged Warehouse_POC';
+    }
+  } else if (present('checked_by') && body.checked_by != null && body.checked_by !== '') {
     const { rows } = await db.execute({ sql: 'SELECT id FROM users WHERE id = ?', args: [body.checked_by] });
     if (!rows.length) return 'Checked By: user not found';
   }
@@ -636,6 +661,28 @@ async function validateEntryFields(body, { requireAll = false, targetStage } = {
     }
   } else if (present('outbound_bill_no') && trimOrNull(body?.outbound_bill_no)) {
     return 'Outbound Bill No applies only to goods sold to a third party';
+  }
+
+  // PCL Inc No belongs to the WAREHOUSE, and only to the warehouse.
+  //
+  // Panchal is ours, not a job worker: what lands there is filed under the
+  // warehouse's own sequence, which is the number someone quotes when they go
+  // looking for the stock on a shelf. It is deliberately NOT the incoming_no
+  // carried down the chain -- that suffix is inherited from the parent and is
+  // the only thing tying a Panchal lot back to the fabric it was cut from, so
+  // the two are separate columns rather than one overwriting the other.
+  //
+  // Rejected elsewhere rather than ignored, the same way the bill number above
+  // is, so a warehouse number typed against a dyeing challan surfaces as a
+  // question instead of vanishing.
+  if (targetStage === STOCK_STAGE) {
+    if (requireAll || present('panchal_incoming_no')) {
+      const pcl = trimOrNull(body?.panchal_incoming_no);
+      if (!pcl) return 'PCL Inc No is required when sending to Panchal';
+      if (pcl.length > TEXT_MAX) return `PCL Inc No must be ${TEXT_MAX} characters or less`;
+    }
+  } else if (present('panchal_incoming_no') && trimOrNull(body?.panchal_incoming_no)) {
+    return 'PCL Inc No applies only to goods sent to Panchal';
   }
 
   if (present('challan_no') && body.challan_no != null && body.challan_no !== '') {
@@ -767,6 +814,8 @@ async function create(req, res, next) {
     const challanNo = trimOrNull(req.body.challan_no);
     const challanType = trimOrNull(req.body.challan_type);
     const outboundBillNo = targetStage === EXIT_STAGE ? trimOrNull(req.body.outbound_bill_no) : null;
+    const panchalIncomingNo = targetStage === STOCK_STAGE
+      ? trimOrNull(req.body.panchal_incoming_no) : null;
     const receivedDozens = countsDozens(targetStage) ? numOrNull(req.body.received_dozens) : null;
     // Who entered this, not who was picked for it. An explicit value is still
     // honoured so an import or a correction can name someone else.
@@ -808,16 +857,17 @@ async function create(req, res, next) {
         // moment now, so the value is true rather than vestigial.
         sql: `INSERT INTO stitching_entries
                 (stage, origin_receipt_id, parent_receipt_id, parent_entry_id, party_name,
-                 challan_no, challan_type, outbound_bill_no, incoming_prefix_id, incoming_no,
+                 challan_no, challan_type, outbound_bill_no, panchal_incoming_no,
+                 incoming_prefix_id, incoming_no,
                  sent_qty, received_qty, received_dozens, process_rate, after_rate, checked_by,
                  received_at, received_by, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)
               RETURNING id`,
         args: [
           targetStage, originReceiptId,
           parentSrc === 'receipt' ? parent.id : null,
           parentSrc === 'entry' ? parent.id : null,
-          partyName, challanNo, challanType, outboundBillNo,
+          partyName, challanNo, challanType, outboundBillNo, panchalIncomingNo,
           numbering.prefixId, numbering.incomingNo,
           sentQty, receivedQty, receivedDozens, processRate, afterRate, checkedBy,
           req.user.id, req.user.id, req.user.id,
@@ -1011,6 +1061,8 @@ async function update(req, res, next) {
       challan_type: has('challan_type') ? trimOrNull(req.body.challan_type) : current.challan_type,
       outbound_bill_no: has('outbound_bill_no')
         ? trimOrNull(req.body.outbound_bill_no) : current.outbound_bill_no,
+      panchal_incoming_no: has('panchal_incoming_no')
+        ? trimOrNull(req.body.panchal_incoming_no) : current.panchal_incoming_no,
       incoming_prefix_id: has('incoming_prefix_id') ? numOrNull(req.body.incoming_prefix_id) : current.incoming_prefix_id,
       incoming_no: has('incoming_no') ? trimOrNull(req.body.incoming_no) : current.incoming_no,
       sent_qty: nextSentQty,
@@ -1029,13 +1081,14 @@ async function update(req, res, next) {
       if (changes.length) {
         await tx.execute({
           sql: `UPDATE stitching_entries SET party_name = ?, challan_no = ?, challan_type = ?,
-                  outbound_bill_no = ?, incoming_prefix_id = ?, incoming_no = ?,
+                  outbound_bill_no = ?, panchal_incoming_no = ?,
+                  incoming_prefix_id = ?, incoming_no = ?,
                   sent_qty = ?, received_qty = ?, received_dozens = ?,
                   process_rate = ?, after_rate = ?, checked_by = ?,
                   updated_by = ?, updated_at = datetime('now')
                 WHERE id = ?`,
           args: [next.party_name, next.challan_no, next.challan_type, next.outbound_bill_no,
-            next.incoming_prefix_id,
+            next.panchal_incoming_no, next.incoming_prefix_id,
             next.incoming_no, next.sent_qty, next.received_qty, next.received_dozens, next.process_rate,
             next.after_rate, next.checked_by, req.user.id, id],
         });

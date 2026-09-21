@@ -14,7 +14,7 @@ import {
 export const INCOMING_NO_MAX = 50;
 
 export const EMPTY_RECEIPT = {
-  received_qty: '', unit_metric: '', received_rate: '', bill_no: '', incoming_no: '', checked_by: '',
+  received_qty: '', unit_metric: '', received_rate: '', bill_no: '', incoming_no: '',
   process_rate: '', after_rate: '', incoming_stage: '',
   qty_in_metres: '', received_dozens: '', qty_diff_action: '', qty_diff_reason: '',
 };
@@ -79,10 +79,11 @@ export function toLineState(l) {
 // server.
 export const RECEIPT_STAGES = STAGES.filter(s => s !== 'Third Party');
 
-// Fabric bought in ALREADY STITCHED or ALREADY PACKED arrives as countable
-// pieces, so it carries a dozen count exactly as a challan into those stages
-// does. Keyed on the stage being received at, not on fabric alone: a Gray
-// receipt has no pieces to count.
+// Fabric bought in ALREADY STITCHED, PACKED or straight into the warehouse
+// arrives as countable pieces, so it carries a dozen count exactly as a challan
+// into those stages does. Keyed on the stage being received at, not on fabric
+// alone: a Gray receipt has no pieces to count. Reads countsDozens, so it
+// widened with DOZEN_STAGES rather than needing its own list.
 export const receiptCountsDozens = (line, incomingStage) =>
   isFabricLine(line) && countsDozens(incomingStage);
 
@@ -124,7 +125,6 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
   if (!v.received_qty || Number(v.received_qty) <= 0) return 'Received Qty is required';
   if (v.received_rate === '' || v.received_rate == null) return 'Billed Rate is required';
   if (!Number.isFinite(Number(v.received_rate)) || Number(v.received_rate) < 0) return 'Billed Rate must be a number >= 0';
-  if (!v.checked_by) return 'Checked By is required';
   if (requireBillNo && !String(v.bill_no ?? '').trim()) return 'Bill No is required';
   if (v.incoming_no !== '' && v.incoming_no != null) {
     const s = String(v.incoming_no).trim();
@@ -199,13 +199,3 @@ export function stageOptionsFor() {
   return RECEIPT_STAGES.map(stage => ({ value: stage, label: stage }));
 }
 
-// If a receipt's stored checker isn't in the live Warehouse_POC list (tagged
-// before the rule existed, or since untagged), keep them selectable so the
-// dropdown doesn't silently blank out a real recorded value.
-export function checkerOptionsFor(checkers, checkedById, checkedByName) {
-  const opts = (checkers || []).map(u => ({ value: u.id, label: u.name }));
-  if (checkedById && !opts.some(o => String(o.value) === String(checkedById))) {
-    opts.push({ value: checkedById, label: `${checkedByName || 'Unknown'} (not Warehouse POC)` });
-  }
-  return opts;
-}

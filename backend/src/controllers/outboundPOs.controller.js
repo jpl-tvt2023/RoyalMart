@@ -1,13 +1,12 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
-const { userHasRole } = require('../services/userRoles.service');
 const { isValidDateString } = require('../utils/dateValidation');
 const {
   FLAG_KEYS, RECEIPT_FLAG_KEYS, poFlagExists, lineFlagExists, receiptFlags, pickFlags, flagSelect,
 } = require('../services/outboundPOFlags');
 const { pairKey, unitMetricsByPair } = require('../services/outboundProducts.service');
 const {
-  effectiveAfterRate, moneyError, qtyError, EPSILON, isValidStage, STAGES, countsDozens,
+  effectiveAfterRate, moneyError, qtyError, EPSILON, isValidStage, STAGES, countsDozens, DOZEN_STAGES,
 } = require('../services/stitching.service');
 
 const VALID_STATUSES = ['Open', 'Partially Received', 'Closed'];
@@ -237,10 +236,9 @@ async function catalogUnitMetrics() {
 //
 // Billed Rate (received_rate) is the rate the vendor actually invoiced, as
 // distinct from the line's agreed rate — it is mandatory, because the whole
-// point of the Rate Mismatch flag is to compare the two. Checked By must be a
-// user actually tagged Warehouse_POC: userHasRole is the strict variant, so
-// Admin/Owner do NOT implicitly qualify, matching how POC assignment behaves
-// elsewhere. Bill No is mandatory too — a receipt records a delivery against a
+// point of the Rate Mismatch flag is to compare the two. Checked By is no
+// longer asked for and no longer a qualification -- see the note on it below.
+// Bill No is mandatory — a receipt records a delivery against a
 // vendor's bill, so it has one by definition. Incoming No stays optional (a
 // receipt without one is flagged, not blocked). It is free text — the warehouse
 // gate register uses alphanumeric ids like IN-4521 — so the only rules are that
@@ -320,17 +318,30 @@ async function validateReceiptFields(body, { requireAll, line }) {
     if (!Number.isFinite(rate) || rate < 0) return 'Billed Rate must be a number >= 0';
   }
 
-  if (requireAll || present('checked_by')) {
-    if (blank(body?.checked_by)) return 'Checked By is required';
-    const [checkedById, err] = await resolveUserRef(body.checked_by, 'Checked By');
+  // Checked By is no longer asked for on a receipt, and no longer a
+  // qualification here.
+  //
+  // It used to be a required dropdown of Warehouse_POC users on every single
+  // goods receipt, which made each one wait on picking a name the person
+  // filling the form already knew: their own. It now records WHO ENTERED THE
+  // RECEIPT, taken from the session. The column and the detail page's Checked
+  // By column stay -- only the question goes.
+  //
+  // The real second-pair-of-eyes check moved to the two points in the stitching
+  // chain where the goods genuinely change hands: into Panchal, and out to a
+  // third party. stitching.controller.js enforces the Warehouse_POC rule there,
+  // reusing these message strings verbatim.
+  //
+  // Still validated when explicitly supplied, so an API caller cannot attach a
+  // receipt to a user id that does not exist.
+  if (present('checked_by') && !blank(body?.checked_by)) {
+    const [, err] = await resolveUserRef(body.checked_by, 'Checked By');
     if (err) return err;
-    if (!(await userHasRole(checkedById, 'Warehouse_POC'))) {
-      return 'Checked By must be a user tagged Warehouse_POC';
-    }
   }
 
-  // Deliberately after checked_by: several tests assert on the FIRST error a
-  // body with multiple omissions produces, and that ordering is the contract.
+  // Several tests assert on the FIRST error a body with multiple omissions
+  // produces, and that ordering is the contract -- so Bill No keeps the slot it
+  // has always had rather than moving up now that Checked By is optional.
   if (requireAll || present('bill_no')) {
     if (blankText(body?.bill_no)) return 'Bill No is required';
   }
@@ -388,17 +399,18 @@ async function validateReceiptFields(body, { requireAll, line }) {
     return 'Qty in metres is required';
   }
 
-  // Fabric bought in ALREADY STITCHED or ALREADY PACKED arrives as countable
-  // pieces, so it carries a dozen count exactly as a challan into those stages
-  // does -- otherwise such a lot would sit on the Stitched or Packed tab as the
-  // only row with no yield, which reads as missing data rather than as a
+  // Fabric bought in ALREADY STITCHED, PACKED or straight into the warehouse
+  // arrives as countable pieces, so it carries a dozen count exactly as a
+  // challan into those stages does -- otherwise such a lot would sit on its tab
+  // as the only row with no yield, which reads as missing data rather than as a
   // different kind of row.
   //
   // Keyed on the stage being RECEIVED AT, not on fabric alone: a Gray receipt
-  // has no pieces to count.
+  // has no pieces to count. Third Party never reaches here -- RECEIPT_STAGES
+  // rejects it above, because nothing is received at the exit.
   const dozenStage = fabric && countsDozens(String(body?.incoming_stage ?? '').trim());
   if (present('received_dozens') && !blank(body?.received_dozens)) {
-    if (!dozenStage) return 'Dozens are only counted on fabric received at the Stitched or Packed stage';
+    if (!dozenStage) return `Dozens are only counted on fabric received at ${DOZEN_STAGES.join(', ')}`;
     const err = qtyError(body.received_dozens, 'Dozens Received');
     if (err) return err;
   } else if (dozenStage && requireAll) {
@@ -1202,7 +1214,10 @@ async function createReceipt(req, res, next) {
     if (validationError) return res.status(400).json({ message: validationError });
     const receivedRate = Number(req.body.received_rate);
     const billNo = req.body?.bill_no != null ? (String(req.body.bill_no).trim() || null) : null;
-    const checkedBy = Number(req.body.checked_by);
+    // Whoever entered the receipt, unless a caller names someone else.
+    const checkedBy = req.body.checked_by == null || req.body.checked_by === ''
+      ? req.user.id
+      : Number(req.body.checked_by);
     const incomingNo = req.body?.incoming_no != null
       ? (String(req.body.incoming_no).trim() || null) : null;
 

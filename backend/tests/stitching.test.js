@@ -18,7 +18,12 @@ const uid = () => Math.random().toString(36).slice(2, 8);
 const challanNo = (tag = 'C') => `${tag}-${uid()}`;
 const A = (r) => r.set('Authorization', `Bearer ${token}`);
 
-const { DESTINATIONS, DOZEN_STAGES } = require('../src/services/stitching.service');
+const {
+  DESTINATIONS, DOZEN_STAGES, STOCK_STAGE, EXIT_STAGE,
+} = require('../src/services/stitching.service');
+
+// The two destinations that ask who checked the goods over.
+const CHECKER_STAGES = [STOCK_STAGE, EXIT_STAGE];
 
 // Where a forward will land if the caller named no target: the parent's first
 // destination, which is exactly what create() falls back to.
@@ -62,6 +67,15 @@ const api = {
         ? { received_qty: body.sent_qty } : {}),
       ...(DOZEN_STAGES.includes(target) && body.received_dozens === undefined
         ? { received_dozens: 12 } : {}),
+      // Checked By is a real question at the two destinations where the goods
+      // change hands for good -- the warehouse and the exit -- and is stamped
+      // from the session everywhere else. Supplied here for the same reason the
+      // dozen count is: so a test walking the chain does not have to know.
+      ...(CHECKER_STAGES.includes(target) && body.checked_by === undefined
+        ? { checked_by: warehousePocId } : {}),
+      // Panchal files what it takes in under its own number.
+      ...(target === STOCK_STAGE && body.panchal_incoming_no === undefined
+        ? { panchal_incoming_no: `PCL-${uid()}` } : {}),
       ...body,
     });
   },
@@ -1061,7 +1075,7 @@ describe('Closing a Panchal lot', () => {
   test('a receipt bought straight at the Panchal stage closes identically', async () => {
     const { poId, lineId } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal',
+      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal', received_dozens: 20,
     });
 
     let panchal = await api.listStage({ stage: 'Panchal' });
@@ -1186,7 +1200,7 @@ describe('Open-lot counts per stage', () => {
     // so filtering by that name isolates this test from every other row.
     const { poId, lineId, vendorName } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal',
+      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal', received_dozens: 20,
     });
 
     expect((await api.counts({ party_name: vendorName })).body.counts.Panchal).toBe(1);
@@ -2198,7 +2212,9 @@ describe('Dozens and yield at Stitched and Packed', () => {
       sent_qty: 100, received_qty: 100, received_dozens: 40,
     });
     expect(r.status).toBe(400);
-    expect(r.body.message).toMatch(/only counted at the Stitched and Packed/);
+    // Gray is before there are any pieces, so the count is refused there --
+    // the message names the stages that do count, off the constant.
+    expect(r.body.message).toMatch(/only counted at Stitched, Packed, Panchal, Third Party/);
   });
 
   // Sending onward stays in metres: the chain never changes unit mid-stream.
@@ -2252,7 +2268,7 @@ describe('Dozens and yield at Stitched and Packed', () => {
       incoming_no: `K-${uid()}`, incoming_stage: 'Gray', received_dozens: 25,
     });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/Stitched or Packed/);
+    expect(res.body.message).toMatch(/only counted on fabric received at Stitched, Packed, Panchal, Third Party/);
   });
 });
 
