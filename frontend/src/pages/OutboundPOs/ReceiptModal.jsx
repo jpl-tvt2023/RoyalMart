@@ -3,7 +3,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
 import { addOutboundPOLineReceipt, updateOutboundPOLineReceipt } from '../../api/outboundPOs.api';
-import { fmtNum } from '../../utils/stitching';
+import { fmtNum, STOCK_STAGE } from '../../utils/stitching';
 import {
   EMPTY_RECEIPT, INCOMING_NO_MAX,
   receiptFieldError, withDerivedAfterRate, stageOptionsFor,
@@ -144,7 +144,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
   // Only fabric has a stage and a metres figure. Everything else on an outbound
   // PO is received and done with -- it travels no stage chain.
   const fabric = isFabricLine(line);
-  // Only fabric received AT Stitched or Packed has pieces to count. The stage is
+  // Only fabric received at Stitching or later has pieces to count. The stage is
   // part of the form, so this follows whatever the user has picked.
   const dozens = receiptCountsDozens(line, form.incoming_stage);
   const perDozen = metresPerDozen(form.qty_in_metres, form.received_dozens);
@@ -155,7 +155,13 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
   const hadBillNo = !isAdd && !!String(receipt.bill_no ?? '').trim();
 
   useEffect(() => {
-    setForm(isAdd ? { ...EMPTY_RECEIPT, unit_metric: line.unit_metric || '' } : {
+    setForm(isAdd ? {
+      ...EMPTY_RECEIPT,
+      unit_metric: line.unit_metric || '',
+      // Fabric starts at the first stage that works on it, so that is what a
+      // new receipt offers. Picking a later stage is the exception.
+      incoming_stage: fabric ? stageOptionsFor()[0]?.value || '' : '',
+    } : {
       received_qty: receipt.received_qty ?? '',
       // A receipt taken before migration 084 has none of its own, so it shows
       // the line's -- which is the unit it was counted in, just never recorded.
@@ -176,7 +182,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
       qty_diff_action: receipt.qty_diff_action ?? '',
       qty_diff_reason: receipt.qty_diff_reason ?? '',
     });
-  }, [receipt, isAdd, line.unit_metric]);
+  }, [receipt, isAdd, line.unit_metric, fabric]);
 
   const setField = (field, value) => setForm(f => withDerivedAfterRate(f, field, value));
 
@@ -381,9 +387,14 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
           <Field
             label="Incoming No"
             required={fabric}
-            hint={fabric
-              ? 'The stage records where these goods arrived — the code that prints on it follows from it'
-              : 'Free text — the gate register reference'}
+            hint={!fabric
+              ? 'Free text — the gate register reference'
+              // Panchal is the end of the chain, so goods bought straight into
+              // it have nothing left to happen to them. The server closes the
+              // lot on save, and this says so before it happens.
+              : form.incoming_stage === STOCK_STAGE
+                ? `Goods received straight into ${STOCK_STAGE} are the end of the chain — this receipt will be recorded as Closed`
+                : 'The stage records where these goods arrived — the code that prints on it follows from it'}
             className="sm:col-span-2"
           >
             <div className="flex gap-2">

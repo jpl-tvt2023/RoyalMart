@@ -24,7 +24,10 @@ export default function WriteOffModal({ lot, onClose, onSaved }) {
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const unit = lot?.unit_metric;
+  // In the lot's own unit: metres at Processing, dozens from Stitching on --
+  // the same unit its balance is kept in and the server writes it off in.
+  const unit = lot?.balance_unit === 'dz' ? 'dz' : 'm';
+  const serverUnit = unit === 'dz' ? ' dozen' : 'm';
 
   // Mirrors the server's rules AND their order.
   const fieldError = () => {
@@ -33,7 +36,7 @@ export default function WriteOffModal({ lot, onClose, onSaved }) {
     const qErr = qtyError(qty, 'Qty');
     if (qErr) return qErr;
     if (Number(qty) - Number(lot.balance) > EPSILON) {
-      return `Cannot write off ${qty} — only ${fmtQty(lot.balance, unit)} is left on this lot`;
+      return `Cannot write off ${qty}${serverUnit} — only ${lot.balance}${serverUnit} is left on this lot`;
     }
     return null;
   };

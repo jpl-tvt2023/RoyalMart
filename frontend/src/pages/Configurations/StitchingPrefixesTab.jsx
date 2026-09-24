@@ -15,7 +15,7 @@ import {
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
 const thCls = 'px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide';
 
-const EMPTY_FORM = { prefix: '', stage: 'Gray' };
+const EMPTY_FORM = { prefix: '', stage: 'Processing' };
 
 /**
  * The incoming-number prefix master.

@@ -442,11 +442,11 @@ export default function OutboundPODetail() {
                 normal sizes; min-w floors it so a tablet or a heavily zoomed
                 browser scrolls instead of crushing the columns to nothing. */}
             <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
-              <table className="w-full min-w-[1150px] text-xs xl:text-sm">
+              <table className="w-full min-w-[1050px] text-xs xl:text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
                     <th className={`${thCls} w-10`}>Line</th>
-                    <th className={`${thCls} min-w-[200px]`}>Article (Category · Item · Variant)</th>
+                    <th className={`${thCls} w-52`}>Article (Category · Item · Variant)</th>
                     <th className={`${thCls} w-20`}>Qty</th>
                     <th className={`${thCls} w-14`}>UM</th>
                     <th className={`${thCls} w-20`}>Rate</th>
@@ -474,7 +474,7 @@ export default function OutboundPODetail() {
                         <th className={`${thCls} w-20`}>Qty in metres</th>
                         {/* Only fabric bought in ALREADY stitched or packed has
                             pieces to count, so this is blank on most rows —
-                            including every Gray one. */}
+                            including every Processing one. */}
                         <th className={`${thCls} w-16`}>Dozens</th>
                         <th className={`${thCls} w-16`}>Rate <span className="text-red-500">*</span></th>
                         <th className={`${thCls} w-16`}>Process</th>
@@ -512,15 +512,27 @@ export default function OutboundPODetail() {
                               <>
                                 <td rowSpan={rowCount} className={`${tdCls} text-gray-700 align-top`}>{displayNo ?? '—'}</td>
                                 <td rowSpan={rowCount} className={`${tdCls} align-top`}>
-                                  <select
-                                    value={l.mapping}
-                                    onChange={e => pickMapping(l._key, e.target.value)}
-                                    disabled={readOnly || !po.vendor_id || !!l.deleted_at}
-                                    className={cellCls}
-                                  >
-                                    <option value="">{po.vendor_id ? 'Select article...' : 'Select vendor first'}</option>
-                                    {mappingOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                                  </select>
+                                  {/* A line nobody can re-pick reads as wrapped text, so a
+                                      long article name costs height, not width. An
+                                      editable one keeps the select, narrower, with the
+                                      full name on hover. */}
+                                  {(readOnly || l.deleted_at) && l.item_name ? (
+                                    <div className="w-52 whitespace-normal break-words leading-snug">
+                                      <div className="text-[11px] text-gray-400">{l.category}</div>
+                                      <div className="text-gray-700">{l.item_name}{l.variant ? ` · ${l.variant}` : ''}</div>
+                                    </div>
+                                  ) : (
+                                    <select
+                                      value={l.mapping}
+                                      onChange={e => pickMapping(l._key, e.target.value)}
+                                      disabled={readOnly || !po.vendor_id || !!l.deleted_at}
+                                      title={l.item_name ? mapLabel(l) : undefined}
+                                      className={cellCls}
+                                    >
+                                      <option value="">{po.vendor_id ? 'Select article...' : 'Select vendor first'}</option>
+                                      {mappingOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                    </select>
+                                  )}
                                 </td>
                                 <td rowSpan={rowCount} className={`${tdCls} align-top`}>
                                   <input type="number" min={0.01} step="0.01" value={l.qty} onChange={e => setLine(l._key, { qty: e.target.value })} disabled={readOnly || !!l.deleted_at} className={cellCls} />
@@ -621,7 +633,7 @@ export default function OutboundPODetail() {
                                     <td className={`${tdCls} text-gray-600`}>
                                       {/* Blank unless the goods arrived as
                                           countable pieces: fabric received at
-                                          Stitched or Packed. */}
+                                          Stitching, Packing or Panchal. */}
                                       {receipt.received_dozens == null ? '' : num(receipt.received_dozens)}
                                     </td>
                                     <td

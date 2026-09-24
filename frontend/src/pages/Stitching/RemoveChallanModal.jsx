@@ -5,6 +5,10 @@ import Button from '../../components/ui/Button';
 import { removeStitchingChallan } from '../../api/stitching.api';
 import { REVERT_REASON_MAX, revertReasonError, fmtQty } from '../../utils/stitching';
 
+// What the row took, in the unit it was taken in: dozens out of a lot that
+// counts them, metres out of Processing.
+const tookText = (c) => (c.sent_dozens != null ? fmtQty(c.sent_dozens, 'dz') : fmtQty(c.sent_qty, 'm'));
+
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
 
 /**
@@ -48,7 +52,7 @@ export default function RemoveChallanModal({ challan, onClose, onSaved }) {
             <>
               The write-off of{' '}
               <span className="font-semibold text-[#003049]">
-                {fmtQty(challan.sent_qty, challan.unit_metric)}
+                {tookText(challan)}
               </span>{' '}
               stops counting as gone, and that quantity is available again on the lot it was taken
               from. It is kept as a record, struck through, not deleted.
@@ -57,7 +61,7 @@ export default function RemoveChallanModal({ challan, onClose, onSaved }) {
             <>
               Challan <span className="font-semibold text-[#003049]">{challan.challan_no || '—'}</span> for{' '}
               <span className="font-semibold text-[#003049]">
-                {fmtQty(challan.sent_qty, challan.unit_metric)}
+                {tookText(challan)}
               </span>{' '}
               to {challan.party_name} stops counting as sent, and that quantity is available again on
               the lot it was taken from. The challan is kept as a record, struck through, not deleted.

@@ -4,11 +4,14 @@ import { useSessionState } from '../../hooks/useSessionState';
 import { STAGES, ALL_TAB, STAGE_TABS } from '../../utils/stitching';
 import StageTab from './StageTab';
 
+// Named for the work being done at each stage. Metres until Processing is
+// done with the fabric, dozens from Stitching on.
 const SUBTITLES = {
-  Gray: 'Fabric as received, before any processing',
-  Processed: 'Fabric back from the processing house',
-  Stitched: 'Fabric back from the stitching unit',
-  Packed: 'Finished and closed — the end of the chain',
+  Processing: 'Fabric at the processing house — counted in metres',
+  Stitching: 'Goods with the stitching unit — counted in dozens from here on',
+  Packing: 'Goods being packed — counted in dozens',
+  Panchal: 'Stock in our warehouse — the end of the chain',
+  'Third Party': 'Goods sold out of the business against an outbound bill',
   [ALL_TAB]: 'Every stage in one list — filter by PO No to follow a single chain',
 };
 
@@ -20,11 +23,11 @@ const countFor = (tab, counts) => (
 );
 
 export default function StitchingPage() {
-  const [storedTab, setTab] = useSessionState('stitching.tab', 'Gray');
-  // A session holding a stage name from an earlier layout would otherwise render
-  // no body and highlight no tab. Validated against STAGE_TABS, not STAGES, or a
-  // session left on All would silently snap back to Gray.
-  const tab = STAGE_TABS.includes(storedTab) ? storedTab : 'Gray';
+  const [storedTab, setTab] = useSessionState('stitching.tab', STAGES[0]);
+  // A session holding a stage name from an earlier layout (Gray, Processed...)
+  // would otherwise render no body and highlight no tab. Validated against
+  // STAGE_TABS, not STAGES, or a session left on All would snap back.
+  const tab = STAGE_TABS.includes(storedTab) ? storedTab : STAGES[0];
 
   // Open-lot counts, reported up by whichever StageTab is mounted — it owns the
   // filters the counts are scoped by, so it is the only thing that can ask for

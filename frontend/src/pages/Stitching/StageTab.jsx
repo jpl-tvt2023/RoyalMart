@@ -14,8 +14,8 @@ import {
   closeStitchingLot, reopenStitchingLot,
 } from '../../api/stitching.api';
 import {
-  STATUSES, STATUS_COLORS, fmtNum, fmtQty, EPSILON, ALL_TAB,
-  STAGES, EXIT_STAGE, STOCK_STAGE, rateLadderStages, countsDozens, NONE_SELECTED,
+  STATUSES, STATUS_COLORS, fmtNum, EPSILON, ALL_TAB,
+  EXIT_STAGE, STOCK_STAGE, countsDozens, metresPerDozen, NONE_SELECTED,
 } from '../../utils/stitching';
 import MultiSelect from '../../components/ui/MultiSelect';
 import { formatDateTime } from '../../utils/formatters';
@@ -68,26 +68,286 @@ function downloadRows(filename, columns, rows) {
   XLSX.writeFile(wb, `${filename}-${stamp}.xlsx`);
 }
 
+// A hover card for the two numbers on this page that need their working shown:
+// the rate total and the metres per dozen. Positioned FIXED off the trigger's
+// own rectangle rather than absolutely inside the cell, because the table
+// scrolls sideways -- and an overflow container clips anything absolute inside
+// it, which would cut the card off at the table's edge.
+function HoverTip({ content, children }) {
+  const [pos, setPos] = useState(null);
+  const show = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    // Kept inside the viewport: 320 is the card's width.
+    setPos({ top: r.bottom + 6, left: Math.max(8, Math.min(r.left, window.innerWidth - 328)) });
+  };
+  return (
+    <span
+      onMouseEnter={show}
+      onMouseLeave={() => setPos(null)}
+      onFocus={show}
+      onBlur={() => setPos(null)}
+      tabIndex={0}
+      className="cursor-help underline decoration-dotted decoration-gray-300 underline-offset-2 outline-none"
+    >
+      {children}
+      {pos && (
+        <span
+          role="tooltip"
+          style={{ top: pos.top, left: pos.left }}
+          className="fixed z-50 block w-80 rounded-lg border border-gray-200 bg-white p-3 text-xs font-normal text-gray-600 shadow-lg whitespace-normal no-underline"
+        >
+          {content}
+        </span>
+      )}
+    </span>
+  );
+}
+
+const unitLabel = (unit) => (unit === 'dozen' ? 'dz' : 'm');
+
+// ONE rate per lot: what a dozen of it has cost so far, every stage included.
+// The server builds it (rateTotal in stitching.service.js) and hands back the
+// working, which the card lays out line by line: each rate as it was entered,
+// how a per-metre one was turned into a per-dozen one, and the sum.
+function RateCell({ r }) {
+  if (r.rate_total == null) return <span className="text-gray-300">—</span>;
+  const perDozen = r.rate_total_unit === 'dozen';
+  const content = (
+    <>
+      <span className="block font-semibold text-[#003049] mb-1">
+        How the {perDozen ? 'per-dozen' : 'per-metre'} rate adds up
+      </span>
+      {(r.rate_breakdown || []).map(l => (
+        <span key={l.label} className="flex justify-between gap-3 py-0.5">
+          <span>{l.label}</span>
+          <span className="font-mono text-right">
+            {l.unit === 'metre' && perDozen
+              ? `${fmtNum(l.rate)}/m × ${fmtNum(r.metres_per_dozen)} m/dz = ${fmtNum(l.contributes)}`
+              : `${fmtNum(l.contributes ?? l.rate)}/${unitLabel(l.unit)}`}
+          </span>
+        </span>
+      ))}
+      <span className="flex justify-between gap-3 border-t border-gray-100 mt-1 pt-1 font-semibold text-[#003049]">
+        <span>Total</span>
+        <span className="font-mono">{fmtNum(r.rate_total)}/{perDozen ? 'dz' : 'm'}</span>
+      </span>
+      <span className="block mt-2 text-[11px] text-gray-400">
+        {perDozen
+          ? `Rates quoted per metre are turned into per-dozen by multiplying by the metres it takes to make a dozen (${fmtNum(r.metres_per_dozen)} m).`
+          : 'This lot is still in metres, so the rate is per metre. It becomes per dozen once the goods are counted in dozens.'}
+      </span>
+    </>
+  );
+  return (
+    <HoverTip content={content}>
+      {fmtNum(r.rate_total)}<span className="text-gray-400">/{perDozen ? 'dz' : 'm'}</span>
+    </HoverTip>
+  );
+}
+
+// Metres per dozen, with where it came from in plain words. A lot sent on from
+// Stitching records dozens only, so its figure is CARRIED from the challan (or
+// PO receipt) where fabric was first counted in dozens -- and the card says so,
+// rather than leaving a number nobody can trace.
+function YieldCell({ r }) {
+  if (r.metres_per_dozen == null) return <span className="text-gray-300">—</span>;
+  const s = r.m_per_dozen_source;
+  let content;
+  if (!s) {
+    content = `${fmtNum(r.metres_per_dozen)} metres of fabric made each dozen.`;
+  } else {
+    const how = `${fmtNum(s.metres)} m of fabric became ${fmtNum(s.dozens)} dozen, so each dozen took ${fmtNum(r.metres_per_dozen)} m.`;
+    const where = s.kind === 'receipt'
+      ? `the PO receipt (bought in at ${s.stage})`
+      : `challan ${s.challan_no || '—'}${s.challan_type ? ` (${s.challan_type})` : ''} out of ${s.stage}`;
+    content = s.carried
+      ? `Carried over from ${where}: ${how} After that the goods are counted in dozens only, so the metres per dozen stays the same.`
+      : `From ${where}: ${how}`;
+  }
+  return <HoverTip content={content}>{fmtNum(r.metres_per_dozen)}</HoverTip>;
+}
+
+const qtyWithUnit = (value, unit) => (value == null ? '—' : `${fmtNum(value)} ${unit === 'dz' ? 'dz' : 'm'}`);
+
+// The lines of one challan share its number, party and destination, and arrive
+// from the server in the order they were written -- so consecutive rows with
+// the same three are one challan. Write-offs never group: each is its own event.
+function groupOutgoing(outgoing) {
+  const groups = [];
+  for (const c of outgoing || []) {
+    const key = c.is_write_off ? `wo:${c.id}` : `${c.challan_no}|${c.party_name}|${c.stage}`;
+    const last = groups[groups.length - 1];
+    if (last && last.key === key && !c.is_write_off) last.lines.push(c);
+    else groups.push({ key, lines: [c] });
+  }
+  return groups;
+}
+
+// What one challan line took out of its lot, in the lot's unit. Out of
+// Processing that is metres, with the dozens they came back as and the yield
+// beside them; out of a dozen stage it is dozens and nothing else.
+function lineQty(c, parentUnit) {
+  if (parentUnit === 'dz') {
+    return <>sent <span className="font-medium text-gray-700">{fmtNum(c.sent_dozens)} dz</span></>;
+  }
+  const mpd = metresPerDozen(c.sent_qty, c.received_dozens);
+  return (
+    <>
+      sent <span className="font-medium text-gray-700">{fmtNum(c.sent_qty)} m</span>
+      {c.received_dozens != null && <> → <span className="font-medium text-gray-700">{fmtNum(c.received_dozens)} dz</span></>}
+      {mpd != null && <span className="text-gray-400"> · {fmtNum(mpd)} m/dz</span>}
+    </>
+  );
+}
+
+// Everything that has LEFT a lot, nested beneath it the way receipts sit under
+// a PO line: challans sent on, and material written off. A challan with more
+// than one line gets a total row ABOVE its lines, so the whole challan reads
+// before its parts.
+function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
+  const unit = lot.balance_unit;
+  const rowActions = (c) => (
+    <td className={tdCls}>
+      <div className="flex items-center gap-1">
+        {/* Correct a challan line in place. Gated the same way withdrawing is:
+            once material has moved on from it, or it has been closed, changing
+            what it says would leave the chain describing something that did
+            not happen. A write-off is withdrawn and re-raised instead. */}
+        {c.can_remove && !c.is_write_off && (
+          <button type="button" onClick={() => onEdit(c)} title="Edit this challan line"
+            className="p-1.5 rounded hover:bg-blue-50 text-blue-600">
+            <Pencil size={14} />
+          </button>
+        )}
+        {c.can_remove && (
+          <button type="button" onClick={() => onRemove(c)}
+            title={c.is_write_off ? 'Withdraw this write-off — entered in error' : 'Withdraw this challan line — entered in error'}
+            className="p-1.5 rounded hover:bg-amber-50 text-amber-600">
+            <Undo2 size={14} />
+          </button>
+        )}
+      </div>
+    </td>
+  );
+
+  const challanHead = (c) => (
+    <>
+      <span className="text-gray-400">Challan</span>
+      <span className="font-mono text-[#003049]">{c.challan_no || '—'}</span>
+      {/* Where it went. Obvious on a one-destination stage, load-bearing
+          anywhere the lot branched. */}
+      <span className="text-gray-400">→ <span className="text-gray-600">{c.stage}</span></span>
+      <span className="text-gray-500">{c.party_name}</span>
+      {c.outbound_bill_no && (
+        <span className="text-gray-400">bill <span className="font-mono text-gray-600">{c.outbound_bill_no}</span></span>
+      )}
+    </>
+  );
+
+  const lineBody = (c) => (
+    <>
+      {c.challan_type && <Badge color="gray">{c.challan_type}</Badge>}
+      <span className="text-gray-400">{lineQty(c, unit)}</span>
+      <Badge color={STATUS_COLORS[c.status] || 'gray'}>{c.status}</Badge>
+      <span className="font-mono text-[11px] text-gray-400">{c.incoming_prefix || ''}{c.incoming_no || ''}</span>
+    </>
+  );
+
+  return groupOutgoing(lot.outgoing).map(g => {
+    const [first] = g.lines;
+    if (first.is_write_off) {
+      return (
+        <tr key={g.key} className="bg-gray-50/40">
+          <td className={tdCls} />
+          <td className={tdCls} colSpan={columnCount - 2}>
+            <div className="flex items-center gap-3 flex-wrap text-xs pl-4 border-l-2 border-gray-200">
+              <span className="text-amber-600 font-medium">Written off</span>
+              <span className="font-medium text-gray-700">
+                {qtyWithUnit(first.sent_dozens ?? first.sent_qty, unit)}
+              </span>
+              <span className="text-gray-500">{first.write_off_reason}</span>
+            </div>
+          </td>
+          {rowActions(first)}
+        </tr>
+      );
+    }
+    if (g.lines.length === 1) {
+      return (
+        <tr key={g.key} className="bg-gray-50/40">
+          <td className={tdCls} />
+          <td className={tdCls} colSpan={columnCount - 2}>
+            <div className="flex items-center gap-3 flex-wrap text-xs pl-4 border-l-2 border-gray-200">
+              {challanHead(first)}
+              {lineBody(first)}
+            </div>
+          </td>
+          {rowActions(first)}
+        </tr>
+      );
+    }
+    // Several lines: the total first, then each line indented beneath it.
+    const sentTotal = unit === 'dz'
+      ? g.lines.reduce((s, c) => s + Number(c.sent_dozens || 0), 0)
+      : g.lines.reduce((s, c) => s + Number(c.sent_qty || 0), 0);
+    const dozenTotal = g.lines.reduce((s, c) => s + Number(c.received_dozens || 0), 0);
+    const mpd = unit === 'dz' ? null : metresPerDozen(sentTotal, dozenTotal);
+    return (
+      <Fragment key={g.key}>
+        <tr className="bg-gray-50/40">
+          <td className={tdCls} />
+          <td className={tdCls} colSpan={columnCount - 1}>
+            <div className="flex items-center gap-3 flex-wrap text-xs pl-4 border-l-2 border-gray-300">
+              {challanHead(first)}
+              <span className="font-semibold text-[#003049]">
+                Total · {g.lines.length} lines · sent {qtyWithUnit(sentTotal, unit)}
+                {unit !== 'dz' && ` → ${fmtNum(dozenTotal)} dz`}
+                {mpd != null && ` · ${fmtNum(mpd)} m/dz`}
+              </span>
+            </div>
+          </td>
+        </tr>
+        {g.lines.map(c => (
+          <tr key={c.lot_key} className="bg-gray-50/40">
+            <td className={tdCls} />
+            <td className={tdCls} colSpan={columnCount - 2}>
+              <div className="flex items-center gap-3 flex-wrap text-xs pl-10 border-l-2 border-gray-200">
+                <span className="text-gray-400">Line {c.challan_line_no}</span>
+                {lineBody(c)}
+              </div>
+            </td>
+            {rowActions(c)}
+          </tr>
+        ))}
+      </Fragment>
+    );
+  });
+}
+
 // Stage is included even on a single-stage tab: a saved file outlives the tab it
 // came from.
 const EXPORT_COLUMNS = [
   { key: 'stage', header: 'Stage' },
-  { key: 'party_name', header: 'Party Name' },
+  { key: 'vendor_name', header: 'PO Party Name' },
+  { key: 'party_name', header: 'Challan Party' },
+  { key: 'party_chain', header: 'Parties' },
   { key: 'item_name', header: 'Article' },
   { key: 'variant', header: 'Variant' },
-  { key: 'po_order_no', header: 'PO' },
+  { key: 'po_order_no', header: 'PO No' },
   { key: 'status', header: 'Status' },
-  { key: 'sent_qty', header: 'Sent' },
-  { key: 'received_qty', header: 'Qty in metres' },
+  { key: 'po_qty_metres', header: 'PO Qty (m)' },
+  { key: 'sent_qty', header: 'Sent (m)' },
+  { key: 'received_qty', header: 'Qty (m)' },
+  { key: 'sent_dozens', header: 'Sent (dz)' },
   { key: 'received_dozens', header: 'Dozens' },
   { key: 'metres_per_dozen', header: 'M/Dozen' },
   { key: 'balance', header: 'Balance' },
-  { key: 'unit_metric', header: 'Unit' },
+  { key: 'balance_unit', header: 'Balance Unit' },
   { key: 'po_rate', header: 'PO Rate' },
-  // One column per stage the material passed through, flattened out of
-  // rate_ladder below. A spreadsheet cannot nest, and the whole point of the
-  // ladder is comparing the stages side by side.
-  ...STAGES.filter(st => st !== EXIT_STAGE).map(st => ({ key: `rate_${st}`, header: `${st} Rate` })),
+  // The total and its working, flattened: a spreadsheet cannot hover.
+  { key: 'rate_total', header: 'Rate' },
+  { key: 'rate_total_unit', header: 'Rate Per' },
+  { key: 'rate_breakdown', header: 'Rate Breakdown' },
   // The challan this row was sent under. It is off the table on purpose — a lot
   // has many, and they read better nested — but a spreadsheet has no nesting, so
   // here it belongs on the row it describes. Blank on an origin lot, which
@@ -137,34 +397,129 @@ export default function StageTab({ stage, onOpenCounts }) {
   // The exit tab is a record of goods that have left: no balance to work down,
   // no stage rate still to be agreed, and nothing to forward.
   const isExitTab = stage === EXIT_STAGE;
-  // Dozens and yield only mean something where there are pieces to count, which
-  // is every stage from Stitched on. Left off the All view, where most rows
-  // would be blank -- 'All' is not a stage, so countsDozens says no for free.
-  //
-  // Where dozens show, METRES DO NOT. From Stitched on the business counts
-  // pieces, and leading with a metre figure invites reading the wrong number
-  // off the row. Balance is the exception and stays in metres -- see its header.
-  const showsDozens = countsDozens(stage);
-  // Panchal files what it takes in under its own number, separate from the
-  // incoming no carried down the chain.
+  // What a tab counts in. Processing is the one metre stage. From Stitching on
+  // the goods are dozens, and at the two terminal stages -- the warehouse and
+  // the sale -- only the dozens matter: nothing forwards out of them, so there
+  // is no balance to work down and no yield left to act on.
   const isStockTab = stage === STOCK_STAGE;
+  const isTerminal = isStockTab || isExitTab;
+  const showsDozens = countsDozens(stage);
+  const showsYield = isAll || (showsDozens && !isTerminal);
+  const showsBalance = !isTerminal;
   // The two destinations that record who checked the goods over.
   const showsChecker = isStockTab || isExitTab;
 
-  // Which stage-rate columns this tab shows. On a stage tab, only the stages a
-  // lot could actually have travelled to get here — a Stitched lot cannot have a
-  // Packed rate. The All view spans everything.
-  const ladderStages = isAll
-    ? STAGES.filter(st => st !== EXIT_STAGE)
-    : rateLadderStages(stage);
+  // THE COLUMNS, as one list, so a header can never drift from its cell and the
+  // skeleton, empty row and nested colspans all count the same thing. Sr and
+  // Actions bracket these and are rendered on their own.
+  const columns = [
+    isAll && {
+      key: 'stage', header: 'Stage',
+      cell: r => <span className="font-medium text-[#003049] whitespace-nowrap">{r.stage}</span>,
+    },
+    {
+      // The PO party is the one name every lot in a chain shares, so it leads
+      // on every tab. The job workers the goods passed through sit beneath it,
+      // as "<Stage> - <party short name>".
+      key: 'po_party', header: 'PO Party Name',
+      cell: r => (
+        <>
+          <div className="font-medium text-[#003049] whitespace-nowrap">{r.vendor_name}</div>
+          {r.party_chain?.length > 0 && (
+            <div className="text-[11px] text-gray-400 whitespace-nowrap" title={r.party_name}>
+              {r.party_chain.join(' · ')}
+            </div>
+          )}
+        </>
+      ),
+    },
+    {
+      key: 'article', header: 'Article',
+      cell: r => (
+        <div className="text-[#003049] whitespace-nowrap">
+          {r.item_name}{r.variant ? ` — ${r.variant}` : ''}
+        </div>
+      ),
+    },
+    {
+      // Between the article and its status, where a lot is identified.
+      key: 'po', header: 'PO No',
+      cell: r => (
+        <Link to={`/outbound/purchase-orders/${r.po_id}`} className="font-mono text-[#003049] hover:underline">
+          {r.po_order_no}
+        </Link>
+      ),
+    },
+    {
+      key: 'status', header: 'Status',
+      cell: r => <Badge color={STATUS_COLORS[r.status] || 'gray'}>{r.status}</Badge>,
+    },
+    {
+      // The metre figure the whole chain started from, on every tab.
+      key: 'po_qty', header: 'PO Qty (m)',
+      cell: r => <span className="text-gray-600 whitespace-nowrap">{fmtNum(r.po_qty_metres)}</span>,
+    },
+    (stage === 'Processing') && {
+      key: 'qty', header: 'Qty (m)',
+      cell: r => (
+        <span className="whitespace-nowrap">
+          {fmtNum(r.received_qty)}
+          {r.sent_qty != null && <span className="block text-[11px] text-gray-400">sent {fmtNum(r.sent_qty)}</span>}
+        </span>
+      ),
+    },
+    showsDozens && {
+      key: 'dozens', header: 'Dozens',
+      cell: r => <span className="text-gray-600 whitespace-nowrap">{r.received_dozens == null ? '' : fmtNum(r.received_dozens)}</span>,
+    },
+    // The All view mixes units, so its quantity carries one.
+    isAll && {
+      key: 'qty', header: 'Qty',
+      cell: r => <span className="whitespace-nowrap">{qtyWithUnit(r.qty_basis, r.balance_unit)}</span>,
+    },
+    showsYield && {
+      key: 'yield', header: 'M/Dozen',
+      cell: r => <span className="text-gray-600"><YieldCell r={r} /></span>,
+    },
+    showsBalance && {
+      key: 'balance',
+      header: stage === 'Processing' ? 'Balance (m)' : (isAll ? 'Balance' : 'Balance (dz)'),
+      cell: r => (
+        <span className={`font-semibold whitespace-nowrap ${Number(r.balance) > EPSILON ? 'text-amber-700' : 'text-gray-400'}`}>
+          {isAll ? qtyWithUnit(r.balance, r.balance_unit) : fmtNum(r.balance)}
+        </span>
+      ),
+    },
+    isExitTab && {
+      key: 'bill', header: 'Outbound Bill No',
+      cell: r => <span className="font-mono text-[#003049]">{r.outbound_bill_no || '—'}</span>,
+    },
+    {
+      // One figure -- the whole cost so far -- with the working on hover.
+      key: 'rate', header: 'Rate',
+      cell: r => <span className="whitespace-nowrap"><RateCell r={r} /></span>,
+    },
+    {
+      key: 'incoming', header: 'Incoming No',
+      cell: r => (r.incoming_prefix || r.incoming_no
+        ? <span className="font-mono text-xs whitespace-nowrap">{r.incoming_prefix || ''}{r.incoming_no || ''}</span>
+        : <span className="text-gray-300">—</span>),
+    },
+    // The warehouse's own number, beside the chain's, because at Panchal both
+    // are real and they are not the same number.
+    isStockTab && {
+      key: 'pcl', header: 'PCL Inc No',
+      cell: r => (r.panchal_incoming_no
+        ? <span className="font-mono text-xs whitespace-nowrap">{r.panchal_incoming_no}</span>
+        : <span className="text-gray-300">—</span>),
+    },
+    showsChecker && {
+      key: 'checker', header: 'Checked By',
+      cell: r => <span className="text-gray-600 whitespace-nowrap">{r.checked_by_name || <span className="text-gray-300">—</span>}</span>,
+    },
+  ].filter(Boolean);
 
-  // Stage only earns a column when rows can differ — on a stage tab every row
-  // would repeat the tab's own name. Counted rather than hardcoded now that the
-  // rate columns vary by tab: Sr, Party, Article, Status, Qty in metres, Balance,
-  // Incoming No, Actions is the fixed spine.
-  const COLUMN_COUNT = 8 + (isAll ? 1 : 0) + 1 + ladderStages.length
-    + (isExitTab ? 1 : 0) + (showsDozens ? 2 - 1 : 0)
-    + (isStockTab ? 1 : 0) + (showsChecker ? 1 : 0);
+  const COLUMN_COUNT = columns.length + 2;
 
   // Params are built once and reused by the export, so what downloads is exactly
   // what the filters describe.
@@ -225,25 +580,28 @@ export default function StageTab({ stage, onOpenCounts }) {
       const res = await listStitchingLots({ ...buildParams(), page: 1, page_size: 'all' });
       const exportRows = (res.rows || []).map(r => ({
         stage: r.stage,
+        vendor_name: r.vendor_name || '',
         party_name: r.party_name || '',
+        party_chain: (r.party_chain || []).join(' · '),
         item_name: r.item_name || '',
         variant: r.variant || '',
         po_order_no: r.po_order_no || '',
         status: r.status,
         // Numbers stay numbers, with the unit in its own column. A spreadsheet
-        // exists to sum this, which "5 pcs" in the cell would prevent.
-        sent_qty: r.sent_qty,
-        received_qty: r.received_qty,
+        // exists to sum this, which "5 dz" in the cell would prevent.
+        po_qty_metres: r.po_qty_metres ?? '',
+        sent_qty: r.sent_qty ?? '',
+        received_qty: r.received_qty ?? '',
+        sent_dozens: r.sent_dozens ?? '',
         received_dozens: r.received_dozens ?? '',
         metres_per_dozen: r.metres_per_dozen ?? '',
         balance: r.balance,
-        unit_metric: r.unit_metric || '',
+        balance_unit: r.balance_unit || '',
         po_rate: r.po_rate,
-        // Flatten the ladder into one column per stage. A stage the lot never
-        // travelled stays blank rather than becoming 0 — it was not charged
-        // nothing, it was never there.
-        ...Object.fromEntries(STAGES.filter(st => st !== EXIT_STAGE)
-          .map(st => [`rate_${st}`, r.rate_ladder?.[st] ?? ''])),
+        rate_total: r.rate_total ?? '',
+        rate_total_unit: r.rate_total_unit || '',
+        rate_breakdown: (r.rate_breakdown || [])
+          .map(l => `${l.label} ${fmtNum(l.rate)}/${l.unit === 'dozen' ? 'dz' : 'm'}`).join('; '),
         challan_no: r.challan_no || '',
         challan_type: r.challan_type || '',
         outbound_bill_no: r.outbound_bill_no || '',
@@ -319,7 +677,7 @@ export default function StageTab({ stage, onOpenCounts }) {
     <>
       <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
-          <input placeholder="Party Name" value={draft.party_name} onChange={e => setDraftField('party_name', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
+          <input placeholder="PO / Challan Party" value={draft.party_name} onChange={e => setDraftField('party_name', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
           <input placeholder="Incoming No" value={draft.incoming_no} onChange={e => setDraftField('incoming_no', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
           <input placeholder="Challan No" value={draft.challan_no} onChange={e => setDraftField('challan_no', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
           <input placeholder="PO No" value={draft.po_order_no} onChange={e => setDraftField('po_order_no', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
@@ -347,49 +705,7 @@ export default function StageTab({ stage, onOpenCounts }) {
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className={thCls}>Sr</th>
-                {isAll && <th className={thCls}>Stage</th>}
-                <th className={thCls}>Party Name</th>
-                <th className={thCls}>Article</th>
-                <th className={thCls}>Status</th>
-                {/* Metres up to Stitched, dozens from there on -- never both.
-                    The receipt side is qty_in_metres and the entry side inherits
-                    it, so the header names the unit rather than leaving it to
-                    the Article sub-line. */}
-                {!showsDozens && <th className={thCls}>Qty in metres</th>}
-                {showsDozens && <th className={thCls}>Dozens</th>}
-                {showsDozens && <th className={thCls}>M/Dozen</th>}
-                {/* No Short. A challan records what was SENT and nothing else,
-                    so short is 0 on every one of them and was always NULL on an
-                    origin lot nobody sent — Balance is what shows material still
-                    to come. The column stays in the API, where the journey
-                    summary still totals it. */}
-                {/* Named in metres on the dozen tabs, because the header that
-                    used to carry the unit is gone there. Balance stays metres
-                    everywhere: it is what caps Sent Qty on the challan form,
-                    and the chain's unit has not changed -- only what the row
-                    leads with has. */}
-                <th className={thCls}>{showsDozens ? 'Balance (m)' : 'Balance'}</th>
-                {isExitTab && <th className={thCls}>Outbound Bill No</th>}
-                <th className={thCls}>PO Rate</th>
-                {/* One column per stage travelled, rather than a single running
-                    total. The old After Rate rolled every stage into one number,
-                    which is exactly what hid what each one charged. */}
-                {ladderStages.map(st => (
-                  <th key={st} className={thCls}>{st} Rate</th>
-                ))}
-                {/* No Challan No. A lot has many challans and they sit nested
-                    beneath it, so a single column here could only ever show one
-                    of them — and on an origin lot it showed a stale number the
-                    PO screen no longer manages. */}
-                <th className={thCls}>Incoming No</th>
-                {/* The warehouse's own number, beside the chain's, because at
-                    Panchal both are real and they are not the same number. */}
-                {isStockTab && <th className={thCls}>PCL Inc No</th>}
-                {/* Only where it was actually asked for. Everywhere else the
-                    server takes it from the session, so the column could only
-                    repeat whoever typed the row -- which the History drawer
-                    already records. */}
-                {showsChecker && <th className={thCls}>Checked By</th>}
+                {columns.map(c => <th key={c.key} className={thCls}>{c.header}</th>)}
                 <th className={thCls}>Actions</th>
               </tr>
             </thead>
@@ -406,83 +722,7 @@ export default function StageTab({ stage, onOpenCounts }) {
                 <Fragment key={r.lot_key}>
                   <tr className="hover:bg-gray-50/60">
                     <td className={`${tdCls} text-gray-400`}>{srBase + i + 1}</td>
-                    {isAll && (
-                      <td className={`${tdCls} font-medium text-[#003049] whitespace-nowrap`}>{r.stage}</td>
-                    )}
-                    <td className={`${tdCls} font-medium text-[#003049] whitespace-nowrap`}>{r.party_name}</td>
-                    <td className={tdCls}>
-                      <div className="text-[#003049] whitespace-nowrap">
-                        {r.item_name}{r.variant ? ` — ${r.variant}` : ''}
-                      </div>
-                      <div className="text-[11px] text-gray-400">
-                        PO {r.po_order_no}{r.unit_metric ? ` · ${r.unit_metric}` : ''}
-                      </div>
-                    </td>
-                    <td className={tdCls}>
-                      <Badge color={STATUS_COLORS[r.status] || 'gray'}>{r.status}</Badge>
-                    </td>
-                    {!showsDozens && (
-                      <td className={`${tdCls} whitespace-nowrap`}>
-                        {fmtNum(r.received_qty)}
-                        {r.sent_qty != null && (
-                          <div className="text-[11px] text-gray-400">sent {fmtNum(r.sent_qty)}</div>
-                        )}
-                      </td>
-                    )}
-                    {showsDozens && (
-                      <td className={`${tdCls} text-gray-600 whitespace-nowrap`}>
-                        {r.received_dozens == null ? '' : fmtNum(r.received_dozens)}
-                        {/* Rehomed from the metres cell, which is not rendered
-                            on this tab. What was dispatched is the point of a
-                            sale row and has to stay somewhere. */}
-                        {r.sent_qty != null && (
-                          <div className="text-[11px] text-gray-400">sent {fmtNum(r.sent_qty)}m</div>
-                        )}
-                      </td>
-                    )}
-                    {showsDozens && (
-                      <td className={`${tdCls} text-gray-600`}>
-                        {/* The yield, derived server-side from the two numbers
-                            beside it so a stored copy can never disagree. */}
-                        {r.metres_per_dozen == null ? '' : fmtNum(r.metres_per_dozen)}
-                      </td>
-                    )}
-                    <td className={`${tdCls} font-semibold whitespace-nowrap ${Number(r.balance) > EPSILON ? 'text-amber-700' : 'text-gray-400'}`}>
-                      {fmtNum(r.balance)}
-                    </td>
-                    {isExitTab && (
-                      <td className={`${tdCls} font-mono text-[#003049]`}>
-                        {r.outbound_bill_no || '—'}
-                      </td>
-                    )}
-                    <td className={`${tdCls} text-gray-600`}>{fmtNum(r.po_rate)}</td>
-                    {ladderStages.map(st => (
-                      <td
-                        key={st}
-                        className={`${tdCls} ${st === r.stage ? 'font-medium text-[#003049]' : 'text-gray-600'}`}
-                      >
-                        {/* Blank, not 0, for a stage this lot never travelled:
-                            it was not charged nothing, it was never there. */}
-                        {r.rate_ladder?.[st] == null ? '' : fmtNum(r.rate_ladder[st])}
-                      </td>
-                    ))}
-                    <td className={`${tdCls} whitespace-nowrap`}>
-                      {r.incoming_prefix || r.incoming_no
-                        ? <span className="font-mono text-xs">{r.incoming_prefix || ''}{r.incoming_no || ''}</span>
-                        : <span className="text-gray-300">—</span>}
-                    </td>
-                    {isStockTab && (
-                      <td className={`${tdCls} whitespace-nowrap`}>
-                        {r.panchal_incoming_no
-                          ? <span className="font-mono text-xs">{r.panchal_incoming_no}</span>
-                          : <span className="text-gray-300">—</span>}
-                      </td>
-                    )}
-                    {showsChecker && (
-                      <td className={`${tdCls} text-gray-600 whitespace-nowrap`}>
-                        {r.checked_by_name || <span className="text-gray-300">—</span>}
-                      </td>
-                    )}
+                    {columns.map(c => <td key={c.key} className={tdCls}>{c.cell(r)}</td>)}
                     <td className={tdCls}>
                       <div className="flex items-center gap-1">
                         {/* Material that will never move on: ruined at rest, or
@@ -554,96 +794,21 @@ export default function StageTab({ stage, onOpenCounts }) {
                     </td>
                   </tr>
 
-                  {/* Everything that has LEFT this lot, nested beneath it the way
-                      receipts sit under a PO line: challans sent on, and material
-                      written off. Not on the All tab, where every challan is
-                      already a row of its own and this would print it twice. */}
-                  {!isAll && (r.outgoing || []).map(c => (
-                    <tr key={c.lot_key} className="bg-gray-50/40">
-                      <td className={tdCls} />
-                      <td className={tdCls} colSpan={COLUMN_COUNT - 2}>
-                        <div className="flex items-center gap-3 flex-wrap text-xs pl-4 border-l-2 border-gray-200">
-                          {c.is_write_off ? (
-                            <>
-                              <span className="text-amber-600 font-medium">Written off</span>
-                              <span className="font-medium text-gray-700">
-                                {fmtQty(c.sent_qty, r.unit_metric)}
-                              </span>
-                              <span className="text-gray-500">{c.write_off_reason}</span>
-                            </>
-                          ) : (
-                            <>
-                              <span className="text-gray-400">Challan</span>
-                              <span className="font-mono text-[#003049]">{c.challan_no || '—'}</span>
-                              {c.challan_type && (
-                                <Badge color="gray">{c.challan_type}</Badge>
-                              )}
-                              {/* Where it went. Obvious on a one-destination
-                                  stage, load-bearing anywhere the lot branched. */}
-                              <span className="text-gray-400">
-                                → <span className="text-gray-600">{c.stage}</span>
-                              </span>
-                              <span className="text-gray-500">{c.party_name}</span>
-                              {c.outbound_bill_no && (
-                                <span className="text-gray-400">
-                                  bill <span className="font-mono text-gray-600">{c.outbound_bill_no}</span>
-                                </span>
-                              )}
-                              <span className="text-gray-400">
-                                sent <span className="font-medium text-gray-700">{fmtQty(c.sent_qty, r.unit_metric)}</span>
-                              </span>
-                              <Badge color={STATUS_COLORS[c.status] || 'gray'}>{c.status}</Badge>
-                              <span className="font-mono text-[11px] text-gray-400">
-                                {c.incoming_prefix || ''}{c.incoming_no || ''}
-                              </span>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                      <td className={tdCls}>
-                        <div className="flex items-center gap-1">
-                          {/* Correct a challan in place -- a wrong number, party
-                              or quantity. Gated the same way withdrawing is:
-                              once material has moved on from this challan, or it
-                              has been closed, changing what it says would leave
-                              the chain describing something that did not happen.
-                              A write-off has no fields worth editing, so it is
-                              withdrawn and re-raised instead. */}
-                          {c.can_remove && !c.is_write_off && (
-                            <button
-                              type="button"
-                              onClick={() => setEditingChallan({ lot: r, challan: c })}
-                              title="Edit this challan"
-                              className="p-1.5 rounded hover:bg-blue-50 text-blue-600"
-                            >
-                              <Pencil size={14} />
-                            </button>
-                          )}
-                          {/* A correction: the challan was entered against the
-                              wrong lot, or the write-off was wrong. Nothing
-                              travels anywhere -- the quantity stops counting as
-                              gone. */}
-                          {c.can_remove && (
-                            <button
-                              type="button"
-                              onClick={() => setRemoving(c)}
-                              title={c.is_write_off
-                                ? 'Withdraw this write-off — entered in error'
-                                : 'Withdraw this challan — entered in error'}
-                              className="p-1.5 rounded hover:bg-amber-50 text-amber-600"
-                            >
-                              <Undo2 size={14} />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {/* Everything that has LEFT this lot. Not on the All tab,
+                      where every challan is already a row of its own and this
+                      would print it twice. */}
+                  {!isAll && (
+                    <OutgoingRows
+                      lot={r}
+                      columnCount={COLUMN_COUNT}
+                      onEdit={c => setEditingChallan({ lot: r, challan: c })}
+                      onRemove={setRemoving}
+                    />
+                  )}
 
                   {/* A lot cannot reach the next stage except under a challan, so
                       this is the only way forward -- and it is on the lot rather
-                      than behind an action menu for exactly that reason. Every
-                      stage works this way, not just Gray. */}
+                      than behind an action menu for exactly that reason. */}
                   {r.can_forward && (
                     <tr className="bg-gray-50/40">
                       <td className={tdCls} />
@@ -659,7 +824,7 @@ export default function StageTab({ stage, onOpenCounts }) {
                               is made inside the modal. Seeing it up front is
                               what stops the modal being a surprise. */}
                           <span className="text-gray-400">
-                            · {fmtQty(r.balance, r.unit_metric)} left to send to{' '}
+                            · {qtyWithUnit(r.balance, r.balance_unit)} left to send to{' '}
                             {(r.destinations || []).join(', ') || r.next_stage}
                           </span>
                         </button>
@@ -685,9 +850,9 @@ export default function StageTab({ stage, onOpenCounts }) {
             {isAll
               ? 'No lots yet. A receipt appears here once it has an incoming number with a stage prefix.'
               : `No lots at the ${stage} stage yet.`}
-            {!isAll && (stage === 'Gray'
-              ? ' A receipt appears here once it has an incoming number with a Gray prefix.'
-              : ' Add a challan on a lot at the previous stage to send some of it here.')}
+            {!isAll && (stage === 'Processing'
+              ? ' A fabric receipt booked at Processing on an outbound PO appears here.'
+              : ' Add a challan on a lot at an earlier stage, or book a receipt straight into this stage.')}
           </p>
         )}
 
@@ -712,7 +877,7 @@ export default function StageTab({ stage, onOpenCounts }) {
         confirmLabel="Close lot"
         title="Close this lot?"
         message={closing
-          ? `Marks the ${fmtQty(closing.received_qty, closing.unit_metric)} at ${closing.party_name} as dispatched. It stops counting as open stock, and can be reopened if that was wrong.`
+          ? `Marks the ${qtyWithUnit(closing.received_dozens, 'dz')} at ${closing.party_name} as dispatched. It stops counting as open stock, and can be reopened if that was wrong.`
           : ''}
       />
 
@@ -756,7 +921,7 @@ export default function StageTab({ stage, onOpenCounts }) {
         loading={deleting}
         title="Remove this lot?"
         message={confirmDelete
-          ? `This removes the ${confirmDelete.stage} lot at ${confirmDelete.party_name} and returns ${fmtNum(confirmDelete.sent_qty)} to the lot it came from.`
+          ? `This removes the ${confirmDelete.stage} lot at ${confirmDelete.party_name} and returns ${confirmDelete.sent_dozens != null ? `${fmtNum(confirmDelete.sent_dozens)} dz` : `${fmtNum(confirmDelete.sent_qty)} m`} to the lot it came from.`
           : ''}
       />
     </>

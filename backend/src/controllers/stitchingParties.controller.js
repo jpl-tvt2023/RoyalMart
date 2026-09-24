@@ -12,8 +12,19 @@ const { PARTY_USE_STAGES, isValidPartyUse } = require('../services/stitching.ser
 
 const NAME_MAX = 50;
 
+// The short form shown on the Stitching page as "Stitching - SKT". Optional:
+// blank falls back to the party's initials (partyShort in stitching.service.js),
+// so it only needs filling in where the initials are ambiguous or unhelpful.
+const SHORT_NAME_MAX = 10;
+
 function normName(v) {
   return v == null ? '' : String(v).trim();
+}
+
+function shortNameError(v) {
+  const s = normName(v);
+  if (s.length > SHORT_NAME_MAX) return `Short Name must be ${SHORT_NAME_MAX} characters or less`;
+  return null;
 }
 
 // Returns a de-duplicated, canonically ordered list, or an error string. Order
@@ -57,7 +68,7 @@ const outward = (row) => ({
 async function list(req, res, next) {
   try {
     const { rows } = await db.execute(
-      `SELECT p.id, p.name, p.is_active, p.created_at, p.updated_at,
+      `SELECT p.id, p.name, p.short_name, p.is_active, p.created_at, p.updated_at,
               u.name AS updated_by_name,
               (SELECT group_concat(x.use_stage, ',')
                  FROM (SELECT use_stage FROM stitching_party_uses
@@ -81,13 +92,16 @@ async function create(req, res, next) {
       await tx.rollback();
       return res.status(400).json({ message: `Name must be ${NAME_MAX} characters or less` });
     }
+    const shortErr = shortNameError(req.body?.short_name);
+    if (shortErr) { await tx.rollback(); return res.status(400).json({ message: shortErr }); }
+    const shortName = normName(req.body?.short_name) || null;
     const { uses, error } = validateUses(req.body?.uses);
     if (error) { await tx.rollback(); return res.status(400).json({ message: error }); }
 
     const { rows } = await tx.execute({
-      sql: `INSERT INTO stitching_parties (name, updated_by)
-            VALUES (?, ?) RETURNING id, name, is_active, created_at`,
-      args: [name, req.user.id],
+      sql: `INSERT INTO stitching_parties (name, short_name, updated_by)
+            VALUES (?, ?, ?) RETURNING id, name, short_name, is_active, created_at`,
+      args: [name, shortName, req.user.id],
     });
     const party = rows[0];
     for (const u of uses) {
@@ -122,7 +136,7 @@ async function update(req, res, next) {
     const { id } = req.params;
     const has = (k) => Object.prototype.hasOwnProperty.call(req.body || {}, k);
     const { rows: existing } = await tx.execute({
-      sql: `SELECT p.id, p.name, p.is_active,
+      sql: `SELECT p.id, p.name, p.short_name, p.is_active,
                    (SELECT group_concat(x.use_stage, ',')
                       FROM (SELECT use_stage FROM stitching_party_uses
                              WHERE party_id = p.id ORDER BY use_stage) x) AS uses
@@ -146,6 +160,13 @@ async function update(req, res, next) {
       nextName = n;
     }
 
+    let nextShort = current.short_name ?? null;
+    if (has('short_name')) {
+      const err = shortNameError(req.body.short_name);
+      if (err) { await tx.rollback(); return res.status(400).json({ message: err }); }
+      nextShort = normName(req.body.short_name) || null;
+    }
+
     let nextUses = current.uses;
     if (has('uses')) {
       const { uses, error } = validateUses(req.body.uses);
@@ -161,16 +182,16 @@ async function update(req, res, next) {
     // they were raised under. That is the same trade outbound_po_lines makes
     // with its article fields, and it is why a rename is allowed while in use.
     const changes = diffFields(
-      { name: current.name, is_active: current.is_active, uses: current.uses.join(', ') },
-      { name: nextName, is_active: nextActive, uses: nextUses.join(', ') },
-      ['name', 'is_active', 'uses'],
+      { name: current.name, short_name: current.short_name ?? null, is_active: current.is_active, uses: current.uses.join(', ') },
+      { name: nextName, short_name: nextShort, is_active: nextActive, uses: nextUses.join(', ') },
+      ['name', 'short_name', 'is_active', 'uses'],
     );
 
     const { rows } = await tx.execute({
-      sql: `UPDATE stitching_parties SET name = ?, is_active = ?, updated_by = ?,
+      sql: `UPDATE stitching_parties SET name = ?, short_name = ?, is_active = ?, updated_by = ?,
               updated_at = datetime('now')
-            WHERE id = ? RETURNING id, name, is_active, created_at, updated_at`,
-      args: [nextName, nextActive, req.user.id, id],
+            WHERE id = ? RETURNING id, name, short_name, is_active, created_at, updated_at`,
+      args: [nextName, nextShort, nextActive, req.user.id, id],
     });
 
     if (has('uses')) {
@@ -233,4 +254,4 @@ async function remove(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, create, update, remove, referenceCount, validateUses, NAME_MAX };
+module.exports = { list, create, update, remove, referenceCount, validateUses, NAME_MAX, SHORT_NAME_MAX };
