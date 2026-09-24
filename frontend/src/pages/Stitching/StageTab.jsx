@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
@@ -14,7 +14,7 @@ import {
   closeStitchingLot, reopenStitchingLot,
 } from '../../api/stitching.api';
 import {
-  STATUSES, STATUS_COLORS, fmtNum, EPSILON, ALL_TAB,
+  statusesFor, STATUS_COLORS, fmtNum, EPSILON, ALL_TAB,
   EXIT_STAGE, STOCK_STAGE, countsDozens, metresPerDozen, NONE_SELECTED,
 } from '../../utils/stitching';
 import MultiSelect from '../../components/ui/MultiSelect';
@@ -169,6 +169,36 @@ function YieldCell({ r }) {
 
 const qtyWithUnit = (value, unit) => (value == null ? '—' : `${fmtNum(value)} ${unit === 'dz' ? 'dz' : 'm'}`);
 
+const Dot = () => <span className="text-gray-300">·</span>;
+
+// Where a lot came from, for the line under its PO party. A lot that arrived on
+// a challan lists each job worker it passed through as "<stage it left> - <short
+// name>", origin first. A lot booked straight in on a PO receipt has no challan
+// party, and says so -- every row gets the same second line on every tab.
+function cameFrom(r) {
+  const chain = r.party_chain || [];
+  if (!chain.length) return r.src === 'receipt' ? { latest: 'Direct from PO', more: 0, full: 'Direct from PO' } : { latest: '', more: 0, full: '' };
+  return { latest: chain[chain.length - 1], more: chain.length - 1, full: chain.join(' · ') };
+}
+
+// Always exactly two lines, so every row keeps the same height: the PO party,
+// then where the lot came from. A longer chain shows only its latest hop plus a
+// muted count, with the whole chain on hover.
+function PartyCell({ r }) {
+  const from = cameFrom(r);
+  return (
+    <>
+      <div className="font-medium text-[#003049] whitespace-nowrap">{r.vendor_name}</div>
+      {from.latest && (
+        <div className="max-w-[14rem] truncate whitespace-nowrap text-[11px] text-gray-400" title={from.full}>
+          {from.latest}
+          {from.more > 0 && <span className="text-gray-300"> +{from.more}</span>}
+        </div>
+      )}
+    </>
+  );
+}
+
 // The lines of one challan share its number, party and destination, and arrive
 // from the server in the order they were written -- so consecutive rows with
 // the same three are one challan. Write-offs never group: each is its own event.
@@ -230,6 +260,12 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
     </td>
   );
 
+  // One fixed reading order, a quiet dot between each part:
+  //   Challan 02 → Panchal · Mahakali creation · Fresh · sent 3570.5 dz · [In Stock]
+  // The status is the only badge -- it says what became of the goods at the
+  // next stage, which is the one thing this tab cannot otherwise show. The
+  // destination lot's incoming number is deliberately NOT repeated here: it is
+  // the parent's own suffix under another prefix, and it lives on that tab.
   const challanHead = (c) => (
     <>
       <span className="text-gray-400">Challan</span>
@@ -237,19 +273,24 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
       {/* Where it went. Obvious on a one-destination stage, load-bearing
           anywhere the lot branched. */}
       <span className="text-gray-400">→ <span className="text-gray-600">{c.stage}</span></span>
-      <span className="text-gray-500">{c.party_name}</span>
+      <Dot />
+      <span className="text-gray-600">{c.party_name}</span>
       {c.outbound_bill_no && (
-        <span className="text-gray-400">bill <span className="font-mono text-gray-600">{c.outbound_bill_no}</span></span>
+        <>
+          <Dot />
+          <span className="text-gray-400">bill <span className="font-mono text-gray-600">{c.outbound_bill_no}</span></span>
+        </>
       )}
     </>
   );
 
   const lineBody = (c) => (
     <>
-      {c.challan_type && <Badge color="gray">{c.challan_type}</Badge>}
+      {c.challan_type && <><Dot /><span className="text-gray-600">{c.challan_type}</span></>}
+      <Dot />
       <span className="text-gray-400">{lineQty(c, unit)}</span>
+      <Dot />
       <Badge color={STATUS_COLORS[c.status] || 'gray'}>{c.status}</Badge>
-      <span className="font-mono text-[11px] text-gray-400">{c.incoming_prefix || ''}{c.incoming_no || ''}</span>
     </>
   );
 
@@ -260,7 +301,7 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
         <tr key={g.key} className="bg-gray-50/40">
           <td className={tdCls} />
           <td className={tdCls} colSpan={columnCount - 2}>
-            <div className="flex items-center gap-3 flex-wrap text-xs pl-4 border-l-2 border-gray-200">
+            <div className="flex items-center gap-2 flex-wrap text-xs pl-4 border-l-2 border-gray-200">
               <span className="text-amber-600 font-medium">Written off</span>
               <span className="font-medium text-gray-700">
                 {qtyWithUnit(first.sent_dozens ?? first.sent_qty, unit)}
@@ -277,7 +318,7 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
         <tr key={g.key} className="bg-gray-50/40">
           <td className={tdCls} />
           <td className={tdCls} colSpan={columnCount - 2}>
-            <div className="flex items-center gap-3 flex-wrap text-xs pl-4 border-l-2 border-gray-200">
+            <div className="flex items-center gap-2 flex-wrap text-xs pl-4 border-l-2 border-gray-200">
               {challanHead(first)}
               {lineBody(first)}
             </div>
@@ -297,8 +338,9 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
         <tr className="bg-gray-50/40">
           <td className={tdCls} />
           <td className={tdCls} colSpan={columnCount - 1}>
-            <div className="flex items-center gap-3 flex-wrap text-xs pl-4 border-l-2 border-gray-300">
+            <div className="flex items-center gap-2 flex-wrap text-xs pl-4 border-l-2 border-gray-300">
               {challanHead(first)}
+              <Dot />
               <span className="font-semibold text-[#003049]">
                 Total · {g.lines.length} lines · sent {qtyWithUnit(sentTotal, unit)}
                 {unit !== 'dz' && ` → ${fmtNum(dozenTotal)} dz`}
@@ -311,7 +353,7 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
           <tr key={c.lot_key} className="bg-gray-50/40">
             <td className={tdCls} />
             <td className={tdCls} colSpan={columnCount - 2}>
-              <div className="flex items-center gap-3 flex-wrap text-xs pl-10 border-l-2 border-gray-200">
+              <div className="flex items-center gap-2 flex-wrap text-xs pl-10 border-l-2 border-gray-200">
                 <span className="text-gray-400">Line {c.challan_line_no}</span>
                 {lineBody(c)}
               </div>
@@ -367,9 +409,22 @@ export default function StageTab({ stage, onOpenCounts }) {
   // v3: status went from a single string to an array of them. useSessionState
   // does no shape validation, so a session holding the old value would arrive
   // in a component that now calls .length on it.
-  const [filters, setFilters] = useSessionState(
+  const [storedFilters, setFilters] = useSessionState(
     `stitching.filters.v3.${stage}`, () => defaultFilters(stage),
   );
+  // Only statuses this tab can show. A session saved before the filter was
+  // narrowed may hold one the tab never produces -- dropped here, and if that
+  // leaves nothing of a non-empty pick, the tab's own default rather than a
+  // filter that silently matches no rows.
+  const filters = useMemo(() => {
+    const allowed = statusesFor(stage);
+    const picked = storedFilters.status || [];
+    const kept = picked.filter(st => allowed.includes(st));
+    return {
+      ...storedFilters,
+      status: picked.length && !kept.length ? defaultStatusFor(stage) : kept,
+    };
+  }, [storedFilters, stage]);
   // Draft is what the inputs hold; `filters` is what has actually been searched.
   // Text filters apply on Enter or the Search button, never on every keystroke —
   // same convention as the outbound PO list.
@@ -422,16 +477,7 @@ export default function StageTab({ stage, onOpenCounts }) {
       // on every tab. The job workers the goods passed through sit beneath it,
       // as "<Stage> - <party short name>".
       key: 'po_party', header: 'PO Party Name',
-      cell: r => (
-        <>
-          <div className="font-medium text-[#003049] whitespace-nowrap">{r.vendor_name}</div>
-          {r.party_chain?.length > 0 && (
-            <div className="text-[11px] text-gray-400 whitespace-nowrap" title={r.party_name}>
-              {r.party_chain.join(' · ')}
-            </div>
-          )}
-        </>
-      ),
+      cell: r => <PartyCell r={r} />,
     },
     {
       key: 'article', header: 'Article',
@@ -582,7 +628,7 @@ export default function StageTab({ stage, onOpenCounts }) {
         stage: r.stage,
         vendor_name: r.vendor_name || '',
         party_name: r.party_name || '',
-        party_chain: (r.party_chain || []).join(' · '),
+        party_chain: cameFrom(r).full,
         item_name: r.item_name || '',
         variant: r.variant || '',
         po_order_no: r.po_order_no || '',
@@ -682,7 +728,7 @@ export default function StageTab({ stage, onOpenCounts }) {
           <input placeholder="Challan No" value={draft.challan_no} onChange={e => setDraftField('challan_no', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
           <input placeholder="PO No" value={draft.po_order_no} onChange={e => setDraftField('po_order_no', e.target.value)} onKeyDown={onFilterKeyDown} className={inputCls} />
           <MultiSelect
-            options={STATUSES}
+            options={statusesFor(stage)}
             selected={draft.status}
             onChange={v => setDraftField('status', v)}
             allLabel="All statuses"

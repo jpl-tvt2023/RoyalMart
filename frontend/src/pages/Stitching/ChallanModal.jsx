@@ -198,12 +198,18 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     return dzErr ? `${prefix}${dzErr}` : null;
   };
 
-  // Mirrors the server's rules AND their order — the header first, as
-  // validateEntryFields checks it, then each line, then the balance — so the
-  // message shown here is the one the server would have returned.
+  // Mirrors the server's rules AND their order, which is the form's order:
+  // party and challan no, then each line, then the rest of the header, then the
+  // balance -- so the message shown here is the one the server would return.
   const fieldError = () => {
     if (!String(form.party_name || '').trim()) return 'Party Name is required';
     if (!String(form.challan_no || '').trim()) return 'Challan No is required';
+    const challanErr = challanError(form.challan_no);
+    if (challanErr) return challanErr;
+    for (let i = 0; i < lines.length; i += 1) {
+      const err = lineError(lines[i], lines.length > 1 ? `Line ${i + 1}: ` : '');
+      if (err) return err;
+    }
     const rateErr = moneyError(form.process_rate, stageRateLabel(sourceStage));
     if (rateErr) return rateErr;
     if (needsChecker && !form.checked_by) return 'Checked By is required';
@@ -212,12 +218,6 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     }
     if (isStock && !String(form.panchal_incoming_no || '').trim()) {
       return 'PCL Inc No is required when sending to Panchal';
-    }
-    const challanErr = challanError(form.challan_no);
-    if (challanErr) return challanErr;
-    for (let i = 0; i < lines.length; i += 1) {
-      const err = lineError(lines[i], lines.length > 1 ? `Line ${i + 1}: ` : '');
-      if (err) return err;
     }
     if (totalSent - available > EPSILON) {
       return `Cannot send ${totalSent}${unit} — only ${available}${unit} is left on this lot`;
@@ -360,67 +360,6 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             </select>
           </Field>
 
-          {/* Named for the stage the goods are LEAVING: the work that was just
-              done is what is being paid for. Per dozen, like every challan rate
-              now, and one rate for the whole challan. */}
-          <Field
-            label={rateLabel}
-            hint={`What ${sourceStage?.toLowerCase()} cost per dozen for the goods on this challan`}
-          >
-            <input
-              type="number" min={0} step="0.01"
-              value={form.process_rate}
-              onChange={e => setField('process_rate', e.target.value)}
-              className={inputCls}
-            />
-          </Field>
-
-          {isExit && (
-            <Field
-              label="Outbound Bill No"
-              required
-              hint="Our invoice for the sale — the only handle on goods that have left"
-            >
-              <input
-                value={form.outbound_bill_no}
-                onChange={e => setField('outbound_bill_no', e.target.value)}
-                className={inputCls}
-                maxLength={50}
-                placeholder="e.g. OB-4471"
-              />
-            </Field>
-          )}
-
-          {isStock && (
-            <Field label="PCL Inc No" required hint="Panchal's incoming number for this lot">
-              <input
-                value={form.panchal_incoming_no}
-                onChange={e => setField('panchal_incoming_no', e.target.value)}
-                className={inputCls}
-                maxLength={50}
-                placeholder="e.g. 4471"
-              />
-            </Field>
-          )}
-
-          {needsChecker && (
-            <Field
-              label="Checked By"
-              required
-              hint={isExit ? 'Who checked the goods out' : 'Who received the goods at Panchal'}
-            >
-              <select
-                value={form.checked_by || ''}
-                onChange={e => setField('checked_by', e.target.value)}
-                className={inputCls}
-              >
-                <option value="">Select...</option>
-                {checkerOptionsFor(checkers, challan?.checked_by, challan?.checked_by_name).map(o => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-            </Field>
-          )}
         </div>
 
         {/* LINE ITEMS — one row per grade sent. The total sits on top, so the
@@ -552,6 +491,72 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
               ? `From ${sourceStage} on the goods are counted in dozens: the dozens sent are what the next stage receives.`
               : 'Each line becomes its own lot at the destination. Metre per Dozen is the metres sent divided by the dozens that came back.'}
           </p>
+        </div>
+
+        {/* The rest of the header, set off by a light rule: what the stage
+            cost, and the hand-over fields a warehouse or a sale asks for. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-gray-100 pt-4">
+          {/* Named for the stage the goods are LEAVING: the work that was just
+              done is what is being paid for. Per dozen, like every challan rate
+              now, and one rate for the whole challan. */}
+          <Field
+            label={rateLabel}
+            hint={`What ${sourceStage?.toLowerCase()} cost per dozen for the goods on this challan`}
+          >
+            <input
+              type="number" min={0} step="0.01"
+              value={form.process_rate}
+              onChange={e => setField('process_rate', e.target.value)}
+              className={inputCls}
+            />
+          </Field>
+
+          {isExit && (
+            <Field
+              label="Outbound Bill No"
+              required
+              hint="Our invoice for the sale — the only handle on goods that have left"
+            >
+              <input
+                value={form.outbound_bill_no}
+                onChange={e => setField('outbound_bill_no', e.target.value)}
+                className={inputCls}
+                maxLength={50}
+                placeholder="e.g. OB-4471"
+              />
+            </Field>
+          )}
+
+          {isStock && (
+            <Field label="PCL Inc No" required hint="Panchal's incoming number for this lot">
+              <input
+                value={form.panchal_incoming_no}
+                onChange={e => setField('panchal_incoming_no', e.target.value)}
+                className={inputCls}
+                maxLength={50}
+                placeholder="e.g. 4471"
+              />
+            </Field>
+          )}
+
+          {needsChecker && (
+            <Field
+              label="Checked By"
+              required
+              hint={isExit ? 'Who checked the goods out' : 'Who received the goods at Panchal'}
+            >
+              <select
+                value={form.checked_by || ''}
+                onChange={e => setField('checked_by', e.target.value)}
+                className={inputCls}
+              >
+                <option value="">Select...</option>
+                {checkerOptionsFor(checkers, challan?.checked_by, challan?.checked_by_name).map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </Field>
+          )}
         </div>
 
         <div className="flex justify-end gap-2 pt-2">

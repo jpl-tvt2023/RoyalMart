@@ -447,7 +447,9 @@ async function withLineage(lots) {
             unit: a.rate_unit || CHALLAN_RATE_UNIT,
           });
         }
-        partyChain.push(partyTag(a.stage, a.party_name, a.short_name));
+        // Named for the stage the goods LEFT: the party on a challan is the one
+        // that held them there -- the same stage the challan's rate belongs to.
+        partyChain.push(partyTag(a.parent_stage, a.party_name, a.short_name));
       }
     }
 
@@ -700,13 +702,15 @@ function lineFieldsError(line, { requireAll = false, parentDozen = false, prefix
 // are errors) from PATCH (only fields actually present are checked) — the same
 // idiom as validateReceiptFields in outboundPOs.controller.js.
 //
-// These are the HEADER fields -- one per challan, shared by every line on it --
-// in the order they sit at the top of the form. The line fields follow, through
-// lineFieldsError, unless the caller validates the lines itself (create does,
-// once per line). `sourceStage` names the rate: it belongs to the stage the
-// goods are LEAVING.
+// Checked in the order the form shows its fields, so the first error the
+// server returns is the first field the user would reach: party, challan no,
+// then the LINE ITEMS, then the rest of the header (rate, checker, bill, PCL).
+// `lines` is create's list, each validated with a "Line N: " prefix when there
+// are several. Without it the body itself is the one line -- a PATCH edits one
+// line -- unless `skipLine`. `sourceStage` names the rate: it belongs to the
+// stage the goods are LEAVING.
 async function validateEntryFields(body, {
-  requireAll = false, targetStage, sourceStage, parentDozen = false, skipLine = false,
+  requireAll = false, targetStage, sourceStage, parentDozen = false, skipLine = false, lines = null,
 } = {}) {
   const present = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
 
@@ -719,6 +723,22 @@ async function validateEntryFields(body, {
   if (requireAll) {
     const challan = trimOrNull(body?.challan_no);
     if (!challan) return 'Challan No is required';
+  }
+  if (present('challan_no') && body.challan_no != null && body.challan_no !== '') {
+    const err = challanError(body.challan_no);
+    if (err) return err;
+  }
+
+  if (lines) {
+    for (let i = 0; i < lines.length; i += 1) {
+      const lineErr = lineFieldsError(lines[i], {
+        requireAll, parentDozen, prefix: lines.length > 1 ? `Line ${i + 1}: ` : '',
+      });
+      if (lineErr) return lineErr;
+    }
+  } else if (!skipLine) {
+    const lineErr = lineFieldsError(body, { requireAll, parentDozen });
+    if (lineErr) return lineErr;
   }
 
   if (present('process_rate')) {
@@ -804,15 +824,6 @@ async function validateEntryFields(body, {
     return 'PCL Inc No applies only to goods sent to Panchal';
   }
 
-  if (present('challan_no') && body.challan_no != null && body.challan_no !== '') {
-    const err = challanError(body.challan_no);
-    if (err) return err;
-  }
-
-  if (!skipLine) {
-    const lineErr = lineFieldsError(body, { requireAll, parentDozen });
-    if (lineErr) return lineErr;
-  }
   if (present('incoming_no') && body.incoming_no != null && body.incoming_no !== '') {
     const s = String(body.incoming_no).trim();
     if (!s) return 'Incoming No cannot be blank';
@@ -938,18 +949,11 @@ async function create(req, res, next) {
     // Processing, they are metres sent and dozens received.
     const parentDozen = countsDozens(parent.stage);
 
+    const lines = linesOf(req.body);
     const validationError = await validateEntryFields(req.body, {
-      requireAll: true, targetStage, sourceStage: parent.stage, parentDozen, skipLine: true,
+      requireAll: true, targetStage, sourceStage: parent.stage, parentDozen, lines,
     });
     if (validationError) return res.status(400).json({ message: validationError });
-
-    const lines = linesOf(req.body);
-    for (let i = 0; i < lines.length; i += 1) {
-      const lineErr = lineFieldsError(lines[i], {
-        requireAll: true, parentDozen, prefix: lines.length > 1 ? `Line ${i + 1}: ` : '',
-      });
-      if (lineErr) return res.status(400).json({ message: lineErr });
-    }
 
     // Every line draws on the same parent, so it is their SUM that must fit.
     const sentOf = (line) => Number(parentDozen ? line.sent_dozens : line.sent_qty);
