@@ -7,6 +7,7 @@ const {
 const { pairKey, unitMetricsByPair } = require('../services/outboundProducts.service');
 const {
   effectiveAfterRate, moneyError, qtyError, EPSILON, isValidStage, STAGES, countsDozens, DOZEN_STAGES,
+  STOCK_STAGE,
 } = require('../services/stitching.service');
 
 const VALID_STATUSES = ['Open', 'Partially Received', 'Closed'];
@@ -359,7 +360,7 @@ async function validateReceiptFields(body, { requireAll, line }) {
   // AFTER the existing rules: several tests assert on the FIRST error a body
   // with multiple omissions produces, and that ordering is the contract.
 
-  // Optional, and 0 is a real answer — a Gray lot has had nothing done to it.
+  // Optional, and 0 is a real answer — a free job costs nothing rather than an unknown amount.
   if (present('process_rate')) {
     const err = moneyError(body.process_rate, 'Process Rate');
     if (err) return err;
@@ -405,7 +406,7 @@ async function validateReceiptFields(body, { requireAll, line }) {
   // as the only row with no yield, which reads as missing data rather than as a
   // different kind of row.
   //
-  // Keyed on the stage being RECEIVED AT, not on fabric alone: a Gray receipt
+  // Keyed on the stage being RECEIVED AT, not on fabric alone: a Processing receipt
   // has no pieces to count. Third Party never reaches here -- RECEIPT_STAGES
   // rejects it above, because nothing is received at the exit.
   const dozenStage = fabric && countsDozens(String(body?.incoming_stage ?? '').trim());
@@ -481,12 +482,19 @@ function incomingPairError(nextIncomingNo, nextPrefixId) {
 async function forwardedFromReceipt(receiptId, client) {
   const executor = client || db;
   const { rows } = await executor.execute({
-    sql: `SELECT COALESCE(SUM(sent_qty), 0) AS sent, COUNT(*) AS n
+    sql: `SELECT COALESCE(SUM(sent_qty), 0) AS sent, COALESCE(SUM(sent_dozens), 0) AS sent_dozens,
+                 COUNT(*) AS n
           FROM stitching_entries
           WHERE parent_receipt_id = ? AND deleted_at IS NULL`,
     args: [receiptId],
   });
-  return { sent: Number(rows[0]?.sent) || 0, count: Number(rows[0]?.n) || 0 };
+  // Metres out of a receipt at Processing, dozens out of one bought in at a
+  // stage that already counts dozens -- whichever applies, the other is 0.
+  return {
+    sent: Number(rows[0]?.sent) || 0,
+    sentDozens: Number(rows[0]?.sent_dozens) || 0,
+    count: Number(rows[0]?.n) || 0,
+  };
 }
 
 // Validates an optional user-reference field (e.g. approved_by): '' / null
@@ -1273,16 +1281,22 @@ async function createReceipt(req, res, next) {
       ? Number(req.body.after_rate)
       : effectiveAfterRate(receivedRate, processRate, null);
 
+    // Panchal is the end of the chain. Goods bought straight into it have
+    // nothing left to happen to them, so the receipt is closed as it is saved
+    // rather than sitting In Stock until someone remembers to close it.
+    const closesOnSave = isStitchingLine(line) && incomingStage === STOCK_STAGE;
+
     const tx = await db.transaction('write');
     try {
       const { rows: inserted } = await tx.execute({
         sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, checked_by, incoming_no,
                 process_rate, after_rate, incoming_prefix_id, unit_metric, qty_in_metres, received_dozens,
-                qty_diff_action, qty_diff_reason, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                qty_diff_action, qty_diff_reason, closed_at, closed_by, created_by, updated_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ${closesOnSave ? "datetime('now')" : 'NULL'}, ?, ?, ?) RETURNING id`,
         args: [lineId, receivedQty, receivedRate, billNo, checkedBy, incomingNo,
           processRate, afterRate, prefixId, unitMetric, qtyInMetres, receivedDozens,
-          diffAction, diffReason, req.user.id, req.user.id],
+          diffAction, diffReason, closesOnSave ? req.user.id : null, req.user.id, req.user.id],
       });
 
       // Writing off a shortfall fills in the LINE's short, which is what closes
@@ -1310,7 +1324,8 @@ async function createReceipt(req, res, next) {
         client: tx,
         userId: req.user.id,
         actionType: 'OUTBOUND_PO_LINE_RECEIPT_CREATE',
-        description: `Added receipt of ${receivedQty} on line "${line.category} - ${line.item_name}${line.variant ? ` - ${line.variant}` : ''}"${billNo ? `, bill #${billNo}` : ''} @ ${receivedRate}${incomingNo != null ? `, incoming #${incomingNo}` : ''} (PO ${padOrderNo(id)})`,
+        description: `Added receipt of ${receivedQty} on line "${line.category} - ${line.item_name}${line.variant ? ` - ${line.variant}` : ''}"${billNo ? `, bill #${billNo}` : ''} @ ${receivedRate}${incomingNo != null ? `, incoming #${incomingNo}` : ''} (PO ${padOrderNo(id)})`
+          + (closesOnSave ? `, received straight into ${STOCK_STAGE} and closed` : ''),
         entityType: 'outbound_po_line',
         entityId: Number(lineId),
       });
@@ -1332,7 +1347,7 @@ async function updateReceipt(req, res, next) {
     const { rows: receiptRows } = await db.execute({
       sql: `SELECT r.id, r.received_qty, r.received_rate, r.bill_no, r.checked_by, r.incoming_no,
                    r.process_rate, r.after_rate, r.incoming_prefix_id, r.qty_in_metres,
-                   r.received_dozens, r.unit_metric,
+                   r.received_dozens, r.unit_metric, r.closed_at,
                    sp.stage AS incoming_stage,
                    l.category, l.item_name, l.variant, l.unit_metric AS line_unit_metric,
                    COALESCE((SELECT op.goes_to_stitching FROM outbound_products op
@@ -1459,6 +1474,16 @@ async function updateReceipt(req, res, next) {
         });
       }
     }
+    // A receipt bought in at a dozen stage is drawn on in dozens, so that is
+    // what cannot be cut below what its challans already took.
+    if (has('received_dozens') && isStitchingLine(receipt) && countsDozens(receipt.incoming_stage)) {
+      const { sentDozens } = await forwardedFromReceipt(receiptId);
+      if (sentDozens - Number(nextReceivedDozens || 0) > EPSILON) {
+        return res.status(400).json({
+          message: `Dozens Received cannot be less than ${sentDozens}, already forwarded from this receipt on the Stitching page`,
+        });
+      }
+    }
     if (has('received_qty') && !isStitchingLine(receipt)) {
       const { sent } = await forwardedFromReceipt(receiptId);
       if (sent - nextQty > EPSILON) {
@@ -1491,8 +1516,40 @@ async function updateReceipt(req, res, next) {
       received_dozens: nextReceivedDozens,
     }, RECEIPT_FIELDS);
 
+    // Moving a receipt INTO Panchal closes it, the same as saving one there does.
+    // Moving it OUT reopens it -- closed only means something at Panchal, and a
+    // stale close left on a Processing lot would read as a contradiction. A
+    // receipt that stays at Panchal keeps whatever close state it has, so a
+    // deliberate reopen on the Stitching page is not undone by an unrelated edit.
+    let closeChange = null;
+    if (has('incoming_stage') && nextPrefixId !== receipt.incoming_prefix_id && isStitchingLine(receipt)) {
+      const nextStage = String(req.body.incoming_stage ?? '').trim() || null;
+      const wasPanchal = receipt.incoming_stage === STOCK_STAGE;
+      const isPanchal = nextStage === STOCK_STAGE;
+      if (isPanchal && !wasPanchal) closeChange = 'close';
+      else if (wasPanchal && !isPanchal && receipt.closed_at) closeChange = 'reopen';
+    }
+
     const tx = await db.transaction('write');
     try {
+      if (closeChange) {
+        await tx.execute({
+          sql: closeChange === 'close'
+            ? `UPDATE outbound_po_line_receipts SET closed_at = datetime('now'), closed_by = ? WHERE id = ?`
+            : 'UPDATE outbound_po_line_receipts SET closed_at = NULL, closed_by = NULL WHERE id = ?',
+          args: closeChange === 'close' ? [req.user.id, receiptId] : [receiptId],
+        });
+        await logAction({
+          client: tx,
+          userId: req.user.id,
+          actionType: closeChange === 'close' ? 'STITCHING_LOT_CLOSE' : 'STITCHING_LOT_REOPEN',
+          description: closeChange === 'close'
+            ? `Receipt moved into ${STOCK_STAGE} and closed (PO ${padOrderNo(id)})`
+            : `Receipt moved out of ${STOCK_STAGE} and reopened (PO ${padOrderNo(id)})`,
+          entityType: 'outbound_po_line',
+          entityId: Number(lineId),
+        });
+      }
       if (changes.length) {
         await tx.execute({
           sql: `UPDATE outbound_po_line_receipts SET received_qty = ?, received_rate = ?, bill_no = ?,

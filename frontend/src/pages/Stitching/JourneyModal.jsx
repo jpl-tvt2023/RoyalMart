@@ -8,7 +8,7 @@ import { formatDateTime } from '../../utils/formatters';
 
 /**
  * The full lineage of a lot — the PO receipt it entered on, then every stage it
- * passed through, down to Packed.
+ * passed through, down to where it ended up.
  *
  * Rendered as a vertical timeline rather than a table on purpose. The question
  * this answers is "what happened to this material", which is a sequence, and a
@@ -35,9 +35,12 @@ export default function JourneyModal({ src, id, onClose }) {
   }, [src, id]);
 
   const s = data?.summary;
-  // Unit comes from the PO line the chain descends from, not from an assumption
-  // that everything here is fabric.
-  const qty = (v) => fmtQty(v, s?.unit_metric);
+  // Two units, one switch: metres while the fabric is at Processing, dozens
+  // from the challan that brought it to Stitching on.
+  const m = (v) => fmtQty(v, 'm');
+  const dz = (v) => fmtQty(v, 'dz');
+  const nodeQty = (n) => (n.stage === 'Processing' ? m(n.received_qty) : dz(n.received_dozens));
+  const tookQty = (n) => (n.sent_dozens != null ? dz(n.sent_dozens) : m(n.sent_qty));
 
   return (
     <Modal isOpen onClose={onClose} title="Journey" size="xl">
@@ -64,7 +67,7 @@ export default function JourneyModal({ src, id, onClose }) {
               const prev = data.nodes[i - 1];
               // The connector belongs between two hops, and carries the
               // arithmetic of the move rather than burying it in a column.
-              const showConnector = i > 0 && n.sent_qty != null;
+              const showConnector = i > 0 && (n.sent_qty != null || n.sent_dozens != null);
               return (
                 <li
                   key={n.lot_key}
@@ -76,7 +79,7 @@ export default function JourneyModal({ src, id, onClose }) {
                   {showConnector && n.is_write_off && (
                     <div className="flex items-center gap-2 py-1.5 pl-1 text-xs text-gray-500">
                       <span className="text-gray-300">│</span>
-                      <span className="text-amber-600 font-medium">written off {qty(n.sent_qty)}</span>
+                      <span className="text-amber-600 font-medium">written off {tookQty(n)}</span>
                       {n.write_off_reason && <span className="text-gray-400">{n.write_off_reason}</span>}
                     </div>
                   )}
@@ -84,12 +87,22 @@ export default function JourneyModal({ src, id, onClose }) {
                   {showConnector && !n.is_write_off && (
                     <div className="flex items-center gap-2 py-1.5 pl-1 text-xs text-gray-500">
                       <span className="text-gray-300">│</span>
-                      <span>sent <span className="font-medium text-gray-700">{qty(n.sent_qty)}</span></span>
-                      <span className="text-gray-300">→</span>
-                      <span>received <span className="font-medium text-gray-700">{qty(n.received_qty)}</span></span>
+                      <span>sent <span className="font-medium text-gray-700">{tookQty(n)}</span></span>
+                      {/* Out of Processing, metres went and dozens came back --
+                          the conversion is the whole point of that hop. Out of
+                          a dozen stage what was sent is what arrived. */}
+                      {n.sent_qty != null && (
+                        <>
+                          <span className="text-gray-300">→</span>
+                          <span>
+                            received <span className="font-medium text-gray-700">{m(n.received_qty)}</span>
+                            {n.received_dozens != null && <> as <span className="font-medium text-gray-700">{dz(n.received_dozens)}</span></>}
+                          </span>
+                        </>
+                      )}
                       {/* Silent on a clean hop — only a real loss earns ink. */}
                       {n.short > 0 && (
-                        <span className="text-amber-600 font-medium">short {qty(n.short)}</span>
+                        <span className="text-amber-600 font-medium">short {m(n.short)}</span>
                       )}
                       {/* The challan belongs to THIS hop -- it is what the
                           material travelled under -- and goes on the arrow
@@ -129,7 +142,7 @@ export default function JourneyModal({ src, id, onClose }) {
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span className="font-semibold text-[#003049]">
-                          {n.is_write_off ? qty(n.sent_qty) : qty(n.received_qty)}
+                          {n.is_write_off ? tookQty(n) : nodeQty(n)}
                         </span>
                         {n.deleted
                           ? <Badge color="gray">Removed</Badge>
@@ -186,18 +199,18 @@ export default function JourneyModal({ src, id, onClose }) {
                 branched can finish partly as warehouse stock and partly sold, so
                 these are two numbers rather than one. */}
             <span>
-              <span className="text-gray-400">in</span> {qty(s.origin_qty)}
+              <span className="text-gray-400">in</span> {m(s.origin_qty)}
               <span className="text-gray-300"> → </span>
-              <span className="text-gray-400">in stock</span> {qty(s.stock_qty)}
-              {Number(s.sold_qty) > 0 && (
+              <span className="text-gray-400">in stock</span> {dz(s.stock_dozens)}
+              {Number(s.sold_dozens) > 0 && (
                 <>
                   <span className="text-gray-300"> · </span>
-                  <span className="text-gray-400">sold</span> {qty(s.sold_qty)}
+                  <span className="text-gray-400">sold</span> {dz(s.sold_dozens)}
                 </>
               )}
             </span>
             {s.total_short > 0 && (
-              <span className="text-amber-600 font-medium">total short {qty(s.total_short)}</span>
+              <span className="text-amber-600 font-medium">total short {m(s.total_short)}</span>
             )}
             {/* No "rate origin → final". There is no single final rate any more:
                 each stage kept its own, and they are on the nodes above. */}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
+import { Plus, X } from 'lucide-react';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
 import {
@@ -9,23 +10,30 @@ import { listUsersLite } from '../../api/users.api';
 import { ROLES } from '../../utils/roles';
 import { checkerOptionsFor } from '../../utils/checkers';
 import {
-  CHALLAN_MAX, CHALLAN_TYPES, challanError, qtyError, moneyError, fmtNum, fmtQty, EPSILON,
+  CHALLAN_MAX, CHALLAN_TYPES, challanError, qtyError, moneyError, fmtNum, EPSILON,
   destinationsFor, nextStage, EXIT_STAGE, STOCK_STAGE, DESTINATION_HINTS,
-  countsDozens, pricedPerDozen, metresPerDozen, rateUnitFor,
+  countsDozens, metresPerDozen, stageRateLabel,
 } from '../../utils/stitching';
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
+const cellInputCls = 'w-full px-2 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
 const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
 
-const EMPTY = {
-  challan_no: '', party_name: '', sent_qty: '',
-  // Nothing pre-selected, deliberately. A grade the user did not choose is
-  // worse than one they have to pick, so this stays blank until they do.
-  challan_type: '',
-  received_dozens: '',
+const EMPTY_HEADER = {
+  challan_no: '', party_name: '',
   process_rate: '', outbound_bill_no: '',
   checked_by: '', panchal_incoming_no: '',
 };
+
+// One line of the challan. Nothing pre-selected in the type, deliberately: a
+// grade the user did not choose is worse than one they have to pick.
+const newLine = () => ({
+  key: Math.random().toString(36).slice(2),
+  challan_type: '', sent_qty: '', received_dozens: '', sent_dozens: '',
+});
+
+const unitText = (dozen) => (dozen ? ' dozen' : 'm');
+const sum = (xs) => Math.round(xs.reduce((s, x) => s + (Number(x) || 0), 0) * 100) / 100;
 
 function Field({ label, required, children, hint }) {
   return (
@@ -40,48 +48,47 @@ function Field({ label, required, children, hint }) {
 }
 
 /**
- * Send part of a lot somewhere: the next stage, a later one, the warehouse, or
- * out of the business to a buyer.
+ * Send part of a lot somewhere: a later stage, the warehouse, or out of the
+ * business to a buyer.
  *
  * ONE ACT, not two. Adding a challan is sending the lot on, so this records the
  * whole hand-over — what left, what came back and what the stage cost. There is
  * no in-transit state to fill in later.
  *
- * ONE DECISION, not two either. The destination is picked once, from tiles that
- * name the real places this lot can go, and the rest of the form reshapes around
- * it: the party list narrows to parties who do that job, the rate takes that
- * stage's name, and a sale asks for the outbound bill it needs. The alternative
- * — a "next stage / third party" dropdown, then a second prompt for which stage
- * — asks the same question twice and makes the user hold an abstraction ("is the
- * warehouse a next stage?") that the tiles simply answer.
+ * ONE CHALLAN, SEVERAL LINES. The header — destination, challan no, party, rate
+ * and the hand-over fields — is said once. Below it, one line per grade sent
+ * (a Fresh line and a Second line, say); each becomes its own lot at the
+ * destination, because the grades travel separately from there. A total row
+ * sits above the lines so the challan's whole is visible while it is typed.
  *
- * The partial part is the point: 40 of a 100 lot can go to Stitched and the
- * remaining 60 straight to a buyer, each drawing the balance down.
+ * WHAT A LINE HOLDS depends on the lot it leaves:
+ * - Out of PROCESSING, the last stage in metres, a line is Challan Type · Sent
+ *   Qty (m) · Dozens Received · Metre per Dozen. This is where fabric becomes
+ *   pieces.
+ * - Out of any stage that already counts dozens, a line is Challan Type · Dozens
+ *   Sent. What was sent IS what arrives — the dozens sent become the next lot's
+ *   dozens received.
  *
- * EDIT MODE. Pass `challan` and this corrects an existing row instead of
- * creating one. A wrongly entered challan could previously only be withdrawn and
- * re-raised, which loses the row and its history for what is usually a typo. The
- * server has always accepted the PATCH — only the way in was missing.
+ * THE RATE belongs to the stage the goods are LEAVING and is per dozen: raised
+ * from the Processing tab it is the Processing rate. One rate per challan,
+ * shared by its lines.
  *
- * What edit mode does NOT offer is the destination. Moving a challan to another
- * stage would relocate a live lot and everything hanging off it, which is not
- * what "fix the challan number" means. Withdraw and re-raise for that.
+ * EDIT MODE. Pass `challan` and this corrects one existing line. The header is
+ * shared, so a header change is applied by the server to every line of the
+ * challan; the line's own fields change on this line only. The destination is
+ * not offered — moving a challan would relocate a live lot and everything
+ * hanging off it. Withdraw and re-raise for that.
  *
- * There is no Bill No for an internal move — a challan is not a bill, only a
- * sale carries one.
- *
- * CHECKED BY is asked at two destinations and nowhere else. On an ordinary
- * move between job workers the server stamps whoever entered the row, because
- * asking means picking your own name off a dropdown. It becomes a real
- * question at the two points where the goods change hands for good: arriving
- * in OUR warehouse, and leaving the business. Those two get a Warehouse_POC
- * roster, and Panchal also gets the warehouse's own incoming number — the
- * carried-down one tracks the material, PCL Inc No is what the warehouse
- * files it under.
+ * CHECKED BY is asked at two destinations and nowhere else: arriving in OUR
+ * warehouse, and leaving the business. Everywhere else the server stamps
+ * whoever entered the row. Panchal also gets the warehouse's own incoming
+ * number — the carried-down one tracks the material, PCL Inc No is what the
+ * warehouse files it under.
  */
 export default function ChallanModal({ lot, challan = null, onClose, onSaved }) {
   const isEdit = !!challan;
-  const [form, setForm] = useState(EMPTY);
+  const [form, setForm] = useState(EMPTY_HEADER);
+  const [lines, setLines] = useState(() => [newLine()]);
   const [saving, setSaving] = useState(false);
   const [parties, setParties] = useState([]);
   const [partiesLoaded, setPartiesLoaded] = useState(false);
@@ -90,28 +97,30 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
   const [target, setTarget] = useState(challan?.stage || nextStage(lot?.stage));
 
   const options = destinationsFor(lot?.stage);
-  const unit = lot?.unit_metric || 'm';
-  const poRate = Number(lot?.po_rate || 0);
+  const sourceStage = lot?.stage;
+  // Out of a lot that already counts dozens, lines are dozens only.
+  const parentDozen = countsDozens(sourceStage);
+  const unit = unitText(parentDozen);
   const isExit = target === EXIT_STAGE;
   const isStock = target === STOCK_STAGE;
-  // Pieces exist from Stitched onward, and keep existing through the warehouse
-  // and out to the buyer. Whether the RATE is per dozen is a narrower question
-  // — job work only — which is why the label below asks pricedPerDozen instead.
-  const isDozenStage = countsDozens(target);
-  // The two hand-overs that are a real second pair of eyes rather than the
-  // typist's own name: into our warehouse, and out of the business.
   const needsChecker = isStock || isExit;
-  // Counted off what was SENT — the only quantity this form records now.
-  const perDozen = metresPerDozen(form.sent_qty, form.received_dozens);
-  // What this challan may draw on. On an edit the row's own sent_qty is already
-  // counted in the parent's forwarded total, so add it back — the same
-  // arithmetic the server's update() does.
-  const available = Number(lot?.balance || 0) + (isEdit ? Number(challan?.sent_qty || 0) : 0);
+  const rateLabel = `${stageRateLabel(sourceStage)} (per dozen)`;
+
+  // What this challan may draw on, in the parent's unit. On an edit the line's
+  // own quantity is already counted in the parent's forwarded total, so add it
+  // back — the same arithmetic the server's update() does.
+  const ownSent = isEdit ? Number(parentDozen ? challan?.sent_dozens : challan?.sent_qty) || 0 : 0;
+  const available = Math.round((Number(lot?.balance || 0) + ownSent) * 100) / 100;
+
+  const sentOf = (l) => (parentDozen ? l.sent_dozens : l.sent_qty);
+  const dozensOf = (l) => (parentDozen ? l.sent_dozens : l.received_dozens);
+  const totalSent = sum(lines.map(sentOf));
+  const totalDozens = sum(lines.map(dozensOf));
+  const totalPerDozen = parentDozen ? null : metresPerDozen(totalSent || '', totalDozens || '');
 
   // Refetched whenever the destination changes, not once on mount: the list is
   // narrowed by where the goods are going, and the master can change under an
-  // already-open tab anyway. Same fix as the outbound vendor catalog
-  // stale-dropdown bug.
+  // already-open tab anyway.
   useEffect(() => {
     let cancelled = false;
     setPartiesLoaded(false);
@@ -133,9 +142,8 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     return () => { cancelled = true; };
   }, [lot?.lot_key, target]);
 
-  // Fetched when the modal opens rather than once per page, for the same reason
-  // the party list is: the roster can change under a tab that has been sitting
-  // open, and a stale dropdown offers people who are no longer Warehouse POC.
+  // Fetched when the modal opens rather than once per page: the roster can
+  // change under a tab that has been sitting open.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -149,39 +157,55 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     return () => { cancelled = true; };
   }, [challan?.id]);
 
-  // Prefill once per challan being edited.
+  // Prefill once per challan line being edited.
   useEffect(() => {
     if (!challan) return;
     setForm({
       challan_no: challan.challan_no ?? '',
       party_name: challan.party_name ?? '',
-      sent_qty: challan.sent_qty ?? '',
-      challan_type: challan.challan_type ?? '',
-      received_dozens: challan.received_dozens ?? '',
       process_rate: challan.process_rate ?? '',
       outbound_bill_no: challan.outbound_bill_no ?? '',
       checked_by: challan.checked_by ?? '',
       panchal_incoming_no: challan.panchal_incoming_no ?? '',
     });
+    setLines([{
+      ...newLine(),
+      challan_type: challan.challan_type ?? '',
+      sent_qty: challan.sent_qty ?? '',
+      received_dozens: challan.received_dozens ?? '',
+      sent_dozens: challan.sent_dozens ?? '',
+    }]);
     setTarget(challan.stage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [challan?.id]);
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const setLine = (key, patch) => setLines(ls => ls.map(l => (l.key === key ? { ...l, ...patch } : l)));
+  const addLine = () => setLines(ls => [...ls, newLine()]);
+  const removeLine = (key) => setLines(ls => (ls.length > 1 ? ls.filter(l => l.key !== key) : ls));
 
-  // Mirrors the server's rules AND their order, so the message shown here is the
-  // one the server would have returned.
+  // Twin of lineFieldsError on the server, message for message and in the same
+  // order: type, then quantity.
+  const lineError = (l, prefix) => {
+    if (!l.challan_type) return `${prefix}Challan Type is required`;
+    if (parentDozen) {
+      const err = qtyError(l.sent_dozens, 'Dozens Sent');
+      return err ? `${prefix}${err}` : null;
+    }
+    const sentErr = qtyError(l.sent_qty, 'Sent Qty');
+    if (sentErr) return `${prefix}${sentErr}`;
+    const dzErr = qtyError(l.received_dozens, 'Dozens Received');
+    return dzErr ? `${prefix}${dzErr}` : null;
+  };
+
+  // Mirrors the server's rules AND their order — the header first, as
+  // validateEntryFields checks it, then each line, then the balance — so the
+  // message shown here is the one the server would have returned.
   const fieldError = () => {
     if (!String(form.party_name || '').trim()) return 'Party Name is required';
     if (!String(form.challan_no || '').trim()) return 'Challan No is required';
-    const sentErr = qtyError(form.sent_qty, 'Sent Qty');
-    if (sentErr) return sentErr;
-    if (isDozenStage && qtyError(form.received_dozens, 'Dozens Received')) {
-      return qtyError(form.received_dozens, 'Dozens Received');
-    }
-    if (!form.challan_type) return 'Challan Type is required';
-    const procErr = moneyError(form.process_rate, `${target} Rate`);
-    if (procErr) return procErr;
+    const rateErr = moneyError(form.process_rate, stageRateLabel(sourceStage));
+    if (rateErr) return rateErr;
     if (needsChecker && !form.checked_by) return 'Checked By is required';
     if (isExit && !String(form.outbound_bill_no || '').trim()) {
       return 'Outbound Bill No is required when sending to a third party';
@@ -191,47 +215,50 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     }
     const challanErr = challanError(form.challan_no);
     if (challanErr) return challanErr;
-    if (Number(form.sent_qty) - available > EPSILON) {
-      return `Cannot send ${form.sent_qty} — only ${fmtQty(available, unit)} is left on this lot`;
+    for (let i = 0; i < lines.length; i += 1) {
+      const err = lineError(lines[i], lines.length > 1 ? `Line ${i + 1}: ` : '');
+      if (err) return err;
+    }
+    if (totalSent - available > EPSILON) {
+      return `Cannot send ${totalSent}${unit} — only ${available}${unit} is left on this lot`;
     }
     return null;
   };
+
+  const linePayload = (l) => (parentDozen
+    ? { challan_type: l.challan_type, sent_dozens: Number(l.sent_dozens) }
+    // received_qty is deliberately NOT sent. The server defaults it to
+    // sent_qty, and letting it do so keeps one rule rather than two.
+    : { challan_type: l.challan_type, sent_qty: Number(l.sent_qty), received_dozens: Number(l.received_dozens) });
 
   const submit = async (e) => {
     e.preventDefault();
     const err = fieldError();
     if (err) { toast.error(err); return; }
     setSaving(true);
-    const payload = {
+    const header = {
       challan_no: form.challan_no.trim(),
       party_name: form.party_name.trim(),
-      sent_qty: Number(form.sent_qty),
-      // received_qty is deliberately NOT sent. The server defaults it to
-      // sent_qty, and letting it do so keeps one rule rather than two.
-      challan_type: form.challan_type,
-      received_dozens: isDozenStage && form.received_dozens !== ''
-        ? Number(form.received_dozens) : null,
       process_rate: form.process_rate === '' ? null : Number(form.process_rate),
       outbound_bill_no: isExit ? form.outbound_bill_no.trim() : null,
       panchal_incoming_no: isStock ? form.panchal_incoming_no.trim() : null,
       // Omitted, not nulled, everywhere else: an absent key is what tells the
-      // server to stamp the session user. Sending null would be a request to
-      // blank the column.
+      // server to stamp the session user.
       ...(needsChecker ? { checked_by: Number(form.checked_by) } : {}),
     };
     try {
       if (isEdit) {
-        // No parent and no target stage: an edit corrects this row where it
-        // stands, it does not move it.
-        await updateStitchingLot(challan.id, payload);
-        toast.success(`Challan ${payload.challan_no} updated`);
+        // One line, flat: no parent and no target stage — an edit corrects this
+        // row where it stands. Header fields reach its sibling lines server-side.
+        await updateStitchingLot(challan.id, { ...header, ...linePayload(lines[0]) });
+        toast.success(`Challan ${header.challan_no} updated`);
       } else {
         await addStitchingChallan({
-          parent_src: lot.src, parent_id: lot.id, target_stage: target, ...payload,
+          parent_src: lot.src, parent_id: lot.id, target_stage: target,
+          ...header, lines: lines.map(linePayload),
         });
-        toast.success(isExit
-          ? `Sold ${form.sent_qty} to ${payload.party_name}`
-          : `Sent ${form.sent_qty} to ${target}`);
+        const what = `${totalSent}${unit}${lines.length > 1 ? ` on ${lines.length} lines` : ''}`;
+        toast.success(isExit ? `Sold ${what} to ${header.party_name}` : `Sent ${what} to ${target}`);
       }
       onSaved();
     } catch (err2) {
@@ -245,27 +272,25 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
   if (!lot) return null;
 
   return (
-    <Modal isOpen onClose={onClose} title={isEdit ? 'Edit Challan' : 'Add Challan'} size="lg">
+    <Modal isOpen onClose={onClose} title={isEdit ? 'Edit Challan Line' : 'Add Challan'} size="xl">
       <form onSubmit={submit} className="space-y-4">
         <div className="rounded-lg bg-gray-50 border border-gray-200 px-4 py-3 text-sm">
           <div className="font-medium text-[#003049]">
             {lot.item_name}{lot.variant ? ` — ${lot.variant}` : ''}
           </div>
           <div className="text-gray-500 text-xs mt-0.5">
-            {lot.stage} · {lot.party_name} · PO {lot.po_order_no}
+            {lot.stage} · {lot.vendor_name || lot.party_name} · PO {lot.po_order_no}
             {lot.incoming_prefix || lot.incoming_no
               ? ` · ${lot.incoming_prefix || ''}${lot.incoming_no || ''}` : ''}
           </div>
           <div className="text-gray-600 text-xs mt-1">
-            Available <span className="font-semibold text-[#003049]">{fmtQty(available, unit)}</span>
-            {' of '}{fmtQty(lot.received_qty, unit)}
-            {' · PO rate '}<span className="font-semibold text-[#003049]">{fmtNum(poRate)}</span>
+            Available <span className="font-semibold text-[#003049]">{fmtNum(available)}{unit}</span>
+            {' · PO Qty '}{fmtNum(lot.po_qty_metres)}m
+            {lot.metres_per_dozen != null && ` · ${fmtNum(lot.metres_per_dozen)} m/dozen`}
           </div>
         </div>
 
-        {/* ONE decision, made first, with the real destinations named. A stage
-            with a single destination still shows its tile rather than hiding the
-            step — the user should be able to see where the goods are going. */}
+        {/* ONE decision, made first, with the real destinations named. */}
         <div>
           <label className={labelCls}>
             Send this lot to <span className="text-red-500">*</span>
@@ -299,6 +324,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
           {isEdit && (
             <p className="mt-1 text-[11px] text-gray-400">
               An edit corrects this challan where it is. To send it somewhere else, withdraw it and raise a new one.
+              Challan No, Party, rate and the hand-over fields apply to every line of the challan.
             </p>
           )}
         </div>
@@ -315,10 +341,8 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             />
           </Field>
 
-          {/* A dropdown, not free text. The master replaced the old datalist:
-              typing meant every spelling variant became a new party, and nothing
-              stopped a packer being named for stitching work. Already narrowed
-              to parties tagged for this destination. */}
+          {/* A dropdown, not free text, already narrowed to parties tagged for
+              this destination. */}
           <Field
             label="Party Name"
             required
@@ -336,63 +360,20 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             </select>
           </Field>
 
+          {/* Named for the stage the goods are LEAVING: the work that was just
+              done is what is being paid for. Per dozen, like every challan rate
+              now, and one rate for the whole challan. */}
           <Field
-            label={`Sent Qty (${unit})`}
-            required
-            hint={`At most ${fmtQty(available, unit)} — the rest stays at ${lot.stage}`}
+            label={rateLabel}
+            hint={`What ${sourceStage?.toLowerCase()} cost per dozen for the goods on this challan`}
           >
             <input
-              type="number" min={0.01} step="0.01" max={available}
-              value={form.sent_qty}
-              onChange={e => setField('sent_qty', e.target.value)}
+              type="number" min={0} step="0.01"
+              value={form.process_rate}
+              onChange={e => setField('process_rate', e.target.value)}
               className={inputCls}
             />
           </Field>
-
-          {/* Sits next to Sent Qty because it describes the goods being sent,
-              not the hand-over. */}
-          <Field label="Challan Type" required hint="The grade of goods on this challan">
-            <select
-              value={form.challan_type}
-              onChange={e => setField('challan_type', e.target.value)}
-              className={inputCls}
-            >
-              <option value="">Select...</option>
-              {CHALLAN_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </Field>
-
-          {/* Dozens sit under the metres they are counted from, and the yield
-              sits beside them, so the arithmetic is visible as it is typed
-              rather than discovered later on a report. Counted off Sent Qty,
-              which is the only quantity this form records. */}
-          {isDozenStage && (
-            <Field
-              label="Dozens Received"
-              required
-              hint="How many dozen are on this challan"
-            >
-              <input
-                type="number" min={0.01} step="0.01"
-                value={form.received_dozens}
-                onChange={e => setField('received_dozens', e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-          )}
-
-          {isDozenStage && (
-            <Field
-              label="Metre per Dozen"
-              hint="Metres divided by dozens — the yield. Worked out for you"
-            >
-              <input
-                value={perDozen == null ? '' : fmtNum(perDozen)}
-                disabled
-                className={`${inputCls} bg-gray-50 text-gray-500`}
-              />
-            </Field>
-          )}
 
           {isExit && (
             <Field
@@ -410,15 +391,8 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             </Field>
           )}
 
-          {/* The warehouse's own number for what it just took in. Separate from
-              the Incoming No carried down the chain, which tracks the material
-              back to the lot it came from — this one is how Panchal files it. */}
           {isStock && (
-            <Field
-              label="PCL Inc No"
-              required
-              hint="Panchal's incoming number for this lot"
-            >
+            <Field label="PCL Inc No" required hint="Panchal's incoming number for this lot">
               <input
                 value={form.panchal_incoming_no}
                 onChange={e => setField('panchal_incoming_no', e.target.value)}
@@ -429,8 +403,6 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             </Field>
           )}
 
-          {/* Asked only where the hand-over is real — see the note at the top.
-              Everywhere else the server stamps whoever entered the row. */}
           {needsChecker && (
             <Field
               label="Checked By"
@@ -449,35 +421,137 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
               </select>
             </Field>
           )}
+        </div>
 
-          {/* Named for the stage the work lands at, and holding only that
-              stage's charge. Rates no longer roll up into a running total — each
-              stage keeps its own, and the lot's ladder shows them side by side
-              against the PO rate.
-
-              "Rate for X" rather than "X Rate" because the form is raised from
-              the tab of the stage the goods are LEAVING: standing on Gray and
-              being asked for a bare "Processed Rate" reads like the gray goods
-              in hand are being priced. The gray charge came in on the PO receipt
-              and is already shown as Gray Rate. The hint names the column this
-              number lands in, so the two cannot be confused. */}
-          <Field
-            label={`Rate for ${target}${pricedPerDozen(target) ? ' (per dozen)' : ''}`}
-            hint={isExit
-              ? 'What this sale is booked at, per metre'
-              : `What ${target?.toLowerCase()} costs per ${rateUnitFor(target)} — shows as ${target} Rate`}
-          >
-            <input
-              type="number" min={0} step="0.01"
-              value={form.process_rate}
-              onChange={e => setField('process_rate', e.target.value)}
-              className={inputCls}
-            />
-          </Field>
-
-          <Field label="PO Rate" hint="From the PO receipt this lot came in on — edit it there">
-            <input value={fmtNum(poRate)} disabled className={`${inputCls} bg-gray-50 text-gray-500`} />
-          </Field>
+        {/* LINE ITEMS — one row per grade sent. The total sits on top, so the
+            challan's whole is read before its parts. */}
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <label className={labelCls}>
+              Line Items <span className="text-red-500">*</span>
+            </label>
+            {!isEdit && (
+              <button
+                type="button"
+                onClick={addLine}
+                className="inline-flex items-center gap-1 text-xs text-[#c1121f] hover:underline"
+              >
+                <Plus size={12} />Add line
+              </button>
+            )}
+          </div>
+          <div className="overflow-x-auto border border-gray-200 rounded-lg">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-xs text-gray-500">
+                <tr>
+                  <th className="px-2 py-2 text-left font-medium w-8">#</th>
+                  <th className="px-2 py-2 text-left font-medium">Challan Type</th>
+                  {parentDozen ? (
+                    <th className="px-2 py-2 text-left font-medium">Dozens Sent</th>
+                  ) : (
+                    <>
+                      <th className="px-2 py-2 text-left font-medium">Sent Qty (m)</th>
+                      <th className="px-2 py-2 text-left font-medium">Dozens Received</th>
+                      <th className="px-2 py-2 text-left font-medium">Metre per Dozen</th>
+                    </>
+                  )}
+                  <th className="px-2 py-2 w-8" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                <tr className="bg-[#fdf0d5]/40 text-xs font-semibold text-[#003049]">
+                  <td className="px-2 py-2" />
+                  <td className="px-2 py-2">
+                    Total{lines.length > 1 ? ` · ${lines.length} lines` : ''}
+                  </td>
+                  {parentDozen ? (
+                    <td className="px-2 py-2">{fmtNum(totalDozens)} dozen of {fmtNum(available)}</td>
+                  ) : (
+                    <>
+                      <td className="px-2 py-2">{fmtNum(totalSent)}m of {fmtNum(available)}m</td>
+                      <td className="px-2 py-2">{fmtNum(totalDozens)} dozen</td>
+                      <td className="px-2 py-2">{totalPerDozen == null ? '—' : fmtNum(totalPerDozen)}</td>
+                    </>
+                  )}
+                  <td />
+                </tr>
+                {lines.map((l, i) => {
+                  const perDozen = parentDozen ? null : metresPerDozen(l.sent_qty, l.received_dozens);
+                  return (
+                    <tr key={l.key}>
+                      <td className="px-2 py-1.5 text-gray-400 text-xs">{i + 1}</td>
+                      <td className="px-2 py-1.5">
+                        <select
+                          value={l.challan_type}
+                          onChange={e => setLine(l.key, { challan_type: e.target.value })}
+                          className={cellInputCls}
+                        >
+                          <option value="">Select...</option>
+                          {CHALLAN_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </td>
+                      {parentDozen ? (
+                        <td className="px-2 py-1.5">
+                          <input
+                            type="number" min={0.01} step="0.01"
+                            value={l.sent_dozens}
+                            onChange={e => setLine(l.key, { sent_dozens: e.target.value })}
+                            className={cellInputCls}
+                          />
+                        </td>
+                      ) : (
+                        <>
+                          <td className="px-2 py-1.5">
+                            <input
+                              type="number" min={0.01} step="0.01"
+                              value={l.sent_qty}
+                              onChange={e => setLine(l.key, { sent_qty: e.target.value })}
+                              className={cellInputCls}
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              type="number" min={0.01} step="0.01"
+                              value={l.received_dozens}
+                              onChange={e => setLine(l.key, { received_dozens: e.target.value })}
+                              className={cellInputCls}
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            {/* The yield of this line alone — metres sent over
+                                the dozens they came back as. Worked out, never
+                                typed. */}
+                            <input
+                              value={perDozen == null ? '' : fmtNum(perDozen)}
+                              disabled
+                              className={`${cellInputCls} bg-gray-50 text-gray-500`}
+                            />
+                          </td>
+                        </>
+                      )}
+                      <td className="px-2 py-1.5 text-right">
+                        {!isEdit && lines.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeLine(l.key)}
+                            title="Remove this line"
+                            className="p-1 rounded hover:bg-red-50 text-red-500"
+                          >
+                            <X size={14} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-1 text-[11px] text-gray-400">
+            {parentDozen
+              ? `From ${sourceStage} on the goods are counted in dozens: the dozens sent are what the next stage receives.`
+              : 'Each line becomes its own lot at the destination. Metre per Dozen is the metres sent divided by the dozens that came back.'}
+          </p>
         </div>
 
         <div className="flex justify-end gap-2 pt-2">

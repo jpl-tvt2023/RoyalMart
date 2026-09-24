@@ -89,6 +89,11 @@ const RIGHT_COLUMNS = [
 // One real <td> per line row — no more chip+text blob. Order info first
 // (Qty, Rate), then fulfillment tracking (Received, Short), then the
 // number derived from those two (Pending) last.
+// Long vendor and article names wrap onto extra lines inside a capped width
+// instead of stretching the table sideways. The cap sits on an inner div
+// because max-width on a <td> is ignored by the auto table layout.
+const WRAP_CELL = 'whitespace-normal break-words leading-snug';
+
 const ARTICLE_COLUMNS = ['Category', 'Item Name', 'Variant', 'Qty', 'UM', 'Rate', 'Received', 'Short', 'Pending'];
 const TABLE_COL_COUNT = LEFT_COLUMNS.length + ARTICLE_COLUMNS.length + RIGHT_COLUMNS.length + 2; // + Actions + History
 
@@ -457,16 +462,16 @@ export default function OutboundPOList() {
                             <FileText size={14} className="text-gray-400 shrink-0" />{po.order_no}
                           </Link>
                         </td>
-                        <td rowSpan={lines.length} className="px-4 py-3 whitespace-nowrap align-middle">{po.vendor_name}</td>
+                        <td rowSpan={lines.length} className="px-4 py-3 align-middle"><div className={`${WRAP_CELL} max-w-[10rem]`}>{po.vendor_name}</div></td>
                         <td rowSpan={lines.length} className="px-4 py-3 align-middle"><Badge color={STATUS_COLORS[po.status] || 'gray'}>{po.status}</Badge></td>
                         <td rowSpan={lines.length} className="px-4 py-3 align-middle"><FlagCell po={po} /></td>
                       </>
                     )}
                     {l ? (
                       <>
-                        <td className="px-3 py-2 text-gray-700 whitespace-nowrap">{l.category}</td>
-                        <td className="px-3 py-2 text-gray-700 whitespace-nowrap">{l.item_name}</td>
-                        <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{l.variant || '—'}</td>
+                        <td className="px-3 py-2 text-gray-700"><div className={`${WRAP_CELL} max-w-[8rem]`}>{l.category}</div></td>
+                        <td className="px-3 py-2 text-gray-700"><div className={`${WRAP_CELL} max-w-[9rem]`}>{l.item_name}</div></td>
+                        <td className="px-3 py-2 text-gray-600"><div className={`${WRAP_CELL} max-w-[7rem]`}>{l.variant || '—'}</div></td>
                         <td className="px-3 py-2 text-gray-700">{l.qty}</td>
                         <td className="px-3 py-2 text-gray-600">{l.unit_metric || '—'}</td>
                         <td className={`px-3 py-2 ${(l.flags || []).includes('rate_mismatch') ? 'text-red-600 font-medium' : 'text-gray-700'}`}>{l.rate}</td>

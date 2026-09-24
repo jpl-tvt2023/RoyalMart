@@ -1102,7 +1102,7 @@ describe('Outbound POs API', () => {
 
     const fabricBody = (overrides = {}) => ({
       received_qty: 100, received_rate: 10, bill_no: `B-${uid()}`, checked_by: warehousePocId,
-      incoming_no: `IN-${uid()}`, incoming_stage: 'Gray', qty_in_metres: 400,
+      incoming_no: `IN-${uid()}`, incoming_stage: 'Processing', qty_in_metres: 400,
       ...overrides,
     });
 
@@ -1129,10 +1129,10 @@ describe('Outbound POs API', () => {
         // Packed is one of the two stages that count pieces, so the delivery
         // carries a dozen count as well as its metres.
         const created = await postReceipt(poId, lineId,
-          fabricBody({ incoming_stage: 'Packed', received_dozens: 20 }));
+          fabricBody({ incoming_stage: 'Packing', received_dozens: 20 }));
         expect(created.status).toBe(201);
         const receipt = (await lineOf(poId)).receipts[0];
-        expect(receipt.incoming_stage).toBe('Packed');
+        expect(receipt.incoming_stage).toBe('Packing');
         expect(receipt.incoming_prefix).toBeTruthy();
         expect(receipt.received_dozens).toBe(20);
       });
@@ -1156,7 +1156,7 @@ describe('Outbound POs API', () => {
 
       test('dozens are required when the goods arrive already made up', async () => {
         const { poId, lineId } = await fabricLine();
-        const res = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Stitched' }));
+        const res = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Stitching' }));
         expect(res.status).toBe(400);
         expect(res.body.message).toMatch(/Dozens Received is required/);
       });
@@ -1188,7 +1188,7 @@ describe('Outbound POs API', () => {
       test('a stage is refused', async () => {
         const { poId, lineId } = await packagingLine();
         const res = await postReceipt(poId, lineId, {
-          received_qty: 1, received_rate: 10, incoming_stage: 'Gray',
+          received_qty: 1, received_rate: 10, incoming_stage: 'Processing',
         });
         expect(res.status).toBe(400);
         expect(res.body.message).toMatch(/fabric articles/i);
@@ -1407,7 +1407,7 @@ describe('Outbound POs API', () => {
     }
 
     const fabricReceipt = (poId, lineId, overrides = {}) => postReceipt(poId, lineId, {
-      received_qty: 1, incoming_no: `IN-${uid()}`, incoming_stage: 'Gray', qty_in_metres: 40,
+      received_qty: 1, incoming_no: `IN-${uid()}`, incoming_stage: 'Processing', qty_in_metres: 40,
       ...overrides,
     });
 
@@ -1451,7 +1451,7 @@ describe('Outbound POs API', () => {
       await request(app)
         .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
         .set('Authorization', `Bearer ${token}`)
-        .send({ incoming_stage: 'Gray' });
+        .send({ incoming_stage: 'Processing' });
       const detail = await getPO(poId);
       expect(detail.body.lines[0].receipts[0].flags).not.toContain('missing_incoming_stage');
       expect(detail.body.lines[0].receipts[0].incoming_prefix).toBeTruthy();

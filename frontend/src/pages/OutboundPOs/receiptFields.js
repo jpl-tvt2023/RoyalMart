@@ -82,7 +82,7 @@ export const RECEIPT_STAGES = STAGES.filter(s => s !== 'Third Party');
 // Fabric bought in ALREADY STITCHED, PACKED or straight into the warehouse
 // arrives as countable pieces, so it carries a dozen count exactly as a challan
 // into those stages does. Keyed on the stage being received at, not on fabric
-// alone: a Gray receipt has no pieces to count. Reads countsDozens, so it
+// alone: a Processing receipt has no pieces to count. Reads countsDozens, so it
 // widened with DOZEN_STAGES rather than needing its own list.
 export const receiptCountsDozens = (line, incomingStage) =>
   isFabricLine(line) && countsDozens(incomingStage);
@@ -189,7 +189,7 @@ export function withDerivedAfterRate(draft, field, value) {
 }
 
 // Stage options, in process order rather than alphabetically, so the list reads
-// Gray -> Processed -> Stitched -> Packed the way the material actually moves.
+// Processing -> Stitching -> Packing -> Panchal the way the material actually moves.
 //
 // A STAGE, not a prefix. Nobody picks a prefix anywhere any more: the stage is
 // the fact being recorded, and the code that prints on it follows from it on the

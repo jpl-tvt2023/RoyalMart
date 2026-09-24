@@ -15,7 +15,10 @@ import {
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
 const thCls = 'px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide';
 
-const EMPTY_FORM = { name: '', uses: [] };
+const EMPTY_FORM = { name: '', short_name: '', uses: [] };
+
+// Twin of SHORT_NAME_MAX in stitchingParties.controller.js.
+const SHORT_NAME_MAX = 10;
 
 /**
  * The stitching party master: processing houses, and the buyers finished goods
@@ -55,7 +58,14 @@ export default function StitchingPartiesTab() {
 
   const openAdd = () => { setForm(EMPTY_FORM); setFormError(''); setModal('add'); };
   const openEdit = (row) => {
-    setForm({ name: row.name, uses: row.uses || [] });
+    // Only tags that are still destinations. A party tagged for Processed before
+    // migration 087 carries a Processing tag, and nothing is sent TO Processing
+    // any more -- re-sending it would get the whole save refused.
+    setForm({
+      name: row.name,
+      short_name: row.short_name || '',
+      uses: (row.uses || []).filter(u => PARTY_USE_STAGES.includes(u)),
+    });
     setFormError('');
     setModal({ type: 'edit', row });
   };
@@ -72,11 +82,12 @@ export default function StitchingPartiesTab() {
     setSaving(true);
     setFormError('');
     try {
+      const body = { name, short_name: form.short_name.trim(), uses: form.uses };
       if (modal === 'add') {
-        await createStitchingParty({ name, uses: form.uses });
+        await createStitchingParty(body);
         toast.success('Party added');
       } else {
-        await updateStitchingParty(modal.row.id, { name, uses: form.uses });
+        await updateStitchingParty(modal.row.id, body);
         toast.success('Party updated');
       }
       setModal(null);
@@ -122,6 +133,7 @@ export default function StitchingPartiesTab() {
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className={thCls}>Name</th>
+                <th className={thCls}>Short Name</th>
                 <th className={thCls}>Valid For</th>
                 <th className={thCls}>In Use</th>
                 <th className={thCls}>Status</th>
@@ -132,7 +144,7 @@ export default function StitchingPartiesTab() {
             <tbody className="divide-y divide-gray-100">
               {loading && [...Array(4)].map((_, i) => (
                 <tr key={`sk-${i}`}>
-                  {[...Array(6)].map((__, j) => (
+                  {[...Array(7)].map((__, j) => (
                     <td key={j} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td>
                   ))}
                 </tr>
@@ -141,6 +153,9 @@ export default function StitchingPartiesTab() {
               {!loading && rows.map(row => (
                 <tr key={row.id} className={row.is_active ? '' : 'opacity-50'}>
                   <td className="px-4 py-2 font-medium text-[#003049]">{row.name}</td>
+                  <td className="px-4 py-2 font-mono text-gray-600">
+                    {row.short_name || <span className="text-gray-300 font-sans">initials</span>}
+                  </td>
                   <td className="px-4 py-2">
                     {row.uses?.length ? (
                       <div className="flex flex-wrap gap-1">
@@ -205,6 +220,23 @@ export default function StitchingPartiesTab() {
                 was raised under, so past dispatches do not change under anyone. */}
             <p className="mt-1 text-[11px] text-gray-400">
               Challans already raised keep the name they were raised under.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Short Name</label>
+            <input
+              value={form.short_name}
+              onChange={e => setForm(f => ({ ...f, short_name: e.target.value }))}
+              className={inputCls}
+              maxLength={SHORT_NAME_MAX}
+              placeholder="e.g. SKT"
+            />
+            {/* The Stitching page lists each job worker a lot passed through as
+                "Stitching - SKT", under the PO party it started from. */}
+            <p className="mt-1 text-[11px] text-gray-400">
+              Shown on the Stitching page as “Stitching - {form.short_name.trim() || 'initials'}”.
+              Leave blank to use the name&apos;s initials.
             </p>
           </div>
 

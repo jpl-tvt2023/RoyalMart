@@ -19,7 +19,7 @@ export async function getStitchingJourney(src, id) {
   return data;
 }
 
-// Close/reopen take the lot type too: a Packed lot may be a forwarded entry or a
+// Close/reopen take the lot type too: a Panchal lot may be a forwarded entry or a
 // receipt bought straight at that stage, and they live in different tables.
 export async function closeStitchingLot(src, id) {
   const { data } = await api.post(`/stitching/${src}/${id}/close`);

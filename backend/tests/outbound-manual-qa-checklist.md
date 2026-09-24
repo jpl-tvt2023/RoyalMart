@@ -116,37 +116,11 @@ New in this change — see migrations `084` and `085`.
       Changing it shows a `unit_metric` old → new diff in the History drawer.
 - [ ] A receipt entered BEFORE this change shows the line's unit rather than a
       dash (migration 084 backfilled it).
-- [ ] **Stitching page**: Gray, Processed and All head the quantity column
-      **Qty in metres**. Stitched, Packed, Panchal and Third Party drop that
-      column entirely and show **Dozens + M/Dozen** instead, with the `sent …`
-      sub-line under Dozens and the balance header reading **Balance (m)**.
-      There is no **Short** column on any tab. **Checked By** appears on
-      Panchal and Third Party only; **PCL Inc No** on Panchal only; Outbound
-      Bill No on Third Party only. The columns still line up with their headers
-      on every one of the seven tabs, including the nested challan rows.
 - [ ] The Journey drawer no longer prints "entered by …".
-- [ ] Download XLSX from a Stitching tab: no `Short` column, the quantity
-      column is still headed `Qty in metres` (the export is deliberately the
-      same on every tab — a saved file outlives the tab it came from), and
-      `PCL Inc No` + `Checked By` are present.
-- [ ] **Add Challan has no Received Qty field.** After sending, the lot's
-      Balance falls by the sent quantity and the nested challan row reads
-      `sent …` with no `back …` and no `… short`.
-- [ ] The challan rate field reads **"Rate for Processed"** (not "Processed
-      Rate") on a Gray → Processed challan, and its hint says it shows as
-      Processed Rate. The value still lands in the **Processed Rate** column,
-      and **Gray Rate still comes from the PO receipt's Process Rate** — the
-      ladder did not move.
-- [ ] At Stitched/Packed the rate label reads "Rate for Packed (per dozen)" and
-      Metre per Dozen is derived from **Sent Qty** divided by Dozens.
-- [ ] **Counted is not priced.** Sending to Panchal or Third Party now asks for
-      Dozens Received, but the rate label reads plain "Rate for Panchal" /
-      "Rate for Third Party" with **no "(per dozen)" suffix** and a hint saying
-      per metre. Those two are counted in dozens and still charged per metre.
 - [ ] **Checked By / PCL Inc No**: a challan to Panchal asks for both, a
       challan to Third Party asks for Checked By + Outbound Bill No, and
-      neither field appears on a challan to Processed, Stitched or Packed. The
-      Checked By list holds Warehouse_POC users only.
+      neither field appears on a challan to Stitching or Packing. The Checked
+      By list holds Warehouse_POC users only.
 - [ ] **Add Receipt no longer asks for Checked By.** Saving works without it,
       and the receipts table on the PO detail page shows your own name in the
       Checked By column (header no longer carries a `*`).
@@ -159,6 +133,63 @@ New in this change — see migrations `084` and `085`.
 - [ ] Editing a challan onto a number+party pair that already exists is refused;
       renaming just the party onto a clashing pair is refused too.
 - [ ] Withdrawing a challan still frees its number for re-entry to that party.
+
+## Stages renamed, Gray removed, dozens from Stitching on, challan lines
+
+New in this change — see migration `087` (run `node src/migrations/preflight-087.js`
+first; it must report 0 Gray rows).
+
+**Purchase orders**
+- [ ] `/outbound/purchase-orders`: long Vendor, Category, Item Name and Variant
+      values wrap onto a second line inside a narrower column instead of
+      stretching the table sideways.
+- [ ] PO Details: the Article column is narrower. On an approved (read-only) PO
+      the article shows as wrapped text (category small and grey above
+      `item · variant`); on an editable line it stays a dropdown and the full
+      name shows on hover.
+- [ ] Add Receipt on a fabric line opens with **Processing** pre-selected. The
+      Stage list offers Processing, Stitching, Packing, Panchal — **no Gray**.
+- [ ] Picking Panchal shows the hint "… this receipt will be recorded as
+      Closed". After saving, the lot sits on the Panchal tab as **Closed**
+      (untick the status filter to see it) and can be reopened.
+
+**Stitching page**
+- [ ] Tabs read **Processing, Stitching, Packing, Panchal, Third Party, All**.
+      A session left on the old Gray tab opens on Processing, not blank.
+- [ ] Every tab leads with **PO Party Name** (the vendor); lots that went
+      through job workers list them underneath as `Stitching - SKT`. With no
+      Short Name set in Purchase Config it shows the party's initials.
+- [ ] **PO No** sits between Article and Status on every tab (All included) and
+      links to the PO. **PO Qty (m)** appears on every tab.
+- [ ] Processing: Qty (m) and Balance (m). Stitching/Packing: Dozens, M/Dozen,
+      Balance (dz). Panchal and Third Party: Dozens only — **no M/Dozen and no
+      Balance**.
+- [ ] Hovering **M/Dozen** explains where the figure came from; on a lot sent
+      on from Stitching it says it was carried over from the Processing challan.
+- [ ] There is one **Rate** column. Hovering it lists PO rate × m/dozen, each
+      stage rate by name, and the total per dozen. A Processing lot's total is
+      per metre and says why. The card is not clipped by the table edge.
+- [ ] Purchase Config → Stitching Parties has a **Short Name** column/field
+      (max 10 chars); clearing it falls back to initials.
+
+**Add Challan**
+- [ ] From the **Processing** tab: the rate reads **"Processing rate (per
+      dozen)"**; line items are Challan Type · Sent Qty (m) · Dozens Received ·
+      Metre per Dozen. **Add line** adds a row; the **Total** row above the
+      lines sums metres and dozens and shows the overall m/dozen.
+- [ ] Two lines (Fresh 60 m / 30 dz, Second 20 m / 8 dz) create **two lots** on
+      the Stitching tab, each with its own M/Dozen (2 and 2.5); the parent's
+      balance falls by 80 m; under the parent the challan shows a total row
+      above its two lines.
+- [ ] Lines adding up to more than the balance are refused ("Cannot send 110m —
+      only 100m is left on this lot"). A missing field on line 2 is reported as
+      "Line 2: …".
+- [ ] From the **Stitching** tab: rate reads "Stitching rate (per dozen)", and
+      a line is only Challan Type · Dozens Sent. The lot that arrives at
+      Packing holds exactly those dozens.
+- [ ] Editing one line of a two-line challan and changing the rate or party
+      changes it on **both** lines; changing the type changes only that line.
+- [ ] Write-off from a Stitching lot is in dozens ("only 40 dozen is left").
 
 ## Copy issues (not functional bugs — flag, don't spend test time here)
 

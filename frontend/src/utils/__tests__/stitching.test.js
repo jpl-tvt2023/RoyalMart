@@ -1,8 +1,8 @@
 import { describe, test, expect } from 'vitest';
 import {
   STAGES, STAGE_TABS, ALL_TAB, nextStage, DESTINATIONS, destinationsFor, canSendTo,
-  EXIT_STAGE, STOCK_STAGE, PARTY_USE_STAGES, rateLadderStages,
-  DOZEN_STAGES, DOZEN_RATE_STAGES, countsDozens, pricedPerDozen, metresPerDozen, rateUnitFor,
+  EXIT_STAGE, STOCK_STAGE, PARTY_USE_STAGES,
+  DOZEN_STAGES, countsDozens, balanceUnitFor, CHALLAN_RATE_UNIT, stageRateLabel, metresPerDozen,
   carriedIncomingNo, soleActivePrefix,
   challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX, fmtQty,
   writeOffReasonError, WRITE_OFF_REASON_MAX, STATUSES, OPEN_STATUSES,
@@ -34,8 +34,8 @@ describe('DESTINATIONS', () => {
     }
   });
 
-  // Material never goes backwards. It may SKIP a stage — Processed straight to
-  // Packed is a real route — but it never returns to one it has left.
+  // Material never goes backwards. It may SKIP a stage — Processing straight to
+  // Packing is a real route — but it never returns to one it has left.
   test('material only ever moves forward along the chain', () => {
     for (const stage of STAGES) {
       for (const dest of DESTINATIONS[stage]) {
@@ -49,49 +49,46 @@ describe('DESTINATIONS', () => {
     expect(destinationsFor(EXIT_STAGE)).toEqual([]);
   });
 
-  test('Gray has exactly one destination, so the chooser can pre-select it', () => {
-    expect(destinationsFor('Gray')).toEqual(['Processed']);
-    expect(nextStage('Gray')).toBe('Processed');
+  // Gray is gone: fabric is never booked in raw, so the chain starts at the
+  // first stage that works on it. The stages are named for the work done.
+  test('the chain is Processing, Stitching, Packing, then the warehouse or the exit', () => {
+    expect(STAGES).toEqual(['Processing', 'Stitching', 'Packing', 'Panchal', 'Third Party']);
+    expect(STAGES).not.toContain('Gray');
+    expect(nextStage('Processing')).toBe('Stitching');
   });
 
   test('canSendTo rejects a route that is not in the table', () => {
-    expect(canSendTo('Processed', 'Packed')).toBe(true);
-    expect(canSendTo('Gray', 'Packed')).toBe(false);
-    expect(canSendTo('Packed', 'Stitched')).toBe(false);
+    expect(canSendTo('Processing', 'Packing')).toBe(true);
+    expect(canSendTo('Packing', 'Stitching')).toBe(false);
+    expect(canSendTo('Stitching', 'Processing')).toBe(false);
   });
 
-  // Gray falls out on its own: nothing is ever SENT to Gray, because material
-  // enters the chain there on a receipt.
+  // Processing falls out on its own: nothing is ever SENT to it, because
+  // material enters the chain there on a receipt.
   test('party use tags are exactly the destinations', () => {
-    expect(PARTY_USE_STAGES).not.toContain('Gray');
+    expect(PARTY_USE_STAGES).not.toContain('Processing');
     expect(PARTY_USE_STAGES).toEqual([...new Set(Object.values(DESTINATIONS).flat())]);
   });
 });
 
-// Metres stay the currency of the chain. Dozens are an extra count that only
-// exists once there are pieces to count, and the yield is what the count is for.
+// Processing is the last stage in metres. From Stitching on the goods are
+// counted in dozens and nothing else, and every challan rate is per dozen.
 describe('dozens and yield', () => {
-  test('pieces are counted from Stitched onward, never before', () => {
-    expect(DOZEN_STAGES).toEqual(['Stitched', 'Packed', 'Panchal', 'Third Party']);
-    for (const stage of ['Stitched', 'Packed', 'Panchal', 'Third Party']) {
+  test('dozens are counted from Stitching on, metres only at Processing', () => {
+    expect(DOZEN_STAGES).toEqual(['Stitching', 'Packing', 'Panchal', 'Third Party']);
+    for (const stage of DOZEN_STAGES) {
       expect(countsDozens(stage)).toBe(true);
+      expect(balanceUnitFor(stage)).toBe('dz');
     }
-    // Before Stitched there are no pieces — fabric is just fabric.
-    for (const stage of ['Gray', 'Processed']) {
-      expect(countsDozens(stage)).toBe(false);
-    }
+    expect(countsDozens('Processing')).toBe(false);
+    expect(balanceUnitFor('Processing')).toBe('m');
   });
 
-  // The narrower list, and the reason it is a separate one: counting pieces and
-  // charging by the piece are different questions, and they stopped having the
-  // same answer when the count carried past job work.
-  test('only job work is PRICED per dozen', () => {
-    expect(DOZEN_RATE_STAGES).toEqual(['Stitched', 'Packed']);
-    expect(pricedPerDozen('Stitched')).toBe(true);
-    expect(pricedPerDozen('Packed')).toBe(true);
-    for (const stage of ['Gray', 'Processed', 'Panchal', 'Third Party']) {
-      expect(pricedPerDozen(stage)).toBe(false);
-    }
+  // A challan's rate belongs to the stage the goods LEAVE, and is per dozen.
+  test('a challan rate is per dozen and named for the stage being left', () => {
+    expect(CHALLAN_RATE_UNIT).toBe('dozen');
+    expect(stageRateLabel('Processing')).toBe('Processing rate');
+    expect(stageRateLabel('Stitching')).toBe('Stitching rate');
   });
 
   test('the yield is metres over dozens, to two places', () => {
@@ -110,31 +107,11 @@ describe('dozens and yield', () => {
     expect(metresPerDozen(96, '')).toBeNull();
   });
 
-  // A stitcher is paid by the dozen, a dyer by the metre. The label has to say
-  // which, because the same field means different money at different stages.
-  test('the rate is per dozen for job work only, not wherever pieces are counted', () => {
-    expect(rateUnitFor('Stitched')).toBe('dozen');
-    expect(rateUnitFor('Packed')).toBe('dozen');
-    expect(rateUnitFor('Processed')).toBe('metre');
-    // These two COUNT dozens but are not PRICED by them — the warehouse and the
-    // sale are still quoted per metre. This is the guard rail on that split:
-    // wire rateUnitFor back to countsDozens and it fails here.
-    expect(rateUnitFor('Panchal')).toBe('metre');
-    expect(rateUnitFor('Third Party')).toBe('metre');
-  });
-});
-
-describe('rateLadderStages', () => {
-  // A lot can only have been charged for stages it has actually reached.
-  test('covers the stages travelled so far and no further', () => {
-    expect(rateLadderStages('Gray')).toEqual(['Gray']);
-    expect(rateLadderStages('Stitched')).toEqual(['Gray', 'Processed', 'Stitched']);
-  });
 });
 
 describe('carriedIncomingNo', () => {
   test('carries only the number, so the next stage supplies its own prefix', () => {
-    expect(carriedIncomingNo({ incoming_prefix: 'GRY', incoming_no: '123' })).toBe('123');
+    expect(carriedIncomingNo({ incoming_prefix: 'PRC', incoming_no: '123' })).toBe('123');
   });
 
   test('trims, and is empty when there is nothing to carry', () => {
@@ -148,16 +125,16 @@ describe('soleActivePrefix', () => {
   const pfx = (id, stage, is_active = true) => ({ id, stage, is_active, prefix: `P${id}` });
 
   test('pre-picks only when the stage leaves no choice', () => {
-    expect(soleActivePrefix([pfx(1, 'Processed')], 'Processed').id).toBe(1);
+    expect(soleActivePrefix([pfx(1, 'Processing')], 'Processing').id).toBe(1);
     // Two candidates means guessing, which the user would have to spot and undo.
-    expect(soleActivePrefix([pfx(1, 'Processed'), pfx(2, 'Processed')], 'Processed')).toBeNull();
+    expect(soleActivePrefix([pfx(1, 'Processing'), pfx(2, 'Processing')], 'Processing')).toBeNull();
   });
 
   test('ignores inactive prefixes and other stages', () => {
-    const all = [pfx(1, 'Processed', false), pfx(2, 'Processed'), pfx(3, 'Stitched')];
-    expect(soleActivePrefix(all, 'Processed').id).toBe(2);
-    expect(soleActivePrefix(all, 'Packed')).toBeNull();
-    expect(soleActivePrefix(undefined, 'Processed')).toBeNull();
+    const all = [pfx(1, 'Processing', false), pfx(2, 'Processing'), pfx(3, 'Stitching')];
+    expect(soleActivePrefix(all, 'Processing').id).toBe(2);
+    expect(soleActivePrefix(all, 'Packing')).toBeNull();
+    expect(soleActivePrefix(undefined, 'Processing')).toBeNull();
   });
 });
 

@@ -12,7 +12,7 @@ const packaging = { qty: 100, received: 0, short: 0 };
 // The minimum a receipt needs before the fabric rules are the thing failing.
 const valid = {
   received_qty: 10, unit_metric: 'taga', received_rate: 10, bill_no: 'B-1',
-  incoming_no: 'IN-1', incoming_stage: 'Gray', qty_in_metres: 400,
+  incoming_no: 'IN-1', incoming_stage: 'Processing', qty_in_metres: 400,
 };
 
 describe('isFabricLine', () => {
