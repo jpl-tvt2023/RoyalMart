@@ -156,9 +156,16 @@ first; it must report 0 Gray rows).
 **Stitching page**
 - [ ] Tabs read **Processing, Stitching, Packing, Panchal, Third Party, All**.
       A session left on the old Gray tab opens on Processing, not blank.
-- [ ] Every tab leads with **PO Party Name** (the vendor); lots that went
-      through job workers list them underneath as `Stitching - SKT`. With no
-      Short Name set in Purchase Config it shows the party's initials.
+- [ ] Every tab leads with **PO Party Name** (the vendor) and exactly one grey
+      line under it: a Panchal lot sent out of Stitching by Mahakali creation
+      reads `Stitching - MC` (the stage it LEFT); a lot booked straight in on a
+      PO receipt reads `Direct from PO`. A multi-hop lot shows its latest hop
+      plus `+N`, full chain on hover. With no Short Name set in Purchase Config
+      it shows the party's initials. Every row keeps the same height.
+- [ ] Nested challan rows read in one order with dots between the parts —
+      `Challan 02 → Panchal · Mahakali creation · Fresh · sent 3570.5 dz ·
+      [In Stock]` — the status is the only badge, and the destination lot's
+      incoming no is not repeated there (it is on that stage's own tab).
 - [ ] **PO No** sits between Article and Status on every tab (All included) and
       links to the PO. **PO Qty (m)** appears on every tab.
 - [ ] Processing: Qty (m) and Balance (m). Stitching/Packing: Dozens, M/Dozen,
@@ -173,6 +180,9 @@ first; it must report 0 Gray rows).
       (max 10 chars); clearing it falls back to initials.
 
 **Add Challan**
+- [ ] Add/Edit Challan: **Line Items sit right under Challan No and Party
+      Name**; the rate, PCL Inc No, Checked By and Outbound Bill No follow below
+      a light divider. Submitting an empty form reports errors top to bottom.
 - [ ] From the **Processing** tab: the rate reads **"Processing rate (per
       dozen)"**; line items are Challan Type · Sent Qty (m) · Dozens Received ·
       Metre per Dozen. **Add line** adds a row; the **Total** row above the

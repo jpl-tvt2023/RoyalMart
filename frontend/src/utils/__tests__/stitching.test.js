@@ -5,7 +5,7 @@ import {
   DOZEN_STAGES, countsDozens, balanceUnitFor, CHALLAN_RATE_UNIT, stageRateLabel, metresPerDozen,
   carriedIncomingNo, soleActivePrefix,
   challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX, fmtQty,
-  writeOffReasonError, WRITE_OFF_REASON_MAX, STATUSES, OPEN_STATUSES,
+  writeOffReasonError, WRITE_OFF_REASON_MAX, STATUSES, OPEN_STATUSES, statusesFor,
 } from '../stitching';
 
 describe('STAGE_TABS', () => {
@@ -226,5 +226,26 @@ describe('statuses', () => {
   test('Sold is a status but is not open work', () => {
     expect(STATUSES).toContain('Sold');
     expect(OPEN_STATUSES).not.toContain('Sold');
+  });
+});
+
+// Each tab's status filter offers only what a lot there can actually be --
+// the same rules computeStatus applies on the server.
+describe('statusesFor', () => {
+  test('a working stage is Pending, Partial or Forwarded', () => {
+    for (const stage of ['Processing', 'Stitching', 'Packing']) {
+      expect(statusesFor(stage)).toEqual(['Pending', 'Partial', 'Forwarded']);
+    }
+  });
+
+  test('the warehouse holds or closes, and a sale is only ever Sold', () => {
+    expect(statusesFor(STOCK_STAGE)).toEqual(['In Stock', 'Closed']);
+    expect(statusesFor(EXIT_STAGE)).toEqual(['Sold']);
+  });
+
+  test('the All view offers every status, and the tabs together cover them', () => {
+    expect(statusesFor(ALL_TAB)).toEqual(STATUSES);
+    const union = new Set(STAGES.flatMap(statusesFor));
+    expect([...union].sort()).toEqual([...STATUSES].sort());
   });
 });

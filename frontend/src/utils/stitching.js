@@ -44,6 +44,18 @@ export const STAGE_TABS = [...STAGES, ALL_TAB];
 // state: sent 40 and back 38 is an ordinary lot holding 38 with 2 short.
 export const STATUSES = ['Pending', 'Partial', 'Forwarded', 'In Stock', 'Closed', 'Sold'];
 
+// The statuses a lot on this tab can actually have, which is all the tab's
+// status filter offers. Follows computeStatus in the backend service: the
+// warehouse is only ever In Stock or Closed, a sale is only ever Sold, and every
+// other stage only ever Pending, Partial or Forwarded. The All view spans them
+// all. Client-only -- the server accepts any list, so there is no twin to keep.
+export const statusesFor = (stage) => {
+  if (stage === STOCK_STAGE) return ['In Stock', 'Closed'];
+  if (stage === EXIT_STAGE) return ['Sold'];
+  if (stage === ALL_TAB) return STATUSES;
+  return ['Pending', 'Partial', 'Forwarded'];
+};
+
 // Outstanding work: still holding stock, or packed but not yet dispatched. Twin
 // of OPEN_STATUSES in the backend service, keep in step.
 export const OPEN_STATUSES = ['Pending', 'Partial', 'In Stock'];

@@ -316,7 +316,9 @@ const partyShort = (name, shortName) => {
 };
 
 // "<Stage> - <party short>" -- how a party picked on a challan is shown under the
-// PO party it all started with.
+// PO party it all started with. The stage is the one the goods LEFT: the party
+// on a challan is the one that held them there, which is also the stage the
+// challan's rate is named for ("Stitching - MC" beside a Stitching rate).
 const partyTag = (stage, name, shortName) => `${stage} - ${partyShort(name, shortName)}`;
 
 // THE PER-DOZEN RATE TOTAL. components are the lot's rates as they were

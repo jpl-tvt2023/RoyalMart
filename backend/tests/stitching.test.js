@@ -2518,8 +2518,9 @@ describe('Party chain', () => {
     });
     const row = findLot((await api.listStage({ stage: 'Packing' })).body.rows, 'entry', f2.body.id);
     expect(row.vendor_name).toBe(vendorName);
-    // A master short name wins; a party with none falls back to its initials.
-    expect(row.party_chain).toEqual(['Stitching - SKT', 'Packing - RP']);
+    // Named for the stage each challan LEFT. A master short name wins; a party
+    // with none falls back to its initials.
+    expect(row.party_chain).toEqual(['Processing - SKT', 'Stitching - RP']);
   });
 
   test('a short name is capped, and can be cleared', async () => {
@@ -2531,6 +2532,12 @@ describe('Party chain', () => {
     expect(ok.body.short_name).toBe('SH');
     const cleared = await api.patchParty(ok.body.id, { short_name: '' });
     expect(cleared.body.short_name).toBeNull();
+  });
+
+  test('a lot booked straight in on a PO receipt has no challan party', async () => {
+    const { receiptId } = await processingLot({ qty: 100 });
+    const row = findLot((await api.listStage({ stage: 'Processing' })).body.rows, 'receipt', receiptId);
+    expect(row.party_chain).toEqual([]);
   });
 
   test('initials are derived from the name, and a one-word name keeps three letters', () => {
