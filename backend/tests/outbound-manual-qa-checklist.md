@@ -167,15 +167,16 @@ first; it must report 0 Gray rows).
       [In Stock]` — the status is the only badge, and the destination lot's
       incoming no is not repeated there (it is on that stage's own tab).
 - [ ] **PO No** sits between Article and Status on every tab (All included) and
-      links to the PO. **PO Qty (m)** appears on every tab.
+      links to the PO. **PO Qty (m)** appears on Processing, Stitching and All
+      only (089 — see the section below).
 - [ ] Processing: Qty (m) and Balance (m). Stitching/Packing: Dozens, M/Dozen,
       Balance (dz). Panchal and Third Party: Dozens only — **no M/Dozen and no
       Balance**.
 - [ ] Hovering **M/Dozen** explains where the figure came from; on a lot sent
       on from Stitching it says it was carried over from the Processing challan.
-- [ ] There is one **Rate** column. Hovering it lists PO rate × m/dozen, each
-      stage rate by name, and the total per dozen. A Processing lot's total is
-      per metre and says why. The card is not clipped by the table edge.
+- [ ] On **Panchal and Third Party** the **Rate** column still hovers: PO rate ×
+      m/dozen, each stage rate by name, and the total per dozen. The card is not
+      clipped by the table edge. (Processing/Stitching/Packing: see below.)
 - [ ] Purchase Config → Stitching Parties has a **Short Name** column/field
       (max 10 chars); clearing it falls back to initials.
 
@@ -184,7 +185,7 @@ first; it must report 0 Gray rows).
       Name**; the rate, PCL Inc No, Checked By and Outbound Bill No follow below
       a light divider. Submitting an empty form reports errors top to bottom.
 - [ ] From the **Processing** tab: the rate reads **"Processing rate (per
-      dozen)"**; line items are Challan Type · Sent Qty (m) · Dozens Received ·
+      metre)"** (per metre since the 089 batch); line items are Challan Type · Sent Qty (m) · Dozens Received ·
       Metre per Dozen. **Add line** adds a row; the **Total** row above the
       lines sums metres and dozens and shows the overall m/dozen.
 - [ ] Two lines (Fresh 60 m / 30 dz, Second 20 m / 8 dz) create **two lots** on
@@ -200,6 +201,68 @@ first; it must report 0 Gray rows).
 - [ ] Editing one line of a two-line challan and changing the rate or party
       changes it on **both** lines; changing the type changes only that line.
 - [ ] Write-off from a Stitching lot is in dozens ("only 40 dozen is left").
+
+## Receipt note, Stage Party, stage Rate, graded lots (migrations 089, 090)
+
+Run `npm run migrate` (089, 090) on the target DB, then re-tag parties in
+Purchase Config — a tag now means "works at this stage", Processing included.
+
+**Purchase orders — receipt**
+- [ ] Add/Edit Receipt has a full-width **Note** textarea after Incoming No. A
+      long multi-line note saves; the receipts table shows it in a **Note**
+      column, wrapped, line breaks kept — the row grows taller, the column
+      stays narrow. The Add receipt / No receipts rows still span the full width.
+- [ ] Fabric at **Packing** or **Panchal**: Dozens Received becomes three boxes
+      (Fresh / Second / Third, 0 each) with the total in the hint; all zero is
+      refused ("Enter the dozens for at least one grade"). Metre per Dozen uses
+      the total. The receipts table shows the split under Dozens. At Stitching
+      the single Dozens Received box is unchanged.
+- [ ] An old Packing/Panchal receipt opens with 0 / 0 / 0 and asks for grades on save.
+
+**Stitching page**
+- [ ] **Stage Party Name** sits between Article and PO No on **every** tab, a
+      dropdown of parties tagged for that row's stage (Processing included).
+      Picking one saves at once; a lot's current party stays selectable even
+      if it is no longer tagged.
+- [ ] Change a Processing lot's Stage Party after sending it on: the challans
+      under it now show the new party, and the grey line on the Stitching lots
+      reads `Processing - <new short>`.
+- [ ] **Rate** on Processing, Stitching and Packing rows is a plain input —
+      **`/m` on Processing rows, `/dz` on Stitching and Packing rows**; the save
+      icon appears only after typing. Saving updates the "`<stage>` rate" on
+      every challan out of that lot.
+- [ ] On a Panchal lot reached from Processing, the Rate hover shows the
+      Processing rate as `x/m × m/dz`, converted like the PO rate, while the
+      Stitching and Packing rates are taken per dozen as they are.
+- [ ] **PO Rate** (Processing tab only) = billed rate + receipt Process Rate;
+      hover shows the two parts.
+- [ ] **PO Qty (m)** is gone from Packing, Panchal and Third Party.
+- [ ] Packing, Panchal and Third Party show **Fresh / Second / Third** after
+      Dozens, 0 where a grade is absent.
+- [ ] A lot that has sent goods on refuses a blank Stage Party.
+
+**Add Challan**
+- [ ] The **Party** list is the parties tagged for the stage the goods are
+      **leaving**, pre-filled with the lot's Stage Party; the rate is pre-filled
+      with the lot's Rate. Changing either on a lot with earlier challans shows
+      the amber "Also changes this lot's Stage Party / Rate…" note.
+- [ ] Sending to **Packing / Panchal / Third Party** shows three grade boxes
+      (0 each), not line items; out of Processing a single **Sent Qty (m)** sits
+      above them and the total row shows m → dz · m/dz. The result is **one**
+      lot with the split in the three columns; nested under the parent it reads
+      `Fresh 20 · Second 5`.
+- [ ] Into **Stitching** the line items are unchanged (one lot per line).
+- [ ] Editing a graded challan shows the same three boxes, pre-filled.
+- [ ] Reusing a challan number already raised out of the same lot is refused
+      ("already been raised out of this lot").
+- [ ] Third Party: after the sale, pick the buyer as the Third Party lot's Stage Party.
+
+**One-off merge (after 089)**
+- [ ] `node src/migrations/merge-graded-challans.js` (dry run) lists the
+      multi-line challans it would merge, the lines it skips and why, and the
+      lots whose challans disagree. `--apply` writes `backups/pre-grade-merge-*.json`
+      first. Afterwards each merged challan is one lot; the retired lines show in
+      the Journey as withdrawn "Merged into lot #N".
 
 ## Copy issues (not functional bugs — flag, don't spend test time here)
 

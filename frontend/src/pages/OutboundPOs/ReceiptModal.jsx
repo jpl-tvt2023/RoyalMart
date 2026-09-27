@@ -5,10 +5,11 @@ import Button from '../../components/ui/Button';
 import { addOutboundPOLineReceipt, updateOutboundPOLineReceipt } from '../../api/outboundPOs.api';
 import { fmtNum, STOCK_STAGE } from '../../utils/stitching';
 import {
-  EMPTY_RECEIPT, INCOMING_NO_MAX,
+  EMPTY_RECEIPT, INCOMING_NO_MAX, NOTE_MAX,
   receiptFieldError, withDerivedAfterRate, stageOptionsFor,
   isFabricLine, outstandingOf, qtyDifference, offeredQtyDiffAction,
   receiptCountsDozens, metresPerDozen,
+  receiptIsGraded, receiptGradeTotal, GRADE_FIELDS,
 } from './receiptFields';
 
 const inputBase = 'px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
@@ -147,7 +148,11 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
   // Only fabric received at Stitching or later has pieces to count. The stage is
   // part of the form, so this follows whatever the user has picked.
   const dozens = receiptCountsDozens(line, form.incoming_stage);
-  const perDozen = metresPerDozen(form.qty_in_metres, form.received_dozens);
+  // At Packing or Panchal the dozens are typed per grade, and the total is
+  // their sum rather than a field of its own.
+  const graded = receiptIsGraded(line, form.incoming_stage);
+  const gradeTotal = receiptGradeTotal(form);
+  const perDozen = metresPerDozen(form.qty_in_metres, graded ? (gradeTotal || '') : form.received_dozens);
 
   // A receipt that never had a bill number (migration 053 synthesized those from
   // the legacy flat `received` value) stays editable without inventing one —
@@ -181,6 +186,12 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
       // re-decided there -- corrections go through the line's Short cell.
       qty_diff_action: receipt.qty_diff_action ?? '',
       qty_diff_reason: receipt.qty_diff_reason ?? '',
+      // A receipt at Packing or Panchal taken before migration 089 has none,
+      // and shows 0s to fill in -- the save asks for them.
+      fresh_dozens: String(receipt.fresh_dozens ?? 0),
+      second_dozens: String(receipt.second_dozens ?? 0),
+      third_dozens: String(receipt.third_dozens ?? 0),
+      note: receipt.note ?? '',
     });
   }, [receipt, isAdd, line.unit_metric, fabric]);
 
@@ -200,12 +211,18 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
         incoming_no: String(form.incoming_no ?? '').trim() || null,
         process_rate: form.process_rate === '' ? null : Number(form.process_rate),
         after_rate: form.after_rate === '' ? null : Number(form.after_rate),
+        note: String(form.note ?? '').trim() || null,
       };
       if (fabric) {
         payload.incoming_stage = form.incoming_stage || null;
         payload.qty_in_metres = form.qty_in_metres === '' ? null : Number(form.qty_in_metres);
-        payload.received_dozens = dozens && form.received_dozens !== ''
-          ? Number(form.received_dozens) : null;
+        if (graded) {
+          for (const [, col] of GRADE_FIELDS) payload[col] = Number(form[col]) || 0;
+          payload.received_dozens = gradeTotal;
+        } else {
+          payload.received_dozens = dozens && form.received_dozens !== ''
+            ? Number(form.received_dozens) : null;
+        }
       }
       // Only ever decided on the delivery that raised the difference.
       if (isAdd && form.qty_diff_action) {
@@ -319,7 +336,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
               countable pieces, so it carries the same dozen count and yield a
               challan into those stages does. Nothing earlier in the chain has
               pieces to count. */}
-          {dozens && (
+          {dozens && !graded && (
             <Field
               label="Dozens Received"
               required
@@ -331,6 +348,32 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
                 onChange={e => setField('received_dozens', e.target.value)}
                 className={inputCls}
               />
+            </Field>
+          )}
+
+          {/* Goods bought in at Packing or Panchal arrive graded, exactly as a
+              challan into those stages does: one box per grade, 0 until filled
+              in, and Dozens Received is their sum. */}
+          {graded && (
+            <Field
+              label="Dozens Received, by grade"
+              required
+              hint={`Total ${gradeTotal} dozen — enter at least one grade`}
+              className="sm:col-span-2"
+            >
+              <div className="grid grid-cols-3 gap-2">
+                {GRADE_FIELDS.map(([type, col]) => (
+                  <label key={col} className="block">
+                    <span className="block text-[11px] text-gray-500 mb-0.5">{type}</span>
+                    <input
+                      type="number" min={0} step="0.01"
+                      value={form[col]}
+                      onChange={e => setField(col, e.target.value)}
+                      className={inputCls}
+                    />
+                  </label>
+                ))}
+              </div>
             </Field>
           )}
 
@@ -418,6 +461,19 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
                 placeholder="e.g. 0077"
               />
             </div>
+          </Field>
+
+          {/* A paragraph for whoever reads this PO next. Shown in full, wrapped,
+              in the receipts table. */}
+          <Field label="Note" hint={`Optional — up to ${NOTE_MAX} characters`} className="sm:col-span-2">
+            <textarea
+              rows={3}
+              value={form.note}
+              onChange={e => setField('note', e.target.value)}
+              className={inputCls}
+              maxLength={NOTE_MAX}
+              placeholder="e.g. Two bales arrived damp — vendor informed"
+            />
           </Field>
         </div>
 

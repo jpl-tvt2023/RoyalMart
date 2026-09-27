@@ -2,7 +2,7 @@ import { describe, test, expect } from 'vitest';
 import {
   isFabricLine, RECEIPT_STAGES, outstandingOf, qtyDifference, offeredQtyDiffAction,
   receiptFieldError, stageOptionsFor,
-  emptyLine, toLineState,
+  emptyLine, toLineState, EMPTY_RECEIPT, NOTE_MAX, receiptIsGraded, receiptGradeTotal,
 } from '../receiptFields';
 import { STAGES } from '../../../utils/stitching';
 
@@ -130,6 +130,29 @@ describe('receiptFieldError', () => {
       { ...valid, qty_diff_action: 'write_off', qty_diff_reason: 'x'.repeat(301) },
       { line: fabric },
     )).toMatch(/at most 300 characters/);
+  });
+
+  // Migration 089: fabric bought in at Packing or Panchal is typed per grade,
+  // and Dozens Received is their sum -- so the total is not asked for there.
+  test('Packing and Panchal take grades instead of a dozen total', () => {
+    const packed = { ...valid, incoming_stage: 'Packing', fresh_dozens: '0', second_dozens: '0', third_dozens: '0' };
+    expect(receiptFieldError(packed, { line: fabric })).toBe('Enter the dozens for at least one grade');
+    expect(receiptFieldError({ ...packed, second_dozens: '-1' }, { line: fabric }))
+      .toBe('Second dozens must be a number >= 0');
+    expect(receiptFieldError({ ...packed, fresh_dozens: '12', third_dozens: '3' }, { line: fabric })).toBeNull();
+    expect(receiptGradeTotal({ fresh_dozens: '12', second_dozens: '', third_dozens: '3.5' })).toBe(15.5);
+    // Stitching counts dozens but is not graded.
+    expect(receiptIsGraded(fabric, 'Stitching')).toBe(false);
+    expect(receiptIsGraded(fabric, 'Panchal')).toBe(true);
+    expect(receiptIsGraded(packaging, 'Panchal')).toBe(false);
+  });
+
+  // Free text, last of all, in the slot the server gives it.
+  test('the note is optional and capped', () => {
+    expect(EMPTY_RECEIPT.note).toBe('');
+    expect(receiptFieldError({ ...valid, note: 'Two bales wet' }, { line: fabric })).toBeNull();
+    expect(receiptFieldError({ ...valid, note: 'x'.repeat(NOTE_MAX + 1) }, { line: fabric }))
+      .toBe('Note must be 1000 characters or less');
   });
 });
 

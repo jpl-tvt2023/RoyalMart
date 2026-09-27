@@ -117,6 +117,7 @@ const api = {
   counts: (query = {}) => A(request(app).get('/api/stitching/stage-counts').query(query)),
   journey: (src, id) => A(request(app).get(`/api/stitching/journey/${src}/${id}`)),
   close: (src, id) => A(request(app).post(`/api/stitching/${src}/${id}/close`)),
+  setStage: (src, id, body) => A(request(app).patch(`/api/stitching/${src}/${id}/stage`)).send(body),
   reopen: (src, id) => A(request(app).post(`/api/stitching/${src}/${id}/reopen`)),
 };
 
@@ -617,9 +618,10 @@ describe('Forwarding through the stages', () => {
 
   // WAS a rate column per stage, and before that a running after_rate. The page
   // now shows ONE figure -- the whole cost of a dozen -- with each stage's rate
-  // spelled out beside it. A challan's rate belongs to the stage it LEFT, and is
-  // per dozen. The PO rate (and a process rate already paid on the receipt) is
-  // per metre, so it is converted at the lot's metres-per-dozen.
+  // spelled out beside it. A challan's rate belongs to the stage it LEFT, in
+  // that stage's unit: the Processing rate is per metre, the Stitching and
+  // Packing rates per dozen. Per-metre rates -- the PO rate, a process rate paid
+  // on the receipt, the Processing rate -- are converted at the lot's m/dz.
   test('the rate total is per dozen, each rate named for the stage it was paid at', async () => {
     const { receiptId } = await processingLot({ qty: 100, process_rate: 5 });
     // 98m came back from processing as 49 dozen: 2 metres per dozen.
@@ -652,11 +654,11 @@ describe('Forwarding through the stages', () => {
     expect(lot.rate_breakdown.map(l => [l.label, l.unit, l.contributes])).toEqual([
       ['PO rate', 'metre', 100],                     // 50/m x 2 m/dz
       ['Processing rate (on receipt)', 'metre', 10], // 5/m x 2 m/dz
-      ['Processing rate', 'dozen', 7],
+      ['Processing rate', 'metre', 14],              // 7/m x 2 m/dz
       ['Stitching rate', 'dozen', 3],
       ['Packing rate', 'dozen', 2],
     ]);
-    expect(lot.rate_total).toBe(122);
+    expect(lot.rate_total).toBe(129);
     expect(lot.rate_total_unit).toBe('dozen');
     // The article survives three hops because origin_receipt_id is carried down.
     expect(lot.item_name).toBe('Handkerchief - Bundle Fabric');
@@ -690,19 +692,26 @@ describe('Forwarding through the stages', () => {
     expect(lot.metres_per_dozen).toBeNull();
   });
 
-  // Historical rows kept the unit they were entered in (migration 087). A rate
-  // entered per metre is converted like the PO rate, not taken as per dozen.
-  test('a historical per-metre challan rate is converted, not read as per dozen', async () => {
+  // Rows keep the unit they were written in. A Processing rate is per metre now
+  // and is converted like the PO rate; one written per dozen between 087 and
+  // the switch is taken as it stands, not reread.
+  test('a Processing rate is per metre, and an older per-dozen one still adds up as written', async () => {
     const { receiptId } = await processingLot({ qty: 100, process_rate: 0 });
     const f1 = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye',
       sent_qty: 100, received_dozens: 50, process_rate: 4,
     });
-    await db.execute({ sql: "UPDATE stitching_entries SET rate_unit = 'metre' WHERE id = ?", args: [f1.body.id] });
-    const lot = findLot((await api.listStage({ stage: 'Stitching' })).body.rows, 'entry', f1.body.id);
-    const rung = lot.rate_breakdown.find(l => l.label === 'Processing rate');
+    let lot = findLot((await api.listStage({ stage: 'Stitching' })).body.rows, 'entry', f1.body.id);
+    expect(lot.rate_unit).toBe('metre');
+    let rung = lot.rate_breakdown.find(l => l.label === 'Processing rate');
     expect(rung).toMatchObject({ unit: 'metre', contributes: 8 }); // 4/m x 2 m/dz
     expect(lot.rate_total).toBe(108);                              // 50 x 2 + 0 + 8
+
+    await db.execute({ sql: "UPDATE stitching_entries SET rate_unit = 'dozen' WHERE id = ?", args: [f1.body.id] });
+    lot = findLot((await api.listStage({ stage: 'Stitching' })).body.rows, 'entry', f1.body.id);
+    rung = lot.rate_breakdown.find(l => l.label === 'Processing rate');
+    expect(rung).toMatchObject({ unit: 'dozen', contributes: 4 });
+    expect(lot.rate_total).toBe(104);
   });
 
   // WAS "a Packed lot cannot be forwarded further". Packed forwards on to the
@@ -985,13 +994,19 @@ describe('Editing and deleting a stage lot', () => {
 
   // after_rate is dead (the rate total replaced it), so editing a rate records
   // the new figure in the unit the form now asks for, and nothing else.
-  test('editing the rate re-stamps it per dozen', async () => {
-    const { midId } = await chain();
-    await db.execute({ sql: "UPDATE stitching_entries SET rate_unit = 'metre' WHERE id = ?", args: [midId] });
-    const res = await api.patchLot(midId, { process_rate: 10 });
-    expect(res.status).toBe(200);
-    expect(res.body.process_rate).toBe(10);
-    expect(res.body.rate_unit).toBe('dozen');
+  test('editing the rate re-stamps it in the unit of the stage it leaves', async () => {
+    const { midId, leafId } = await chain();
+    // Out of Processing: per metre, whatever an older row held.
+    await db.execute({ sql: "UPDATE stitching_entries SET rate_unit = 'dozen' WHERE id = ?", args: [midId] });
+    const mid = await api.patchLot(midId, { process_rate: 10 });
+    expect(mid.status).toBe(200);
+    expect(mid.body.process_rate).toBe(10);
+    expect(mid.body.rate_unit).toBe('metre');
+    // Out of Stitching: per dozen.
+    await db.execute({ sql: "UPDATE stitching_entries SET rate_unit = 'metre' WHERE id = ?", args: [leafId] });
+    const leaf = await api.patchLot(leafId, { process_rate: 3 });
+    expect(leaf.status).toBe(200);
+    expect(leaf.body.rate_unit).toBe('dozen');
   });
 
   // A challan's lines share one header, so a header edit on one line lands on
@@ -1167,7 +1182,7 @@ describe('Closing a Panchal lot', () => {
   test('a receipt bought straight at the Panchal stage is closed on save', async () => {
     const { poId, lineId } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal', received_dozens: 20,
+      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal', received_dozens: 20, fresh_dozens: 20,
     });
     expect(receipt.status).toBe(201);
 
@@ -1189,7 +1204,7 @@ describe('Closing a Panchal lot', () => {
   test('moving a receipt into Panchal closes it, and out of Panchal reopens it', async () => {
     const { poId, lineId } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_stage: 'Packing', received_dozens: 20,
+      incoming_no: `K-${uid()}`, incoming_stage: 'Packing', received_dozens: 20, fresh_dozens: 20,
     });
     const status = async () => {
       const all = await api.listStage();
@@ -1315,7 +1330,7 @@ describe('Open-lot counts per stage', () => {
     // so filtering by that name isolates this test from every other row.
     const { poId, lineId, vendorName } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal', received_dozens: 20,
+      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal', received_dozens: 20, fresh_dozens: 20,
     });
 
     // Closed on save, so it is not open work...
@@ -1723,14 +1738,31 @@ describe('Challans — a lot moves on only under one', () => {
 
     // The pair is the key, so the number alone is not. Two parties number their
     // challan books from 1 independently and always did.
-    test('the same number to a different party is fine, even on one lot', async () => {
+    // WAS "the same number to a different party is fine, even on one lot". A
+    // challan names its SENDER, and every challan out of one lot has the same
+    // one -- the lot's Stage Party (migration 089). So on one lot a reused
+    // number is the same challan twice. Two parties still number independently.
+    test('the same number to a different party is fine on another lot', async () => {
+      const one = await processingLot({ qty: 100 });
+      const two = await processingLot({ qty: 100 });
+      const base = {
+        parent_src: 'receipt', sent_qty: 10, received_qty: 10, checked_by: warehousePocId,
+        challan_no: challanNo('SHARED'),
+      };
+      expect((await api.forward({ ...base, parent_id: one.receiptId, party_name: 'A' })).status).toBe(201);
+      expect((await api.forward({ ...base, parent_id: two.receiptId, party_name: 'B' })).status).toBe(201);
+    });
+
+    test('on one lot a reused number is refused, whatever party it names', async () => {
       const { receiptId } = await processingLot({ qty: 100 });
       const base = {
         parent_src: 'receipt', parent_id: receiptId,
-        sent_qty: 10, received_qty: 10, checked_by: warehousePocId, challan_no: 'SHARED',
+        sent_qty: 10, received_qty: 10, checked_by: warehousePocId, challan_no: challanNo('SAME-LOT'),
       };
       expect((await api.forward({ ...base, party_name: 'A' })).status).toBe(201);
-      expect((await api.forward({ ...base, party_name: 'B' })).status).toBe(201);
+      const res = await api.forward({ ...base, party_name: 'B' });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/already been raised out of this lot/);
     });
 
     // WAS "the same number on a different lot is fine". Migration 085 widened
@@ -1785,13 +1817,15 @@ describe('Challans — a lot moves on only under one', () => {
     // Renaming the party can collide just as easily as renumbering, so the edit
     // re-checks when EITHER half of the pair moves.
     test('moving a challan onto a party that already has that number is refused', async () => {
-      const { receiptId } = await processingLot({ qty: 100 });
+      const one = await processingLot({ qty: 100 });
+      const two = await processingLot({ qty: 100 });
       const base = {
-        parent_src: 'receipt', parent_id: receiptId,
-        sent_qty: 40, received_qty: 40, checked_by: warehousePocId, challan_no: 'DUP',
+        parent_src: 'receipt',
+        sent_qty: 40, received_qty: 40, checked_by: warehousePocId, challan_no: challanNo('DUP'),
       };
-      await api.forward({ ...base, party_name: 'A' });
-      const b = await api.forward({ ...base, party_name: 'B' });
+      await api.forward({ ...base, parent_id: one.receiptId, party_name: 'A' });
+      const b = await api.forward({ ...base, parent_id: two.receiptId, party_name: 'B' });
+      expect(b.status).toBe(201);
 
       const res = await api.patchLot(b.body.id, { party_name: 'A' });
       expect(res.status).toBe(400);
@@ -2400,7 +2434,7 @@ describe('Dozens from Stitching on', () => {
   test('a receipt bought in at Packing carries its own dozens and yield', async () => {
     const { poId, lineId } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_stage: 'Packing', received_dozens: 25,
+      incoming_no: `K-${uid()}`, incoming_stage: 'Packing', received_dozens: 25, fresh_dozens: 25,
     });
     expect(receipt.status).toBe(201);
 
@@ -2788,5 +2822,278 @@ describe('Audit logging', () => {
     const audit = await auditFor('stitching_prefix', created.body.id);
     const rows = audit.body.rows || audit.body;
     expect(rows.some(r => r.action_type === 'STITCHING_PREFIX_CREATE')).toBe(true);
+  });
+});
+
+// Migration 089. A challan into Packing, Panchal or Third Party arrives as ONE
+// lot with its dozens split by grade, instead of one lot per grade line. The
+// split is what arrived -- balance and status still run on the total.
+describe('Graded lots — one lot per challan from Packing on', () => {
+  // A Stitching lot of 40 dozen, out of 96 metres.
+  async function stitchingLot() {
+    const { receiptId } = await processingLot({ qty: 100 });
+    const r = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye',
+      sent_qty: 100, received_qty: 96, received_dozens: 40,
+    });
+    expect(r.status).toBe(201);
+    return { receiptId, id: r.body.id };
+  }
+
+  test('three grades out of a dozen stage make one lot holding the split and its total', async () => {
+    const { id } = await stitchingLot();
+    const res = await api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Packing', party_name: 'Stitcher',
+      grades: { Fresh: 20, Second: 5, Third: 0 },
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.ids).toHaveLength(1);
+
+    const row = findLot((await api.listStage({ stage: 'Packing' })).body.rows, 'entry', res.body.id);
+    expect([row.fresh_dozens, row.second_dozens, row.third_dozens]).toEqual([20, 5, 0]);
+    expect(row.received_dozens).toBe(25);
+    expect(row.sent_dozens).toBe(25);
+    // Two grades is not one type of goods.
+    expect(row.challan_type).toBeNull();
+    expect(row.balance).toBe(25);
+
+    const parent = findLot((await api.listStage({ stage: 'Stitching' })).body.rows, 'entry', id);
+    expect(parent.balance).toBe(15);
+  });
+
+  test('a single grade still reads as that challan type', async () => {
+    const { id } = await stitchingLot();
+    const res = await api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Packing', party_name: 'Stitcher',
+      grades: { Second: 10 },
+    });
+    const row = findLot((await api.listStage({ stage: 'Packing' })).body.rows, 'entry', res.body.id);
+    expect(row.challan_type).toBe('Second');
+    expect([row.fresh_dozens, row.second_dozens, row.third_dozens]).toEqual([0, 10, 0]);
+  });
+
+  test('out of Processing: one metre figure for the challan, dozens by grade', async () => {
+    const { receiptId } = await processingLot({ qty: 100 });
+    const res = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, target_stage: 'Packing', party_name: 'Dye',
+      sent_qty: 60, grades: { Fresh: 20, Second: 10 },
+    });
+    expect(res.status).toBe(201);
+    const row = findLot((await api.listStage({ stage: 'Packing' })).body.rows, 'entry', res.body.id);
+    expect(row.received_qty).toBe(60);
+    expect(row.received_dozens).toBe(30);
+    expect(row.metres_per_dozen).toBe(2);
+    expect(row.fresh_dozens).toBe(20);
+
+    const parent = findLot((await api.listStage({ stage: 'Processing' })).body.rows, 'receipt', receiptId);
+    expect(parent.balance).toBe(40);
+  });
+
+  test('a line-item body sent to a graded stage is folded into one lot', async () => {
+    const { id } = await stitchingLot();
+    const res = await api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Panchal', party_name: 'Stitcher',
+      lines: [
+        { challan_type: 'Fresh', sent_dozens: 10 },
+        { challan_type: 'Second', sent_dozens: 4 },
+        { challan_type: 'Fresh', sent_dozens: 2 },
+      ],
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.ids).toHaveLength(1);
+    const row = findLot((await api.listStage({ stage: 'Panchal' })).body.rows, 'entry', res.body.id);
+    expect([row.fresh_dozens, row.second_dozens, row.third_dozens]).toEqual([12, 4, 0]);
+    expect(row.received_dozens).toBe(16);
+  });
+
+  test('the grade rules, in the order the form shows them', async () => {
+    const { id, receiptId } = await stitchingLot();
+    const send = (body) => api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Packing', party_name: 'Stitcher', ...body,
+    });
+
+    let res = await send({ grades: { Fresh: 0, Second: 0, Third: 0 } });
+    expect(res.body.message).toBe('Enter the dozens for at least one grade');
+    res = await send({ grades: { Fresh: -1 } });
+    expect(res.body.message).toBe('Fresh dozens must be a number >= 0');
+    res = await send({ grades: { Second: 1.005 } });
+    expect(res.body.message).toBe('Second dozens can have at most 2 decimal places');
+    res = await send({ grades: { Fresh: 41 } });
+    expect(res.body.message).toMatch(/Cannot send 41 dozen — only 40 dozen is left/);
+
+    // Out of Processing the metres come first -- they sit above the grades.
+    const fromProcessing = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, target_stage: 'Packing', party_name: 'Dye',
+      grades: { Fresh: 0 },
+    });
+    expect(fromProcessing.status).toBe(400);
+    expect(fromProcessing.body.message).toBe('Sent Qty is required');
+  });
+
+  test('editing a graded lot takes the three grades and moves the total with them', async () => {
+    const { id } = await stitchingLot();
+    const created = await api.forward({
+      parent_src: 'entry', parent_id: id, target_stage: 'Packing', party_name: 'Stitcher',
+      grades: { Fresh: 20, Second: 5 },
+    });
+    const res = await api.patchLot(created.body.id, { grades: { Fresh: 10, Second: 5, Third: 5 } });
+    expect(res.status).toBe(200);
+    expect([res.body.fresh_dozens, res.body.second_dozens, res.body.third_dozens]).toEqual([10, 5, 5]);
+    expect(res.body.received_dozens).toBe(20);
+    expect(res.body.sent_dozens).toBe(20);
+
+    const parent = findLot((await api.listStage({ stage: 'Stitching' })).body.rows, 'entry', id);
+    expect(parent.balance).toBe(20);
+
+    const over = await api.patchLot(created.body.id, { grades: { Fresh: 45 } });
+    expect(over.status).toBe(400);
+    expect(over.body.message).toMatch(/only 40 is available on the source lot/);
+  });
+
+  test('a receipt booked into Panchal shows its grades on the Panchal tab', async () => {
+    const { poId, lineId } = await setupLine();
+    const receipt = await postReceipt(poId, lineId, {
+      incoming_stage: 'Panchal', fresh_dozens: 12, second_dozens: 8,
+    });
+    expect(receipt.status).toBe(201);
+    const row = findLot((await api.listStage({ stage: 'Panchal' })).body.rows, 'receipt', receipt.body.id);
+    expect([row.fresh_dozens, row.second_dozens, row.third_dozens]).toEqual([12, 8, 0]);
+    expect(row.received_dozens).toBe(20);
+  });
+});
+
+// A challan names its SENDER -- the party holding the goods at the stage they
+// leave -- and its rate is that stage's rate. So a lot's Stage Party and Rate
+// are the party and rate on every challan out of it: one value, edited from
+// either side (migration 089, planStageSync).
+describe('Stage Party and Rate — one value with the challans out of a lot', () => {
+  const lotOf = async (stage, src, id) => findLot((await api.listStage({ stage })).body.rows, src, id);
+
+  test('setting them on a lot reaches every challan already sent out of it', async () => {
+    const { receiptId } = await processingLot({ qty: 100 });
+    const f1 = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'A', sent_qty: 30, process_rate: 5,
+    });
+    const f2 = await api.forward({ parent_src: 'receipt', parent_id: receiptId, party_name: 'A', sent_qty: 30 });
+    // Naming no rate, the second challan took the lot's.
+    expect((await lotOf('Stitching', 'entry', f2.body.id)).process_rate).toBe(5);
+
+    const res = await api.setStage('receipt', receiptId, { stage_party_name: 'B', stage_rate: 7 });
+    expect(res.status).toBe(200);
+    expect(res.body.stage_party_name).toBe('B');
+    expect(res.body.stage_rate).toBe(7);
+
+    for (const f of [f1, f2]) {
+      const row = await lotOf('Stitching', 'entry', f.body.id);
+      expect(row.party_name).toBe('B');
+      expect(row.process_rate).toBe(7);
+      // The Processing rate is per metre.
+      expect(row.rate_unit).toBe('metre');
+    }
+  });
+
+  test("a Stitching lot's Rate is per dozen on the challans out of it", async () => {
+    const { receiptId } = await processingLot({ qty: 100 });
+    const s = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye',
+      sent_qty: 100, received_dozens: 40,
+    });
+    const p = await api.forward({ parent_src: 'entry', parent_id: s.body.id, party_name: 'Stitcher', sent_qty: 20 });
+    expect(p.status).toBe(201);
+    const res = await api.setStage('entry', s.body.id, { stage_rate: 12 });
+    expect(res.status).toBe(200);
+    const packed = await lotOf('Packing', 'entry', p.body.id);
+    expect(packed.process_rate).toBe(12);
+    expect(packed.rate_unit).toBe('dozen');
+  });
+
+  test("a new challan sets the lot's party, and takes the lot's rate when it names none", async () => {
+    const { receiptId } = await processingLot({ qty: 100 });
+    await api.setStage('receipt', receiptId, { stage_party_name: 'P1', stage_rate: 9 });
+    const f = await api.forward({ parent_src: 'receipt', parent_id: receiptId, party_name: 'P2', sent_qty: 20 });
+    expect(f.status).toBe(201);
+    expect((await lotOf('Stitching', 'entry', f.body.id)).process_rate).toBe(9);
+    const lot = await lotOf('Processing', 'receipt', receiptId);
+    expect(lot.stage_party_name).toBe('P2');
+    expect(lot.stage_rate).toBe(9);
+  });
+
+  test("editing one challan's party or rate changes the lot and its other challans", async () => {
+    const { receiptId } = await processingLot({ qty: 100 });
+    const base = { parent_src: 'receipt', parent_id: receiptId, party_name: 'A', process_rate: 4 };
+    const f1 = await api.forward({ ...base, sent_qty: 30 });
+    const f2 = await api.forward({ ...base, sent_qty: 30 });
+
+    const res = await api.patchLot(f1.body.id, { party_name: 'C', process_rate: 6 });
+    expect(res.status).toBe(200);
+    const other = await lotOf('Stitching', 'entry', f2.body.id);
+    expect(other.party_name).toBe('C');
+    expect(other.process_rate).toBe(6);
+    const lot = await lotOf('Processing', 'receipt', receiptId);
+    expect(lot.stage_party_name).toBe('C');
+    expect(lot.stage_rate).toBe(6);
+  });
+
+  test('a lot that has sent goods on cannot lose its party; one that has not can', async () => {
+    const { receiptId } = await processingLot({ qty: 100 });
+    await api.forward({ parent_src: 'receipt', parent_id: receiptId, party_name: 'A', sent_qty: 30 });
+    const refused = await api.setStage('receipt', receiptId, { stage_party_name: '' });
+    expect(refused.status).toBe(400);
+    expect(refused.body.message).toMatch(/can't be blank/);
+
+    const fresh = await processingLot({ qty: 100 });
+    await api.setStage('receipt', fresh.receiptId, { stage_party_name: 'X' });
+    const cleared = await api.setStage('receipt', fresh.receiptId, { stage_party_name: '' });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.stage_party_name).toBeNull();
+  });
+
+  test('Panchal and Third Party keep a party but no rate of their own', async () => {
+    const { receiptId } = await processingLot({ qty: 100 });
+    const p = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, target_stage: 'Panchal', party_name: 'Dye',
+      sent_qty: 40, grades: { Fresh: 20 },
+    });
+    expect(p.status).toBe(201);
+    const rate = await api.setStage('entry', p.body.id, { stage_rate: 5 });
+    expect(rate.status).toBe(400);
+    expect(rate.body.message).toMatch(/Panchal lot has no rate of its own/);
+    const party = await api.setStage('entry', p.body.id, { stage_party_name: 'Warehouse' });
+    expect(party.status).toBe(200);
+    expect(party.body.stage_party_name).toBe('Warehouse');
+  });
+
+  test('the rate is held to the money rules, named for the stage', async () => {
+    const { receiptId } = await processingLot({ qty: 100 });
+    const res = await api.setStage('receipt', receiptId, { stage_rate: -2 });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('Processing rate must be a number >= 0');
+  });
+
+  test('a party can be tagged Processing again, and listed for it', async () => {
+    const name = `Dye House ${uid()}`;
+    const created = await api.createParty({ name, uses: ['Processing'] });
+    expect(created.status).toBe(201);
+    const list = await api.listParties({ use: 'Processing' });
+    expect(list.status).toBe(200);
+    expect(list.body).toContain(name);
+  });
+
+  test("the Party filter matches a lot's Stage Party", async () => {
+    const { receiptId } = await processingLot({ qty: 100 });
+    const name = `Needle ${uid()}`;
+    await api.setStage('receipt', receiptId, { stage_party_name: name });
+    const rows = (await api.listStage({ stage: 'Processing', party_name: name })).body.rows;
+    expect(rows.map(r => r.id)).toContain(receiptId);
+  });
+
+  test("a receipt moved to another stage starts without the old stage's party and rate", async () => {
+    const { poId, lineId, receiptId } = await processingLot({ qty: 100 });
+    await api.setStage('receipt', receiptId, { stage_party_name: 'Dyer', stage_rate: 3 });
+    const moved = await patchReceipt(poId, lineId, receiptId, { incoming_stage: 'Stitching', received_dozens: 40 });
+    expect(moved.status).toBe(200);
+    const receipt = await getReceipt(poId, receiptId);
+    expect(receipt.stage_party_name).toBeNull();
+    expect(receipt.stage_rate).toBeNull();
   });
 });

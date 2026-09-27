@@ -4,8 +4,9 @@ const { userHasRole } = require('../services/userRoles.service');
 const {
   STAGES, OPEN_STATUSES, EPSILON, isValidStage, nextStage,
   EXIT_STAGE, STOCK_STAGE, destinationsFor, canSendTo,
-  countsDozens, balanceUnitFor, DOZEN_STAGES, CHALLAN_RATE_UNIT, metresPerDozen,
+  countsDozens, balanceUnitFor, DOZEN_STAGES, stageRateUnit, metresPerDozen,
   PARTY_USE_STAGES, CHALLAN_TYPES, isValidPartyUse, isValidChallanType,
+  GRADE_COLUMNS, isGradedStage, isRateStage,
   partyTag, rateTotal,
   effectiveAfterRate, statusSql, moneyError, qtyError, challanError,
   revertReasonError, writeOffReasonError,
@@ -97,6 +98,12 @@ WITH lots AS (
   SELECT
     'receipt' AS src, r.id AS id, r.line_id AS line_id, sp.stage AS stage,
     v.name AS party_name,
+    -- WHO HAS THE GOODS AT THIS STAGE, and what this stage costs -- per metre
+    -- at Processing, per dozen from Stitching on (migration 089). The lot's
+    -- own, kept one value with every challan sent out of it -- see
+    -- planStageSync. Column ORDER matters: both halves of this UNION ALL are
+    -- matched by position.
+    r.stage_party_name AS stage_party_name, r.stage_rate AS stage_rate,
     -- Not r.challan_no. That column is legacy: the PO screen stopped managing a
     -- challan number when challans became records of their own here, so surfacing
     -- it would print a number nobody can see the source of -- which is exactly
@@ -114,6 +121,8 @@ WITH lots AS (
     -- Only ever set on a receipt bought straight in at a stage that counts
     -- dozens, which is everything from Stitching on.
     r.received_dozens AS received_dozens,
+    -- The grade split, on a receipt booked into Packing or Panchal. 0 elsewhere.
+    r.fresh_dozens AS fresh_dozens, r.second_dozens AS second_dozens, r.third_dozens AS third_dozens,
     -- What the lot's balance is kept in: dozens at a dozen stage, else metres.
     CASE WHEN sp.stage IN (${DOZEN_STAGES_SQL}) THEN r.received_dozens ELSE r.qty_in_metres END AS qty_basis,
     -- The PO quantity in metres. On an origin lot it is the lot's own metres.
@@ -135,7 +144,8 @@ WITH lots AS (
     -- at Processing was billed for processing. Rates no longer accumulate into a
     -- running after_rate: each stage keeps its own figure and the ladder is
     -- assembled by withLineage at read time.
-    r.process_rate AS stage_rate,
+    -- ladder_rate, not stage_rate: stage_rate is the lot's own Rate (above).
+    r.process_rate AS ladder_rate,
     r.process_rate AS process_rate,
     -- A receipt's process rate is quoted per metre, like the PO rate beside it.
     'metre' AS rate_unit,
@@ -181,10 +191,13 @@ WITH lots AS (
 
   SELECT
     'entry' AS src, e.id AS id, orr.line_id AS line_id, e.stage AS stage,
-    e.party_name AS party_name, e.challan_no AS challan_no, e.challan_type AS challan_type,
+    e.party_name AS party_name,
+    e.stage_party_name AS stage_party_name, e.stage_rate AS stage_rate,
+    e.challan_no AS challan_no, e.challan_type AS challan_type,
     sp.id AS incoming_prefix_id, sp.prefix AS incoming_prefix, e.incoming_no AS incoming_no,
     e.received_qty AS received_qty,
     e.received_dozens AS received_dozens,
+    e.fresh_dozens AS fresh_dozens, e.second_dozens AS second_dozens, e.third_dozens AS third_dozens,
     -- Nothing is ever sent TO Processing, so an entry always counts dozens --
     -- the CASE is kept for symmetry with the receipt half, not as a live branch.
     CASE WHEN e.stage IN (${DOZEN_STAGES_SQL}) THEN e.received_dozens ELSE e.received_qty END AS qty_basis,
@@ -200,7 +213,7 @@ WITH lots AS (
     -- Read off the origin receipt the row already joins, so correcting the PO
     -- rate upstream flows down the whole chain without a stored copy anywhere.
     orr.received_rate AS po_rate,
-    e.process_rate AS stage_rate,
+    e.process_rate AS ladder_rate,
     e.process_rate AS process_rate,
     e.rate_unit AS rate_unit,
     COALESCE(e.after_rate, 0) AS after_rate,
@@ -281,11 +294,12 @@ function buildWhere(query, { excludeStage = false, excludeStatus = false } = {})
     args.push(...statuses);
   }
 
-  // The PO party (the outbound vendor every lot in a chain shares) or the party
-  // this lot's own challan went to -- the page shows both, so both are searchable.
+  // The PO party (the outbound vendor every lot in a chain shares), the party on
+  // this lot's own challan, or the lot's Stage Party -- the page shows all three,
+  // so all three are searchable.
   if (query.party_name) {
-    where.push('(vendor_name LIKE ? OR party_name LIKE ?)');
-    args.push(`%${query.party_name}%`, `%${query.party_name}%`);
+    where.push('(vendor_name LIKE ? OR party_name LIKE ? OR stage_party_name LIKE ?)');
+    args.push(`%${query.party_name}%`, `%${query.party_name}%`, `%${query.party_name}%`);
   }
   if (query.item_name) {
     where.push('item_name = ?');
@@ -407,7 +421,7 @@ async function withLineage(lots) {
     )
     SELECT c.lot_src, c.lot_id, c.depth,
            a.src, a.stage, a.parent_stage, a.party_name, pm.short_name,
-           a.challan_no, a.challan_type, a.po_rate, a.stage_rate, a.rate_unit,
+           a.challan_no, a.challan_type, a.po_rate, a.ladder_rate, a.rate_unit,
            a.received_qty, a.received_dozens
       FROM chain c
       JOIN lots a ON a.src = c.anc_src AND a.id = c.anc_id
@@ -434,17 +448,17 @@ async function withLineage(lots) {
       if (a.src === 'receipt') {
         components.push({ label: 'PO rate', rate: a.po_rate, unit: 'metre' });
         // Processing (or more) already paid for when the fabric was bought.
-        if (a.stage_rate != null) {
-          components.push({ label: `${a.stage} rate (on receipt)`, rate: a.stage_rate, unit: 'metre' });
+        if (a.ladder_rate != null) {
+          components.push({ label: `${a.stage} rate (on receipt)`, rate: a.ladder_rate, unit: 'metre' });
         }
       } else {
         // Labelled by the stage the goods LEFT. rate_unit is NULL only on a row
         // with no rate, which rateTotal skips anyway.
-        if (a.stage_rate != null) {
+        if (a.ladder_rate != null) {
           components.push({
             label: `${a.parent_stage} rate`,
-            rate: a.stage_rate,
-            unit: a.rate_unit || CHALLAN_RATE_UNIT,
+            rate: a.ladder_rate,
+            unit: a.rate_unit || stageRateUnit(a.parent_stage),
           });
         }
         // Named for the stage the goods LEFT: the party on a challan is the one
@@ -586,17 +600,20 @@ async function stageCounts(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// GET /api/stitching/parties?use=Stitching — the party dropdown for a dispatch.
+// GET /api/stitching/parties?use=Stitching — the party dropdown for a lot's
+// Stage Party, and for the sender on a challan out of a lot at that stage.
 //
 // Reads the master migration 079 added. It used to union outbound_vendors with
 // every name already typed into a challan, which was a stand-in for exactly this
 // table -- and offered every name for every job, since free text knows nothing
 // about what a party actually does.
 //
-// `use` narrows it to parties tagged for that destination, which is the whole
-// point of the tags: a non-technical user picking a destination should not then
-// be shown a packer for stitching work. Omitting `use` returns every active
-// party, which is what an unfiltered list or an export wants.
+// `use` narrows it to parties tagged as working at that stage, which is the
+// whole point of the tags: a non-technical user picking who stitches a lot
+// should not be shown a packer. (Until migration 090 a tag meant "may be sent
+// TO this stage". A challan names its sender, so it now means "works here".)
+// Omitting `use` returns every active party, which is what an unfiltered list
+// or an export wants.
 //
 // Only active parties. A deactivated one keeps appearing on the challans already
 // raised against it -- party_name is denormalised onto those rows -- it simply
@@ -698,6 +715,96 @@ function lineFieldsError(line, { requireAll = false, parentDozen = false, prefix
   return null;
 }
 
+const round2 = (n) => Math.round(n * 100) / 100;
+
+// THE GRADE SPLIT, for goods arriving at a graded stage (Packing, Panchal, Third
+// Party -- GRADED_STAGES). One challan there is ONE lot, its dozens held per
+// grade in fresh_dozens / second_dozens / third_dozens, rather than one lot per
+// grade line.
+//
+// `grades` is the API shape, { Fresh, Second, Third } in dozens -- what the
+// form's three boxes send, each 0 unless filled in. These turn it into the
+// three columns and back.
+const gradeColumnsOf = (grades) => Object.fromEntries(CHALLAN_TYPES.map(t => [
+  GRADE_COLUMNS[t], round2(Number(grades?.[t]) || 0),
+]));
+const gradeTotal = (cols) => round2(CHALLAN_TYPES.reduce((s, t) => s + (Number(cols?.[GRADE_COLUMNS[t]]) || 0), 0));
+
+// A lot carrying a single grade still says so in challan_type, the way every
+// line did before grades had columns. Several grades is NULL -- it is not one
+// type of goods, and the three columns say what it is.
+const soleGrade = (cols) => {
+  const present = CHALLAN_TYPES.filter(t => Number(cols?.[GRADE_COLUMNS[t]]) > EPSILON);
+  return present.length === 1 ? present[0] : null;
+};
+
+// The columns for one line of a single grade -- how a line into Stitching, and
+// every row written before 089, records its grade.
+const gradeColumnsOfLine = (type, dozens) => gradeColumnsOf(
+  isValidChallanType(type) ? { [type]: dozens } : {},
+);
+
+// A line-item body sent to a graded destination, folded into the one lot it
+// becomes: dozens summed per grade, metres summed out of Processing. What any
+// caller sent before grades existed keeps working, and arrives as one lot.
+function foldLines(lines, parentDozen) {
+  const grades = {};
+  let sentQty = 0;
+  let receivedQty = 0;
+  for (const l of lines) {
+    const t = trimOrNull(l.challan_type);
+    grades[t] = round2((grades[t] || 0) + Number(parentDozen ? l.sent_dozens : l.received_dozens));
+    if (!parentDozen) {
+      const sent = Number(l.sent_qty);
+      sentQty += sent;
+      receivedQty += l.received_qty != null && l.received_qty !== '' ? Number(l.received_qty) : sent;
+    }
+  }
+  return {
+    cols: gradeColumnsOf(grades),
+    sentQty: parentDozen ? null : round2(sentQty),
+    receivedQty: parentDozen ? null : round2(receivedQty),
+  };
+}
+
+// Twin of the graded half of fieldError in ChallanModal.jsx, message for message
+// and in the form's order: out of Processing the metres for the whole challan
+// first (the one field above the grid), then each grade, then that they come to
+// something. Each grade is 0 or a positive 2dp figure -- moneyError already
+// means exactly that -- because 0 is the default and means none of that grade.
+function gradesFieldsError(body, { requireAll = false, parentDozen = false } = {}) {
+  const present = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
+
+  if (!parentDozen) {
+    if (requireAll || present('sent_qty')) {
+      const err = qtyError(body?.sent_qty, 'Sent Qty');
+      if (err) return err;
+    }
+    if (present('received_qty')) {
+      const err = qtyError(body?.received_qty, 'Received Qty');
+      if (err) return err;
+      if (present('sent_qty') && Number(body.received_qty) - Number(body.sent_qty) > EPSILON) {
+        return 'Received Qty cannot be more than Sent Qty';
+      }
+    }
+  } else if (present('sent_qty') && body.sent_qty != null && body.sent_qty !== '') {
+    return 'Goods are counted in dozens from Stitching on — enter Dozens Sent, not metres';
+  }
+
+  if (requireAll || present('grades')) {
+    const grades = body?.grades;
+    if (grades == null || typeof grades !== 'object' || Array.isArray(grades)) {
+      return 'Enter the dozens for at least one grade';
+    }
+    for (const t of CHALLAN_TYPES) {
+      const err = moneyError(grades[t], `${t} dozens`);
+      if (err) return err;
+    }
+    if (gradeTotal(gradeColumnsOf(grades)) <= EPSILON) return 'Enter the dozens for at least one grade';
+  }
+  return null;
+}
+
 // Shared by create and update. `requireAll` distinguishes create (absent fields
 // are errors) from PATCH (only fields actually present are checked) — the same
 // idiom as validateReceiptFields in outboundPOs.controller.js.
@@ -707,10 +814,12 @@ function lineFieldsError(line, { requireAll = false, parentDozen = false, prefix
 // then the LINE ITEMS, then the rest of the header (rate, checker, bill, PCL).
 // `lines` is create's list, each validated with a "Line N: " prefix when there
 // are several. Without it the body itself is the one line -- a PATCH edits one
-// line -- unless `skipLine`. `sourceStage` names the rate: it belongs to the
-// stage the goods are LEAVING.
+// line -- unless `skipLine`. `grades` swaps the line items for the grade grid
+// a graded destination takes (gradesFieldsError), in the same slot. `sourceStage`
+// names the rate: it belongs to the stage the goods are LEAVING.
 async function validateEntryFields(body, {
   requireAll = false, targetStage, sourceStage, parentDozen = false, skipLine = false, lines = null,
+  grades = false,
 } = {}) {
   const present = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
 
@@ -729,7 +838,10 @@ async function validateEntryFields(body, {
     if (err) return err;
   }
 
-  if (lines) {
+  if (grades) {
+    const gradeErr = gradesFieldsError(body, { requireAll, parentDozen });
+    if (gradeErr) return gradeErr;
+  } else if (lines) {
     for (let i = 0; i < lines.length; i += 1) {
       const lineErr = lineFieldsError(lines[i], {
         requireAll, parentDozen, prefix: lines.length > 1 ? `Line ${i + 1}: ` : '',
@@ -895,10 +1007,21 @@ async function deriveIncomingNo(targetStage, parent) {
 //
 // ONE CHALLAN, SEVERAL LINES. The header -- challan no, party, rate, and the
 // bill / warehouse number / checker where the destination asks for them -- is
-// shared. `lines` carries one entry per grade sent, and each becomes its own
-// stitching_entries row (challan_line_no 1..n) and therefore its own lot at the
-// destination. A body with no `lines` is read as a single line whose fields sit
-// at the top level, which is what every caller sent before lines existed.
+// shared. Into STITCHING, `lines` carries one entry per grade sent, and each
+// becomes its own stitching_entries row (challan_line_no 1..n) and therefore its
+// own lot. A body with no `lines` is read as a single line whose fields sit at
+// the top level, which is what every caller sent before lines existed.
+//
+// Into a GRADED stage (Packing, Panchal, Third Party -- migration 089) the
+// challan is ONE row and one lot, its dozens held per grade: `grades` { Fresh,
+// Second, Third } from the form's three boxes, plus the metres for the whole
+// challan when it leaves Processing. A `lines` body sent there is folded into
+// the same single row.
+//
+// THE PARTY IS THE SENDER and the rate is the rate of the stage being left, so
+// both are the source lot's own Stage Party and Rate. Whatever the challan
+// says is written to the lot and to every earlier challan out of it -- one
+// value (planStageSync).
 //
 // The partial part still holds: a lot of 100 can go out as 40 and then 60, each
 // under its own challan, because `forwarded` sums live children and the
@@ -949,15 +1072,64 @@ async function create(req, res, next) {
     // Processing, they are metres sent and dozens received.
     const parentDozen = countsDozens(parent.stage);
 
-    const lines = linesOf(req.body);
+    // A graded destination (Packing, Panchal, Third Party) takes the challan as
+    // ONE lot with its dozens split by grade -- `grades` from the form's three
+    // boxes, or a line-item body folded into the same thing. Everywhere else
+    // (into Stitching) each line is its own lot, as before.
+    const graded = isGradedStage(targetStage);
+    const gradesBody = graded && Object.prototype.hasOwnProperty.call(req.body || {}, 'grades');
+    const lines = gradesBody ? null : linesOf(req.body);
     const validationError = await validateEntryFields(req.body, {
-      requireAll: true, targetStage, sourceStage: parent.stage, parentDozen, lines,
+      requireAll: true, targetStage, sourceStage: parent.stage, parentDozen,
+      lines, grades: gradesBody,
     });
     if (validationError) return res.status(400).json({ message: validationError });
 
-    // Every line draws on the same parent, so it is their SUM that must fit.
-    const sentOf = (line) => Number(parentDozen ? line.sent_dozens : line.sent_qty);
-    const totalSent = Math.round(lines.reduce((s, l) => s + sentOf(l), 0) * 100) / 100;
+    // The rows this challan writes, each already in its final shape.
+    let rows;
+    if (graded) {
+      let cols;
+      let sentQty = null;
+      let receivedQty = null;
+      if (gradesBody) {
+        cols = gradeColumnsOf(req.body.grades);
+        if (!parentDozen) {
+          sentQty = Number(req.body.sent_qty);
+          receivedQty = req.body.received_qty != null && req.body.received_qty !== ''
+            ? Number(req.body.received_qty) : sentQty;
+        }
+      } else {
+        ({ cols, sentQty, receivedQty } = foldLines(lines, parentDozen));
+      }
+      const dozens = gradeTotal(cols);
+      rows = [{
+        challanType: soleGrade(cols),
+        sentQty,
+        receivedQty,
+        sentDozens: parentDozen ? dozens : null,
+        receivedDozens: dozens,
+        cols,
+      }];
+    } else {
+      rows = lines.map((line) => {
+        const challanType = trimOrNull(line.challan_type);
+        // Out of Processing: metres, with what came back defaulting to what went.
+        // Out of a dozen stage: no metres at all, and the dozens sent ARE the
+        // dozens the next lot receives.
+        const sentQty = parentDozen ? null : Number(line.sent_qty);
+        const receivedQty = parentDozen ? null
+          : (line.received_qty != null && line.received_qty !== '' ? Number(line.received_qty) : sentQty);
+        const sentDozens = parentDozen ? Number(line.sent_dozens) : null;
+        const receivedDozens = parentDozen ? sentDozens : Number(line.received_dozens);
+        return {
+          challanType, sentQty, receivedQty, sentDozens, receivedDozens,
+          cols: gradeColumnsOfLine(challanType, receivedDozens),
+        };
+      });
+    }
+
+    // Every row draws on the same parent, so it is their SUM that must fit.
+    const totalSent = round2(rows.reduce((s, r) => s + Number(parentDozen ? r.sentDozens : r.sentQty), 0));
     const unit = parentDozen ? ' dozen' : 'm';
     if (totalSent - Number(parent.balance) > EPSILON) {
       return res.status(400).json({
@@ -989,30 +1161,32 @@ async function create(req, res, next) {
     const [numbering, numberingError] = await deriveIncomingNo(targetStage, parent);
     if (numberingError) return res.status(400).json({ message: numberingError });
 
-    // The stage being LEFT owns this rate, and it is per dozen -- every
-    // destination counts dozens now.
-    const processRate = numOrNull(req.body.process_rate);
-    const rateUnit = processRate == null ? null : CHALLAN_RATE_UNIT;
+    // The stage being LEFT owns this rate, in that stage's unit -- per metre out
+    // of Processing, per dozen from Stitching on. It is also the source lot's own
+    // Rate (one value), so a challan that does not mention one takes the lot's.
+    const rateSent = Object.prototype.hasOwnProperty.call(req.body || {}, 'process_rate');
+    const processRate = rateSent ? numOrNull(req.body.process_rate) : (parent.stage_rate ?? null);
+    const rateUnit = processRate == null ? null : stageRateUnit(parent.stage);
     // Still written for the rows that read it, though nothing on the page does.
     const afterRate = req.body.after_rate != null && req.body.after_rate !== ''
       ? Number(req.body.after_rate)
       : effectiveAfterRate(parent.after_rate, processRate, null);
 
+    // The party and rate on this challan are the source lot's Stage Party and
+    // Rate. Whatever the form sent becomes the lot's, and every earlier challan
+    // out of the lot follows it.
+    const syncPlan = await planStageSync(parent, {
+      party: partyName,
+      rate: rateSent ? processRate : undefined,
+      newChallanNo: challanNo,
+    });
+    if (syncPlan.error) return res.status(400).json({ message: syncPlan.error });
+
     const tx = await db.transaction('write');
     try {
       const ids = [];
-      for (let i = 0; i < lines.length; i += 1) {
-        const line = lines[i];
-        const challanType = trimOrNull(line.challan_type);
-        // Out of Processing: metres, with what came back defaulting to what went.
-        // Out of a dozen stage: no metres at all, and the dozens sent ARE the
-        // dozens the next lot receives.
-        const sentQty = parentDozen ? null : Number(line.sent_qty);
-        const receivedQty = parentDozen ? null
-          : (line.received_qty != null && line.received_qty !== '' ? Number(line.received_qty) : sentQty);
-        const sentDozens = parentDozen ? Number(line.sent_dozens) : null;
-        const receivedDozens = parentDozen ? sentDozens : Number(line.received_dozens);
-
+      for (let i = 0; i < rows.length; i += 1) {
+        const r = rows[i];
         const { rows: inserted } = await tx.execute({
           // received_at and received_by are still written even though nothing reads
           // them to decide a status any more: sending and receiving are the same
@@ -1022,38 +1196,46 @@ async function create(req, res, next) {
                    challan_no, challan_line_no, challan_type, outbound_bill_no, panchal_incoming_no,
                    incoming_prefix_id, incoming_no,
                    sent_qty, received_qty, sent_dozens, received_dozens,
+                   fresh_dozens, second_dozens, third_dozens,
                    process_rate, rate_unit, after_rate, checked_by,
                    received_at, received_by, created_by, updated_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        datetime('now'), ?, ?, ?)
                 RETURNING id`,
           args: [
             targetStage, originReceiptId,
             parentSrc === 'receipt' ? parent.id : null,
             parentSrc === 'entry' ? parent.id : null,
-            partyName, challanNo, i + 1, challanType, outboundBillNo, panchalIncomingNo,
+            partyName, challanNo, i + 1, r.challanType, outboundBillNo, panchalIncomingNo,
             numbering.prefixId, numbering.incomingNo,
-            sentQty, receivedQty, sentDozens, receivedDozens,
+            r.sentQty, r.receivedQty, r.sentDozens, r.receivedDozens,
+            r.cols.fresh_dozens, r.cols.second_dozens, r.cols.third_dozens,
             processRate, rateUnit, afterRate, checkedBy,
             req.user.id, req.user.id, req.user.id,
           ],
         });
         ids.push(inserted[0].id);
 
-        const sentText = parentDozen ? `${sentDozens} dozen` : `${sentQty}m`;
-        const short = parentDozen ? 0 : Math.round((sentQty - receivedQty) * 100) / 100;
+        const sentText = parentDozen ? `${r.sentDozens} dozen` : `${r.sentQty}m`;
+        const short = parentDozen ? 0 : round2(r.sentQty - r.receivedQty);
+        const what = graded
+          ? CHALLAN_TYPES.filter(t => r.cols[GRADE_COLUMNS[t]] > EPSILON)
+            .map(t => `${t} ${r.cols[GRADE_COLUMNS[t]]}`).join(', ')
+          : r.challanType;
         await logAction({
           client: tx,
           userId: req.user.id,
           actionType: 'STITCHING_ENTRY_CREATE',
-          description: `Challan ${challanNo}${lines.length > 1 ? ` line ${i + 1}` : ''} (${challanType}): `
-            + `sent ${sentText} from ${parent.stage} to ${targetStage} for ${describeLot(parent)} at ${partyName}`
-            + (parentDozen ? '' : `, ${receivedQty}m back as ${receivedDozens} dozen`)
+          description: `Challan ${challanNo}${rows.length > 1 ? ` line ${i + 1}` : ''} (${what}): `
+            + `sent ${sentText} from ${parent.stage} to ${targetStage} for ${describeLot(parent)} by ${partyName}`
+            + (parentDozen ? '' : `, ${r.receivedQty}m back as ${r.receivedDozens} dozen`)
             + (short > EPSILON ? ` with ${short}m short` : ''),
           entityType: 'stitching_entry',
           entityId: inserted[0].id,
           entityRef: challanNo,
         });
       }
+      await applyStageSync(tx, syncPlan, req.user.id);
       await tx.commit();
       res.status(201).json({ id: ids[0], ids, stage: targetStage });
     } catch (e) { await tx.rollback(); throw e; }
@@ -1097,6 +1279,177 @@ async function siblingLines(row) {
     args: [row.id, row.challan_no, row.party_name, row.parent_receipt_id, row.parent_entry_id],
   });
   return rows;
+}
+
+// THE LOT AND THE CHALLANS OUT OF IT -- ONE VALUE.
+//
+// A challan names its SENDER: the party holding the goods at the stage they
+// LEAVE, and its rate is that stage's rate (hence "Stitching - MC" and
+// "Stitching rate" on goods MC sent out of Stitching). So a lot's Stage Party
+// and Rate ARE the party and rate on every challan sent out of it, and the
+// client asked for exactly that: edit either side and both change. This is the
+// one place that keeps them so -- the Stage Party and Rate cells on the page
+// (setStage), a new challan (create) and an edited one (update) all come here.
+//
+// Split in two because the checks read through `db` and so must run before the
+// write transaction opens, the order create() and update() already keep:
+// planStageSync validates and works out every write, applyStageSync makes them.
+//
+// `party` / `rate` undefined means "leave it as it is"; null or '' clears it.
+// `newChallanNo` is the number of a challan about to be raised out of the lot:
+// it will carry the same party as every challan already out of it, so reusing
+// one of their numbers is the same challan twice.
+// Write-offs are not challans and keep the party they were written against.
+async function planStageSync(lot, { party, rate, newChallanNo = null } = {}) {
+  const setParty = party !== undefined;
+  const setRate = rate !== undefined;
+  const nextParty = setParty ? trimOrNull(party) : (lot.stage_party_name ?? null);
+  const nextRate = setRate ? numOrNull(rate) : (lot.stage_rate ?? null);
+
+  const parentCol = lot.src === 'entry' ? 'parent_entry_id' : 'parent_receipt_id';
+  const { rows: outgoing } = await db.execute({
+    sql: `SELECT * FROM stitching_entries
+           WHERE ${parentCol} = ? AND deleted_at IS NULL AND write_off_reason IS NULL
+           ORDER BY id`,
+    args: [lot.id],
+  });
+
+  // party_name is NOT NULL on a challan, and a challan with no sender is not a
+  // thing -- so a lot that has sent goods on keeps a party.
+  if (setParty && !nextParty && outgoing.length) {
+    return { error: "This lot has challans out of it — its Stage Party can't be blank" };
+  }
+
+  if (newChallanNo && outgoing.some(c => c.challan_no === newChallanNo)) {
+    return { error: `Challan ${newChallanNo} has already been raised out of this lot` };
+  }
+
+  if (setParty && outgoing.length) {
+    // Every one of them will carry the same party, so two sharing a number and a
+    // line would collide on the (challan_no, party_name, challan_line_no) index.
+    // Only reachable on rows raised before this rule, under different parties.
+    const seen = new Set();
+    for (const c of outgoing.filter(x => x.challan_no)) {
+      const key = `${c.challan_no}|${c.challan_line_no}`;
+      if (seen.has(key)) {
+        return { error: `Challan ${c.challan_no} appears twice among this lot's challans — withdraw one before changing the party` };
+      }
+      seen.add(key);
+    }
+    // And against the rest of that party's challan book.
+    const ids = outgoing.map(c => c.id);
+    for (const no of new Set(outgoing.map(c => c.challan_no).filter(Boolean))) {
+      if (await findDuplicateChallan(no, nextParty, ids)) {
+        return { error: `Challan ${no} has already been used for ${nextParty}` };
+      }
+    }
+  }
+
+  const challanWrites = (setParty || setRate) ? outgoing.map(c => ({
+    row: c,
+    next: {
+      ...(setParty ? { party_name: nextParty } : {}),
+      // In the unit of the lot's stage: per metre at Processing, per dozen after.
+      ...(setRate ? { process_rate: nextRate, rate_unit: nextRate == null ? null : stageRateUnit(lot.stage) } : {}),
+    },
+  })) : [];
+
+  return {
+    lot,
+    table: lot.src === 'entry' ? 'stitching_entries' : 'outbound_po_line_receipts',
+    lotNext: { stage_party_name: nextParty, stage_rate: nextRate },
+    challanWrites,
+  };
+}
+
+async function applyStageSync(tx, plan, userId) {
+  const { lot, table, lotNext, challanWrites } = plan;
+  const lotChanges = diffFields(lot, lotNext, ['stage_party_name', 'stage_rate']);
+  if (lotChanges.length) {
+    await tx.execute({
+      sql: `UPDATE ${table} SET stage_party_name = ?, stage_rate = ?,
+              updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
+      args: [lotNext.stage_party_name, lotNext.stage_rate, userId, lot.id],
+    });
+    await logAction({
+      client: tx,
+      userId,
+      actionType: 'STITCHING_STAGE_UPDATE',
+      description: `Updated the ${lot.stage} party / rate on ${describeLot(lot)}`,
+      // Receipts are audited against their PO line, like every receipt action.
+      entityType: lot.src === 'entry' ? 'stitching_entry' : 'outbound_po_line',
+      entityId: lot.src === 'entry' ? lot.id : lot.line_id,
+      entityRef: lot.incoming_no,
+      changes: lotChanges,
+    });
+  }
+  for (const w of challanWrites) {
+    const cols = Object.keys(w.next);
+    const changes = diffFields(w.row, w.next, cols);
+    if (!changes.length) continue;
+    await tx.execute({
+      sql: `UPDATE stitching_entries SET ${cols.map(c => `${c} = ?`).join(', ')},
+              updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
+      args: [...cols.map(c => w.next[c]), userId, w.row.id],
+    });
+    await logAction({
+      client: tx,
+      userId,
+      actionType: 'STITCHING_ENTRY_UPDATE',
+      description: `Challan ${w.row.challan_no || '(none)'} follows the ${lot.stage} party / rate of ${describeLot(lot)}`,
+      entityType: 'stitching_entry',
+      entityId: Number(w.row.id),
+      entityRef: w.row.incoming_no,
+      changes,
+    });
+  }
+}
+
+// PATCH /api/stitching/:src/:id/stage — a lot's Stage Party and/or Rate, set
+// from the page's own cells. Either kind of lot. Whatever changes here changes
+// on every challan already sent out of the lot too (planStageSync).
+async function setStage(req, res, next) {
+  try {
+    const [ref, refErr] = parseLotRef(req);
+    if (refErr) return res.status(400).json({ message: refErr });
+    const lot = await loadLot(ref.src, ref.id);
+    if (!lot || lot.write_off_reason != null) return res.status(404).json({ message: 'Lot not found' });
+
+    const has = (k) => Object.prototype.hasOwnProperty.call(req.body || {}, k);
+    if (!has('stage_party_name') && !has('stage_rate')) {
+      return res.status(400).json({ message: 'Send stage_party_name or stage_rate' });
+    }
+    if (has('stage_party_name')) {
+      const p = trimOrNull(req.body.stage_party_name);
+      if (p && p.length > TEXT_MAX) {
+        return res.status(400).json({ message: `Stage Party must be ${TEXT_MAX} characters or less` });
+      }
+    }
+    if (has('stage_rate')) {
+      // Only the stages that send keep a rate of their own. Panchal and Third
+      // Party still show the rate worked out down the chain.
+      if (!isRateStage(lot.stage)) {
+        return res.status(400).json({ message: `A ${lot.stage} lot has no rate of its own` });
+      }
+      const err = moneyError(req.body.stage_rate, `${lot.stage} rate`);
+      if (err) return res.status(400).json({ message: err });
+    }
+
+    const plan = await planStageSync(lot, {
+      party: has('stage_party_name') ? req.body.stage_party_name : undefined,
+      rate: has('stage_rate') ? req.body.stage_rate : undefined,
+    });
+    if (plan.error) return res.status(400).json({ message: plan.error });
+
+    const tx = await db.transaction('write');
+    try {
+      await applyStageSync(tx, plan, req.user.id);
+      await tx.commit();
+    } catch (e) { await tx.rollback(); throw e; }
+
+    const [fresh] = await withLineage([outward(await loadLot(ref.src, ref.id))]);
+    res.json(fresh);
+  } catch (err) { next(err); }
 }
 
 // POST /api/stitching/write-off — material that leaves a lot without arriving.
@@ -1180,10 +1533,13 @@ async function writeOff(req, res, next) {
 
 // PATCH /api/stitching/:id — edit ONE line of a challan.
 //
-// A line's own fields (type, quantities) change on this row only. The HEADER
-// fields are one per challan, so a change to any of them is applied to every
-// live line of it in the same transaction, each with its own audited diff --
-// otherwise one challan could end up naming two parties or two rates.
+// A line's own fields (type, quantities -- or the three grades on a graded lot)
+// change on this row only. The HEADER fields are one per challan, so a change
+// to any of them is applied to every live line of it in the same transaction,
+// each with its own audited diff -- otherwise one challan could end up naming
+// two parties or two rates. Party and rate reach further still: they are the
+// source lot's Stage Party and Rate, so they change there and on every challan
+// out of it (planStageSync).
 const HEADER_FIELDS = ['party_name', 'challan_no', 'process_rate', 'outbound_bill_no',
   'panchal_incoming_no', 'checked_by'];
 
@@ -1202,10 +1558,37 @@ async function update(req, res, next) {
     // The unit this line was sent in is the unit of the lot it LEFT.
     const parentDozen = countsDozens(lot?.parent_stage);
 
+    // A lot at a graded stage (Packing, Panchal, Third Party) is edited as its
+    // three grades, the same grid the form raised it with.
+    const graded = isGradedStage(current.stage);
+    const gradesBody = graded && has('grades');
+
     const validationError = await validateEntryFields(req.body, {
-      targetStage: current.stage, sourceStage: lot?.parent_stage, parentDozen,
+      targetStage: current.stage, sourceStage: lot?.parent_stage, parentDozen, grades: gradesBody,
     });
     if (validationError) return res.status(400).json({ message: validationError });
+
+    // A graded lot's quantity IS its grades. An older caller editing one line's
+    // type or dozens is read as that single grade, which is exactly what a lot
+    // raised before grades had columns is.
+    let gradeInput = null;
+    if (gradesBody) {
+      gradeInput = req.body.grades;
+    } else if (graded && ['challan_type', 'sent_dozens', 'received_dozens'].some(has)) {
+      const type = trimOrNull(req.body.challan_type) || current.challan_type;
+      if (!type) {
+        return res.status(400).json({
+          message: 'This challan carries more than one grade — edit it as Fresh, Second and Third',
+        });
+      }
+      gradeInput = {
+        [type]: parentDozen
+          ? (has('sent_dozens') ? req.body.sent_dozens : current.sent_dozens)
+          : (has('received_dozens') ? req.body.received_dozens : current.received_dozens),
+      };
+    }
+    const gradeCols = gradeInput ? gradeColumnsOf(gradeInput) : null;
+    const gradedDozens = gradeCols ? gradeTotal(gradeCols) : null;
 
     const nextSentQty = parentDozen ? current.sent_qty
       : (has('sent_qty') ? Number(req.body.sent_qty) : current.sent_qty);
@@ -1215,17 +1598,32 @@ async function update(req, res, next) {
         // the same default create() applies.
         : (has('sent_qty') && Math.abs(Number(current.received_qty) - Number(current.sent_qty)) <= EPSILON
           ? nextSentQty : current.received_qty));
-    const nextSentDozens = parentDozen && has('sent_dozens') ? Number(req.body.sent_dozens) : current.sent_dozens;
-    // Out of a dozen stage what was sent IS what arrived, so the two move together.
-    const nextReceivedDozens = parentDozen ? nextSentDozens
-      : (has('received_dozens') ? numOrNull(req.body.received_dozens) : current.received_dozens);
+    let nextSentDozens;
+    let nextReceivedDozens;
+    if (gradeCols) {
+      nextReceivedDozens = gradedDozens;
+      nextSentDozens = parentDozen ? gradedDozens : current.sent_dozens;
+    } else {
+      nextSentDozens = parentDozen && has('sent_dozens') ? Number(req.body.sent_dozens) : current.sent_dozens;
+      // Out of a dozen stage what was sent IS what arrived, so the two move together.
+      nextReceivedDozens = parentDozen ? nextSentDozens
+        : (has('received_dozens') ? numOrNull(req.body.received_dozens) : current.received_dozens);
+    }
+    const nextChallanType = gradeCols ? soleGrade(gradeCols)
+      : (has('challan_type') ? trimOrNull(req.body.challan_type) : current.challan_type);
+    // A graded lot keeps its grid unless this edit sends a new one. A line into
+    // Stitching holds its dozens under its one grade, so the columns follow it.
+    const nextGradeCols = gradeCols || (graded
+      ? { fresh_dozens: current.fresh_dozens, second_dozens: current.second_dozens, third_dozens: current.third_dozens }
+      : gradeColumnsOfLine(nextChallanType, nextReceivedDozens));
 
     // Raising what was sent can overdraw the parent. Checked in the parent's unit.
     const sentBefore = parentDozen ? current.sent_dozens : current.sent_qty;
     const sentAfter = parentDozen ? nextSentDozens : nextSentQty;
+    const parentSrc = current.parent_receipt_id != null ? 'receipt' : 'entry';
+    const parentRef = current.parent_receipt_id ?? current.parent_entry_id;
     if (Math.abs(Number(sentAfter) - Number(sentBefore)) > EPSILON) {
-      const parentSrc = current.parent_receipt_id != null ? 'receipt' : 'entry';
-      const parent = await loadLot(parentSrc, current.parent_receipt_id ?? current.parent_entry_id);
+      const parent = await loadLot(parentSrc, parentRef);
       // This row's own quantity is part of what the parent currently counts as
       // forwarded, so it has to be added back before comparing.
       const available = Math.round((Number(parent?.balance ?? 0) + Number(sentBefore)) * 100) / 100;
@@ -1260,38 +1658,60 @@ async function update(req, res, next) {
       }
     }
 
+    // THE PARTY AND RATE are the source lot's Stage Party and Rate (one value --
+    // see planStageSync), so an edit to either goes through that lot: it changes
+    // there, on this challan, on its sibling lines and on every other challan
+    // out of the same lot. A write-off is no challan and keeps its own.
+    const syncing = current.write_off_reason == null && (has('party_name') || has('process_rate'));
+    let syncPlan = null;
+    if (syncing) {
+      const parentLot = await loadLot(parentSrc, parentRef);
+      if (parentLot) {
+        syncPlan = await planStageSync(parentLot, {
+          party: has('party_name') ? req.body.party_name : undefined,
+          rate: has('process_rate') ? req.body.process_rate : undefined,
+        });
+        if (syncPlan.error) return res.status(400).json({ message: syncPlan.error });
+      }
+    }
+
     const nextProcessRate = has('process_rate') ? numOrNull(req.body.process_rate) : current.process_rate;
-    // A rate typed on today's form is per dozen, whatever the row held before.
+    // A rate typed on today's form is in the unit of the stage the challan
+    // leaves -- per metre out of Processing, per dozen after -- whatever the row
+    // held before.
     const nextRateUnit = has('process_rate')
-      ? (nextProcessRate == null ? null : CHALLAN_RATE_UNIT)
+      ? (nextProcessRate == null ? null : stageRateUnit(lot?.parent_stage))
       : current.rate_unit;
 
     // The header as it will read after this edit -- applied to this row and
-    // every sibling alike.
+    // every sibling alike. Party and rate leave it when the lot sync carries them.
     const header = {
-      party_name: has('party_name') ? trimOrNull(req.body.party_name) : current.party_name,
       challan_no: has('challan_no') ? trimOrNull(req.body.challan_no) : current.challan_no,
       outbound_bill_no: has('outbound_bill_no')
         ? trimOrNull(req.body.outbound_bill_no) : current.outbound_bill_no,
       panchal_incoming_no: has('panchal_incoming_no')
         ? trimOrNull(req.body.panchal_incoming_no) : current.panchal_incoming_no,
-      process_rate: nextProcessRate,
-      rate_unit: nextRateUnit,
       checked_by: has('checked_by') ? Number(req.body.checked_by) : current.checked_by,
+      ...(syncPlan ? {} : {
+        party_name: has('party_name') ? trimOrNull(req.body.party_name) : current.party_name,
+        process_rate: nextProcessRate,
+        rate_unit: nextRateUnit,
+      }),
     };
-    const headerTouched = HEADER_FIELDS.some(has);
+    const headerTouched = Object.keys(header).some(has);
 
     // No bill_no. It belongs to the PO receipt, and the column here is left
     // unread rather than dropped.
     const next = {
       ...header,
-      challan_type: has('challan_type') ? trimOrNull(req.body.challan_type) : current.challan_type,
+      challan_type: nextChallanType,
       incoming_prefix_id: has('incoming_prefix_id') ? numOrNull(req.body.incoming_prefix_id) : current.incoming_prefix_id,
       incoming_no: has('incoming_no') ? trimOrNull(req.body.incoming_no) : current.incoming_no,
       sent_qty: nextSentQty,
       received_qty: nextReceivedQty,
       sent_dozens: nextSentDozens,
       received_dozens: nextReceivedDozens,
+      ...nextGradeCols,
     };
 
     const writes = [{ row: current, next, isSelf: true }];
@@ -1324,6 +1744,7 @@ async function update(req, res, next) {
           changes,
         });
       }
+      if (syncPlan) await applyStageSync(tx, syncPlan, req.user.id);
       await tx.commit();
     } catch (e) { await tx.rollback(); throw e; }
 
@@ -1380,12 +1801,22 @@ async function restore(req, res, next) {
   try {
     const { id } = req.params;
     const { rows: existing } = await db.execute({
-      sql: `SELECT id, stage, sent_qty, sent_dozens, incoming_no, parent_receipt_id, parent_entry_id
+      sql: `SELECT id, stage, sent_qty, sent_dozens, incoming_no, parent_receipt_id, parent_entry_id,
+                   revert_reason
             FROM stitching_entries WHERE id = ? AND deleted_at IS NOT NULL`,
       args: [id],
     });
     if (!existing.length) return res.status(404).json({ message: 'Deleted stitching entry not found' });
     const entry = existing[0];
+
+    // A grade line folded into its challan's single lot by merge-graded-challans.js.
+    // Its dozens live on in that lot, so bringing it back would count them twice.
+    const merged = /^Merged into lot #(\d+)/.exec(entry.revert_reason || '');
+    if (merged) {
+      return res.status(400).json({
+        message: `This line was merged into lot #${merged[1]} — restoring it would count its dozens twice`,
+      });
+    }
 
     // The source may have been forwarded elsewhere since this row was deleted,
     // so restoring it can overdraw a lot that balanced a moment ago.
@@ -1621,6 +2052,7 @@ async function journey(req, res, next) {
     const { rows: removed } = await db.execute({
       sql: `SELECT e.id, e.stage, e.party_name, e.sent_qty, e.received_qty,
                    e.sent_dozens, e.received_dozens, e.challan_no, e.challan_line_no, e.challan_type,
+                   e.fresh_dozens, e.second_dozens, e.third_dozens,
                    e.deleted_at,
                    e.revert_reason, e.write_off_reason, e.created_at,
                    e.parent_receipt_id, e.parent_entry_id, du.name AS deleted_by_name
@@ -1647,6 +2079,9 @@ async function journey(req, res, next) {
         challan_no: r.challan_no,
         challan_line_no: r.challan_line_no,
         challan_type: r.challan_type,
+        fresh_dozens: r.fresh_dozens,
+        second_dozens: r.second_dozens,
+        third_dozens: r.third_dozens,
         parent_src: r.parent_receipt_id != null ? 'receipt' : 'entry',
         parent_id: r.parent_receipt_id ?? r.parent_entry_id,
         created_at: r.created_at,
@@ -1748,6 +2183,6 @@ async function journey(req, res, next) {
 
 module.exports = {
   list, listParties, stageCounts, journey,
-  create, writeOff, update, remove, restore, removeChallan, close, reopen,
+  create, writeOff, update, remove, restore, removeChallan, close, reopen, setStage,
   NONE_SELECTED,
 };

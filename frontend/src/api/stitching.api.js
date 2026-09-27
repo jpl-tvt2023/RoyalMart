@@ -70,6 +70,14 @@ export async function updateStitchingLot(id, payload) {
   return data;
 }
 
+// A lot's Stage Party and/or Rate ({ stage_party_name, stage_rate }), on either
+// kind of lot. The server applies the same change to every challan already sent
+// out of the lot -- the two are one value.
+export async function updateStitchingStage(src, id, payload) {
+  const { data } = await api.patch(`/stitching/${src}/${id}/stage`, payload);
+  return data;
+}
+
 export async function deleteStitchingLot(id) {
   const { data } = await api.delete(`/stitching/${id}`);
   return data;

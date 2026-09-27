@@ -26,6 +26,10 @@ router.post('/write-off', auth, canEdit, stitching.writeOff);
 router.post('/:src/:id/close', auth, canEdit, stitching.close);
 router.post('/:src/:id/reopen', auth, canEdit, stitching.reopen);
 
+// A lot's Stage Party and Rate, on either kind of lot -- and, with them, every
+// challan already sent out of it (one value). Three segments, like close/reopen.
+router.patch('/:src/:id/stage', auth, canEdit, stitching.setStage);
+
 // Withdrawing a challan or a write-off that should not exist -- a correction,
 // not a movement. One segment: only these can be withdrawn, and both are
 // stitching_entries rows, so the id needs no lot type beside it.

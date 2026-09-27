@@ -7,16 +7,24 @@
 
 import {
   moneyError, qtyError, defaultAfterRate, STAGES, EPSILON, countsDozens, metresPerDozen,
+  isGradedStage, CHALLAN_TYPES, GRADE_COLUMNS,
 } from '../../utils/stitching';
 
 // Twin of INCOMING_NO_MAX in backend/src/controllers/outboundPOs.controller.js,
 // keep the two in step.
 export const INCOMING_NO_MAX = 50;
 
+// A receipt's Note is a paragraph, capped only against a paste accident. Twin of
+// NOTE_MAX in backend/src/controllers/outboundPOs.controller.js, keep in step.
+export const NOTE_MAX = 1000;
+
+// The three grades start at 0 -- the client's default -- and only mean anything
+// on fabric received at Packing or Panchal (receiptIsGraded).
 export const EMPTY_RECEIPT = {
   received_qty: '', unit_metric: '', received_rate: '', bill_no: '', incoming_no: '',
   process_rate: '', after_rate: '', incoming_stage: '',
   qty_in_metres: '', received_dozens: '', qty_diff_action: '', qty_diff_reason: '',
+  fresh_dozens: '0', second_dozens: '0', third_dozens: '0', note: '',
 };
 
 // Only fabric travels the Stitching stages, so only fabric has a stage and a
@@ -87,6 +95,20 @@ export const RECEIPT_STAGES = STAGES.filter(s => s !== 'Third Party');
 export const receiptCountsDozens = (line, incomingStage) =>
   isFabricLine(line) && countsDozens(incomingStage);
 
+// Fabric bought in at Packing or Panchal arrives GRADED (migration 089): its
+// dozens are typed as Fresh, Second and Third, and Dozens Received is their sum.
+// Stitching counts dozens but is not graded.
+export const receiptIsGraded = (line, incomingStage) =>
+  isFabricLine(line) && isGradedStage(incomingStage);
+
+// The grade inputs, in type order: [['Fresh', 'fresh_dozens'], ...].
+export const GRADE_FIELDS = CHALLAN_TYPES.map(t => [t, GRADE_COLUMNS[t]]);
+
+// Dozens Received on a graded receipt, to two places.
+export const receiptGradeTotal = (v) => Math.round(
+  GRADE_FIELDS.reduce((s, [, col]) => s + (Number(v?.[col]) || 0), 0) * 100,
+) / 100;
+
 // The yield, for the read-only field beside the count. Re-exported here so the
 // receipt modal and the stitching page compute it the same way.
 export { metresPerDozen };
@@ -145,9 +167,20 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
     if (!String(v.incoming_no ?? '').trim()) return 'Incoming No is required';
     const metresErr = qtyError(v.qty_in_metres, 'Qty in metres');
     if (metresErr) return metresErr;
-    if (countsDozens(v.incoming_stage)) {
+    // At Packing or Panchal the dozens are the grades below, not a figure of
+    // their own -- so the total is not asked for there.
+    if (countsDozens(v.incoming_stage) && !isGradedStage(v.incoming_stage)) {
       const dozensErr = qtyError(v.received_dozens, 'Dozens Received');
       if (dozensErr) return dozensErr;
+    }
+    // Twin of the server's grade check, in the same slot: each grade 0 or a
+    // positive 2dp figure, and together something.
+    if (isGradedStage(v.incoming_stage)) {
+      for (const [type, col] of GRADE_FIELDS) {
+        const gradeErr = moneyError(v[col], `${type} dozens`);
+        if (gradeErr) return gradeErr;
+      }
+      if (receiptGradeTotal(v) <= EPSILON) return 'Enter the dozens for at least one grade';
     }
   }
 
@@ -171,6 +204,9 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
   // as "the line's own", which is what an API caller omitting it means, while
   // the form has already pre-filled that same value and so can insist on one.
   if (!String(v.unit_metric ?? '').trim()) return 'UM is required';
+
+  // Optional free text, after everything else -- the same slot the server gives it.
+  if (String(v.note ?? '').trim().length > NOTE_MAX) return `Note must be ${NOTE_MAX} characters or less`;
 
   return null;
 }

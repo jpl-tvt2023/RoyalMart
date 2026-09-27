@@ -83,13 +83,15 @@ const STATUS = {
 // any more -- none of the three needs attention.
 const OPEN_STATUSES = [STATUS.PENDING, STATUS.PARTIAL, STATUS.IN_STOCK];
 
-// The destinations a party may be tagged as serving, and the twin of the CHECK
-// on stitching_party_uses (079, rebuilt by 087).
+// The stages a party may be tagged as working at, and the twin of the CHECK on
+// stitching_party_uses (079, rebuilt by 087, 088 and 090).
 //
-// Derived from the graph rather than listed again: a party may be tagged for
-// exactly those places something can be SENT. Processing falls out on its own --
-// it is never a destination, because material enters the chain there on a receipt.
-const PARTY_USE_STAGES = [...new Set(Object.values(DESTINATIONS).flat())];
+// EVERY stage. A tag used to mean "offer me when goods are sent TO this stage",
+// which is why it was derived from DESTINATIONS and Processing fell out of it.
+// The client has since confirmed that a challan names its SENDER, and every lot
+// carries a Stage Party picked from the parties who work at its stage -- so a
+// processing house is tagged Processing again, and a buyer Third Party.
+const PARTY_USE_STAGES = [...STAGES];
 
 const isValidPartyUse = (s) => PARTY_USE_STAGES.includes(s);
 
@@ -98,6 +100,31 @@ const isValidPartyUse = (s) => PARTY_USE_STAGES.includes(s);
 const CHALLAN_TYPES = ['Fresh', 'Second', 'Third'];
 
 const isValidChallanType = (s) => CHALLAN_TYPES.includes(s);
+
+// The stages goods arrive at GRADED: one lot per challan, its dozens split into
+// Fresh, Second and Third side by side, rather than one lot per grade line. A
+// challan into Stitching still makes one lot per line -- the client asked for
+// the split from Packing on. A PO receipt booked straight into one of these
+// (Packing or Panchal -- nothing is received at Third Party) records the same
+// three.
+//
+// The split is what ARRIVED. Balance, status and every send limit still run on
+// the total dozens, so a lot's grades are never a second balance to keep.
+const GRADED_STAGES = ['Packing', 'Panchal', 'Third Party'];
+
+const isGradedStage = (stage) => GRADED_STAGES.includes(stage);
+
+// The three grade columns, in CHALLAN_TYPES order, keyed by the type they hold.
+const GRADE_COLUMNS = { Fresh: 'fresh_dozens', Second: 'second_dozens', Third: 'third_dozens' };
+
+// The stages a lot's own Rate is kept at: those that SEND, because a lot's rate
+// is the "<stage> rate" on every challan out of it (one value -- see
+// planStageSync in the controller). Panchal and Third Party send nothing, and
+// their Rate column is still the calculated total until the client settles a
+// formula for it.
+const RATE_STAGES = STAGES.filter(s => (DESTINATIONS[s] || []).length > 0);
+
+const isRateStage = (stage) => RATE_STAGES.includes(stage);
 
 // The stages that count DOZENS, and count nothing else. Processing is the last
 // stage that deals in metres. A challan leaving it records the metres sent and
@@ -115,15 +142,18 @@ const countsDozens = (stage) => DOZEN_STAGES.includes(stage);
 // The unit a lot at this stage is counted in, and its balance kept in.
 const balanceUnitFor = (stage) => (countsDozens(stage) ? 'dz' : 'm');
 
-// Every challan rate is PER DOZEN, and names the stage being LEFT: the rate
-// typed on a challan out of Processing is the Processing rate. Every destination
-// in the graph counts dozens, so there is no per-metre challan left to price.
-// Rows written before migration 087 keep their real unit in rate_unit -- per
-// dozen only into Stitched or Packed, per metre otherwise -- and the rate total
-// converts those rather than pretending they were per dozen.
+// The unit a stage's OWN rate is quoted in -- and so the unit of the rate on
+// any challan LEAVING that stage, since a challan's rate is the rate of the
+// stage the goods leave ("Processing rate" on a challan out of Processing).
 //
-// Replaces DOZEN_RATE_STAGES/pricedPerDozen, which described the old rule.
-const CHALLAN_RATE_UNIT = 'dozen';
+// It follows what the stage counts in: the Processing rate is PER METRE, and
+// from Stitching on every rate is PER DOZEN. The client settled this after 087
+// had made every challan rate per dozen (CHALLAN_RATE_UNIT, now gone).
+//
+// Rows keep the unit they were written in (rate_unit), and rateTotal converts
+// a per-metre rung at the lot's metres-per-dozen, so older per-dozen Processing
+// rates still add up correctly rather than being reread.
+const stageRateUnit = (stage) => (countsDozens(stage) ? 'dozen' : 'metre');
 
 // Yield: how many metres it took to make a dozen. NOT STORED -- derived here and
 // on the client from the two numbers that are, to two places.
@@ -351,10 +381,11 @@ const rateTotal = (components, mPerDozen) => {
 
 module.exports = {
   STAGES, STATUS, OPEN_STATUSES, EPSILON,
-  DESTINATIONS, EXIT_STAGE, STOCK_STAGE, DOZEN_STAGES, CHALLAN_RATE_UNIT,
-  PARTY_USE_STAGES, CHALLAN_TYPES,
+  DESTINATIONS, EXIT_STAGE, STOCK_STAGE, DOZEN_STAGES, stageRateUnit,
+  PARTY_USE_STAGES, CHALLAN_TYPES, GRADED_STAGES, GRADE_COLUMNS, RATE_STAGES,
   REVERT_REASON_MAX, WRITE_OFF_REASON_MAX, CHALLAN_MAX,
-  isValidStage, isValidPartyUse, isValidChallanType, countsDozens, balanceUnitFor, metresPerDozen,
+  isValidStage, isValidPartyUse, isValidChallanType, isGradedStage, isRateStage,
+  countsDozens, balanceUnitFor, metresPerDozen,
   partyShort, partyTag, rateTotal,
   nextStage, destinationsFor, canSendTo,
   effectiveAfterRate, balanceOf, computeStatus, statusSql,
