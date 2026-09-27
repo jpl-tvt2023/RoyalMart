@@ -2,10 +2,13 @@
 // goods off us.
 //
 // Migration 079 explains why this is not outbound_vendors. What it adds over a
-// plain name master is the USE TAGS -- the destinations each party may serve --
-// which is what lets the challan form offer only parties that can legitimately
-// do the job being dispatched. A party with no tags exists but is never offered,
-// which is the state migration 079's backfill leaves every imported name in.
+// plain name master is the USE TAGS -- the stages each party works at -- which
+// is what lets the Stage Party dropdown on a lot, and the sender on a challan
+// out of it, offer only parties that actually work at that stage. (Until
+// migration 090 a tag meant "may be sent TO this stage". A challan names its
+// SENDER, so it now means "works at this stage", Processing included.) A party
+// with no tags exists but is never offered, which is the state migration 079's
+// backfill leaves every imported name in.
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
 const { PARTY_USE_STAGES, isValidPartyUse } = require('../services/stitching.service');

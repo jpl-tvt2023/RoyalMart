@@ -1129,7 +1129,7 @@ describe('Outbound POs API', () => {
         // Packed is one of the two stages that count pieces, so the delivery
         // carries a dozen count as well as its metres.
         const created = await postReceipt(poId, lineId,
-          fabricBody({ incoming_stage: 'Packing', received_dozens: 20 }));
+          fabricBody({ incoming_stage: 'Packing', received_dozens: 20, fresh_dozens: 20 }));
         expect(created.status).toBe(201);
         const receipt = (await lineOf(poId)).receipts[0];
         expect(receipt.incoming_stage).toBe('Packing');
@@ -1144,7 +1144,7 @@ describe('Outbound POs API', () => {
         // Panchal counts pieces now, so a receipt straight into the warehouse
         // carries a dozen count exactly as one at Stitched or Packed does.
         const ok = await postReceipt(poId, lineId, fabricBody({
-          incoming_stage: 'Panchal', received_dozens: 20,
+          incoming_stage: 'Panchal', received_dozens: 20, fresh_dozens: 20,
         }));
         expect(ok.status).toBe(201);
 
@@ -1181,6 +1181,89 @@ describe('Outbound POs API', () => {
         const receipt = (await lineOf(poId)).receipts[0];
         expect(receipt.received_qty).toBe(7);
         expect(receipt.qty_in_metres).toBe(355.5);
+      });
+    });
+
+    const patchReceipt = (poId, lineId, receiptId, body) => request(app)
+      .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${receiptId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(body);
+
+    // Migration 089. Fabric bought in at Packing or Panchal arrives graded, the
+    // same split a challan into those stages carries, and Dozens Received is
+    // the sum of the three.
+    describe('grades on goods bought in at Packing or Panchal', () => {
+      test('the grades are required there, and Dozens Received is their sum', async () => {
+        const { poId, lineId } = await fabricLine();
+        const missing = await postReceipt(poId, lineId,
+          fabricBody({ incoming_stage: 'Packing', received_dozens: 20 }));
+        expect(missing.status).toBe(400);
+        expect(missing.body.message).toBe('Enter the dozens for at least one grade');
+
+        const ok = await postReceipt(poId, lineId, fabricBody({
+          incoming_stage: 'Packing', fresh_dozens: 12, second_dozens: 6, third_dozens: 2,
+        }));
+        expect(ok.status).toBe(201);
+        const receipt = (await lineOf(poId)).receipts[0];
+        expect([receipt.fresh_dozens, receipt.second_dozens, receipt.third_dozens]).toEqual([12, 6, 2]);
+        expect(receipt.received_dozens).toBe(20);
+      });
+
+      test('a total that disagrees with the grades is refused', async () => {
+        const { poId, lineId } = await fabricLine();
+        const res = await postReceipt(poId, lineId, fabricBody({
+          incoming_stage: 'Panchal', received_dozens: 25, fresh_dozens: 20,
+        }));
+        expect(res.status).toBe(400);
+        expect(res.body.message).toBe('Fresh + Second + Third must add up to Dozens Received');
+      });
+
+      test('grades are refused at any other stage', async () => {
+        const { poId, lineId } = await fabricLine();
+        const res = await postReceipt(poId, lineId, fabricBody({
+          incoming_stage: 'Stitching', received_dozens: 20, fresh_dozens: 20,
+        }));
+        expect(res.status).toBe(400);
+        expect(res.body.message).toMatch(/only recorded on fabric received at Packing, Panchal/);
+      });
+
+      test('an edit replaces the grades, and moving off a graded stage drops them', async () => {
+        const { poId, lineId } = await fabricLine();
+        const created = await postReceipt(poId, lineId,
+          fabricBody({ incoming_stage: 'Packing', fresh_dozens: 10 }));
+        const edited = await patchReceipt(poId, lineId, created.body.id,
+          { fresh_dozens: 5, second_dozens: 5, third_dozens: 3 });
+        expect(edited.status).toBe(200);
+        let receipt = (await lineOf(poId)).receipts[0];
+        expect([receipt.fresh_dozens, receipt.second_dozens, receipt.third_dozens]).toEqual([5, 5, 3]);
+        expect(receipt.received_dozens).toBe(13);
+
+        await patchReceipt(poId, lineId, created.body.id, { incoming_stage: 'Stitching', received_dozens: 13 });
+        receipt = (await lineOf(poId)).receipts[0];
+        expect([receipt.fresh_dozens, receipt.second_dozens, receipt.third_dozens]).toEqual([0, 0, 0]);
+        expect(receipt.received_dozens).toBe(13);
+      });
+    });
+
+    describe('the receipt note', () => {
+      test('a note is saved trimmed, edited with an audited diff, and capped', async () => {
+        const { poId, lineId } = await packagingLine();
+        const created = await postReceipt(poId, lineId, {
+          received_qty: 1, received_rate: 10, note: '  Two bales wet on arrival.\nVendor informed.  ',
+        });
+        expect(created.status).toBe(201);
+        expect((await lineOf(poId)).receipts[0].note).toBe('Two bales wet on arrival.\nVendor informed.');
+
+        const edited = await patchReceipt(poId, lineId, created.body.id, { note: 'Dried and accepted' });
+        expect(edited.status).toBe(200);
+        expect((await lineOf(poId)).receipts[0].note).toBe('Dried and accepted');
+        const audit = await auditFor('outbound_po_line', lineId);
+        const entry = audit.body.find(e => e.action_type === 'OUTBOUND_PO_LINE_RECEIPT_UPDATE');
+        expect(entry.changes.some(c => c.field === 'note' && c.new === 'Dried and accepted')).toBe(true);
+
+        const long = await patchReceipt(poId, lineId, created.body.id, { note: 'x'.repeat(1001) });
+        expect(long.status).toBe(400);
+        expect(long.body.message).toBe('Note must be 1000 characters or less');
       });
     });
 

@@ -3,7 +3,9 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/ui/Modal';
 import Badge from '../../components/ui/Badge';
 import { getStitchingJourney } from '../../api/stitching.api';
-import { STATUS_COLORS, fmtNum, fmtQty } from '../../utils/stitching';
+import {
+  STATUS_COLORS, fmtNum, fmtQty, isGradedStage, gradesOf, stageRateSuffix,
+} from '../../utils/stitching';
 import { formatDateTime } from '../../utils/formatters';
 
 /**
@@ -174,10 +176,15 @@ export default function JourneyModal({ src, id, onClose }) {
                             <>
                               {' · '}<span className="text-gray-400">{n.stage}</span>{' '}
                               <span className="font-semibold text-[#003049]">{fmtNum(n.stage_rate)}</span>
+                              <span className="text-gray-400">{stageRateSuffix(n.stage)}</span>
                             </>
                           )}
                         </span>
-                        {n.challan_type && <span>{n.challan_type}</span>}
+                        {/* A lot from Packing on holds its grades side by side;
+                            a line into Stitching is one type. */}
+                        {isGradedStage(n.stage) && gradesOf(n).length > 0
+                          ? <span>{gradesOf(n).map(([t, q]) => `${t} ${fmtNum(q)}`).join(' · ')}</span>
+                          : n.challan_type && <span>{n.challan_type}</span>}
                         {n.outbound_bill_no && (
                           <span>bill <span className="font-mono">{n.outbound_bill_no}</span></span>
                         )}

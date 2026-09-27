@@ -2,10 +2,11 @@ import { describe, test, expect } from 'vitest';
 import {
   STAGES, STAGE_TABS, ALL_TAB, nextStage, DESTINATIONS, destinationsFor, canSendTo,
   EXIT_STAGE, STOCK_STAGE, PARTY_USE_STAGES,
-  DOZEN_STAGES, countsDozens, balanceUnitFor, CHALLAN_RATE_UNIT, stageRateLabel, metresPerDozen,
+  DOZEN_STAGES, countsDozens, balanceUnitFor, stageRateUnit, stageRateSuffix, stageRateLabel, metresPerDozen,
   carriedIncomingNo, soleActivePrefix,
   challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX, fmtQty,
   writeOffReasonError, WRITE_OFF_REASON_MAX, STATUSES, OPEN_STATUSES, statusesFor,
+  GRADED_STAGES, isGradedStage, GRADE_COLUMNS, gradesOf, RATE_STAGES, isRateStage,
 } from '../stitching';
 
 describe('STAGE_TABS', () => {
@@ -63,11 +64,33 @@ describe('DESTINATIONS', () => {
     expect(canSendTo('Stitching', 'Processing')).toBe(false);
   });
 
-  // Processing falls out on its own: nothing is ever SENT to it, because
-  // material enters the chain there on a receipt.
-  test('party use tags are exactly the destinations', () => {
-    expect(PARTY_USE_STAGES).not.toContain('Processing');
-    expect(PARTY_USE_STAGES).toEqual([...new Set(Object.values(DESTINATIONS).flat())]);
+  // A tag means "works at this stage" since migration 090 -- a challan names
+  // its SENDER, so a processing house is tagged Processing again.
+  test('party use tags are every stage', () => {
+    expect(PARTY_USE_STAGES).toEqual(STAGES);
+    expect(PARTY_USE_STAGES).toContain('Processing');
+  });
+});
+
+// Twins of GRADED_STAGES / RATE_STAGES in the backend service (migration 089).
+describe('grades and stage rates', () => {
+  test('goods arrive graded from Packing on, and not at Stitching', () => {
+    expect(GRADED_STAGES).toEqual(['Packing', 'Panchal', 'Third Party']);
+    expect(isGradedStage('Stitching')).toBe(false);
+    expect(isGradedStage('Panchal')).toBe(true);
+    expect(GRADE_COLUMNS).toEqual({ Fresh: 'fresh_dozens', Second: 'second_dozens', Third: 'third_dozens' });
+  });
+
+  test('gradesOf keeps the grades above 0, in type order', () => {
+    expect(gradesOf({ fresh_dozens: 10, second_dozens: 0, third_dozens: 2.5 }))
+      .toEqual([['Fresh', 10], ['Third', 2.5]]);
+    expect(gradesOf({})).toEqual([]);
+  });
+
+  test('only the stages that send keep a rate of their own', () => {
+    expect(RATE_STAGES).toEqual(['Processing', 'Stitching', 'Packing']);
+    expect(isRateStage('Panchal')).toBe(false);
+    expect(isRateStage('Third Party')).toBe(false);
   });
 });
 
@@ -84,9 +107,13 @@ describe('dozens and yield', () => {
     expect(balanceUnitFor('Processing')).toBe('m');
   });
 
-  // A challan's rate belongs to the stage the goods LEAVE, and is per dozen.
-  test('a challan rate is per dozen and named for the stage being left', () => {
-    expect(CHALLAN_RATE_UNIT).toBe('dozen');
+  // A challan's rate belongs to the stage the goods LEAVE, in that stage's unit:
+  // the Processing rate is per metre, every rate after it per dozen.
+  test('a stage rate is per metre at Processing, per dozen after, and named for the stage', () => {
+    expect(stageRateUnit('Processing')).toBe('metre');
+    for (const stage of DOZEN_STAGES) expect(stageRateUnit(stage)).toBe('dozen');
+    expect(stageRateSuffix('Processing')).toBe('/m');
+    expect(stageRateSuffix('Packing')).toBe('/dz');
     expect(stageRateLabel('Processing')).toBe('Processing rate');
     expect(stageRateLabel('Stitching')).toBe('Stitching rate');
   });

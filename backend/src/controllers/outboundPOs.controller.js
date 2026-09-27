@@ -7,7 +7,7 @@ const {
 const { pairKey, unitMetricsByPair } = require('../services/outboundProducts.service');
 const {
   effectiveAfterRate, moneyError, qtyError, EPSILON, isValidStage, STAGES, countsDozens, DOZEN_STAGES,
-  STOCK_STAGE,
+  STOCK_STAGE, CHALLAN_TYPES, GRADE_COLUMNS, isGradedStage,
 } = require('../services/stitching.service');
 
 const VALID_STATUSES = ['Open', 'Partially Received', 'Closed'];
@@ -30,6 +30,11 @@ const NONE_SELECTED = '__none_selected__';
 // constant in frontend/src/pages/OutboundPOs/OutboundPODetail.jsx, keep the two
 // in step -- the client mirrors this rule to spare a round trip.
 const INCOMING_NO_MAX = 50;
+
+// A receipt's Note is a paragraph, not a handle -- room for a sentence or three
+// about the delivery, capped only against a paste accident. Twin constant in
+// frontend/src/pages/OutboundPOs/receiptFields.js, keep the two in step.
+const NOTE_MAX = 1000;
 
 const padOrderNo = (id) => String(id).padStart(3, '0');
 
@@ -281,6 +286,19 @@ async function prefixIdForStage(stage) {
 // leaves us -- nothing is ever bought into it.
 const RECEIPT_STAGES = STAGES.filter(st => st !== 'Third Party');
 
+// The receipt stages whose goods arrive GRADED -- Packing and Panchal. Fabric
+// bought in there records its dozens split into Fresh, Second and Third, the
+// same split a challan into those stages carries, and Dozens Received is their
+// sum. Stitching is a dozen stage but not a graded one (see GRADED_STAGES).
+const RECEIPT_GRADED_STAGES = RECEIPT_STAGES.filter(isGradedStage);
+
+// The grade inputs, in CHALLAN_TYPES order: [['Fresh', 'fresh_dozens'], ...].
+const GRADE_FIELDS = CHALLAN_TYPES.map(t => [t, GRADE_COLUMNS[t]]);
+
+const gradeSum = (src) => Math.round(
+  GRADE_FIELDS.reduce((s, [, col]) => s + (Number(src?.[col]) || 0), 0) * 100,
+) / 100;
+
 // What is still due on a line: ordered, less what has arrived, less what has
 // been written off as never coming. Twin of pendingOf on the detail page, and
 // the number the receipt form measures its Qty difference against.
@@ -410,12 +428,44 @@ async function validateReceiptFields(body, { requireAll, line }) {
   // has no pieces to count. Third Party never reaches here -- RECEIPT_STAGES
   // rejects it above, because nothing is received at the exit.
   const dozenStage = fabric && countsDozens(String(body?.incoming_stage ?? '').trim());
+  // At a graded stage the dozens are typed per grade and Dozens Received is
+  // their sum, so a missing total is not an omission there -- the grade check
+  // below asks for the grades instead.
+  // An edit that sends grades without restating the stage is judged against the
+  // stage the receipt already has -- `line` is the stored receipt on an update.
+  const gradedStage = fabric && isGradedStage(present('incoming_stage')
+    ? String(body?.incoming_stage ?? '').trim()
+    : String(line?.incoming_stage ?? '').trim());
   if (present('received_dozens') && !blank(body?.received_dozens)) {
     if (!dozenStage) return `Dozens are only counted on fabric received at ${DOZEN_STAGES.join(', ')}`;
     const err = qtyError(body.received_dozens, 'Dozens Received');
     if (err) return err;
-  } else if (dozenStage && requireAll) {
+  } else if (dozenStage && requireAll && !gradedStage) {
     return 'Dozens Received is required';
+  }
+
+  // THE GRADES, on fabric bought in at Packing or Panchal (migration 089). Each
+  // is 0 or a positive 2dp figure -- 0 is the default and means none of that
+  // grade -- and together they must come to something, because a delivery of
+  // no dozens is not a delivery. When the total is sent as well it has to
+  // agree: the two are one fact typed twice.
+  const gradesPresent = GRADE_FIELDS.some(([, col]) => present(col) && !blank(body?.[col]));
+  if (gradesPresent) {
+    if (!gradedStage) {
+      return `Fresh, Second and Third are only recorded on fabric received at ${RECEIPT_GRADED_STAGES.join(', ')}`;
+    }
+    for (const [type, col] of GRADE_FIELDS) {
+      const err = moneyError(body?.[col], `${type} dozens`);
+      if (err) return err;
+    }
+    const total = gradeSum(body);
+    if (total <= EPSILON) return 'Enter the dozens for at least one grade';
+    if (present('received_dozens') && !blank(body?.received_dozens)
+        && Math.abs(Number(body.received_dozens) - total) > EPSILON) {
+      return 'Fresh + Second + Third must add up to Dozens Received';
+    }
+  } else if (gradedStage && requireAll) {
+    return 'Enter the dozens for at least one grade';
   }
 
   // What to do about a delivery that does not match what was outstanding. The
@@ -450,6 +500,12 @@ async function validateReceiptFields(body, { requireAll, line }) {
   if (present('unit_metric') && !blank(body?.unit_metric)) {
     const { error } = await resolveReceiptMetric(body.unit_metric, line);
     if (error) return error;
+  }
+
+  // Optional free text, appended after everything else for the ordering reason
+  // given above. Stored trimmed-or-NULL, so only the length can be wrong.
+  if (present('note') && !blank(body?.note)) {
+    if (String(body.note).trim().length > NOTE_MAX) return `Note must be ${NOTE_MAX} characters or less`;
   }
 
   return null;
@@ -555,6 +611,8 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
                    r.checked_by, r.incoming_no, r.unit_metric, r.qty_in_metres, r.received_dozens,
                    r.qty_diff_action, r.qty_diff_reason,
                    r.process_rate, r.after_rate, r.incoming_prefix_id,
+                   r.fresh_dozens, r.second_dozens, r.third_dozens, r.note,
+                   r.stage_party_name, r.stage_rate,
                    sp.prefix AS incoming_prefix, sp.stage AS incoming_stage,
                    r.created_by, r.created_at, r.updated_by, r.updated_at, r.deleted_by, r.deleted_at,
                    cb.name AS created_by_name, ub.name AS updated_by_name, kb.name AS checked_by_name,
@@ -1258,11 +1316,20 @@ async function createReceipt(req, res, next) {
       && req.body?.qty_in_metres != null && req.body.qty_in_metres !== ''
       ? Number(req.body.qty_in_metres) : null;
 
-    // Only for fabric bought in already stitched or already packed -- the two
+    // At a graded stage (Packing, Panchal) the dozens arrive split by grade and
+    // the total is their sum. Everywhere else the three stay 0.
+    const graded = isStitchingLine(line) && isGradedStage(incomingStage);
+    const grades = Object.fromEntries(GRADE_FIELDS.map(([, col]) => [
+      col, graded ? Number(req.body?.[col]) || 0 : 0,
+    ]));
+
+    // Only for fabric bought in already stitched or already packed -- the
     // stages where there are pieces to count.
-    const receivedDozens = isStitchingLine(line) && countsDozens(incomingStage)
-      && req.body?.received_dozens != null && req.body.received_dozens !== ''
-      ? Number(req.body.received_dozens) : null;
+    const receivedDozens = graded ? gradeSum(grades)
+      : isStitchingLine(line) && countsDozens(incomingStage)
+        && req.body?.received_dozens != null && req.body.received_dozens !== ''
+        ? Number(req.body.received_dozens) : null;
+    const note = req.body?.note != null ? (String(req.body.note).trim() || null) : null;
 
     // Against what was still due when this delivery was entered, not against the
     // whole order -- a part delivery is not a shortfall.
@@ -1291,11 +1358,13 @@ async function createReceipt(req, res, next) {
       const { rows: inserted } = await tx.execute({
         sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, checked_by, incoming_no,
                 process_rate, after_rate, incoming_prefix_id, unit_metric, qty_in_metres, received_dozens,
+                fresh_dozens, second_dozens, third_dozens, note,
                 qty_diff_action, qty_diff_reason, closed_at, closed_by, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ${closesOnSave ? "datetime('now')" : 'NULL'}, ?, ?, ?) RETURNING id`,
         args: [lineId, receivedQty, receivedRate, billNo, checkedBy, incomingNo,
           processRate, afterRate, prefixId, unitMetric, qtyInMetres, receivedDozens,
+          grades.fresh_dozens, grades.second_dozens, grades.third_dozens, note,
           diffAction, diffReason, closesOnSave ? req.user.id : null, req.user.id, req.user.id],
       });
 
@@ -1348,6 +1417,8 @@ async function updateReceipt(req, res, next) {
       sql: `SELECT r.id, r.received_qty, r.received_rate, r.bill_no, r.checked_by, r.incoming_no,
                    r.process_rate, r.after_rate, r.incoming_prefix_id, r.qty_in_metres,
                    r.received_dozens, r.unit_metric, r.closed_at,
+                   r.fresh_dozens, r.second_dozens, r.third_dozens, r.note,
+                   r.stage_party_name, r.stage_rate,
                    sp.stage AS incoming_stage,
                    l.category, l.item_name, l.variant, l.unit_metric AS line_unit_metric,
                    COALESCE((SELECT op.goes_to_stitching FROM outbound_products op
@@ -1410,6 +1481,33 @@ async function updateReceipt(req, res, next) {
       nextReceivedDozens = req.body.received_dozens != null && req.body.received_dozens !== ''
         ? Number(req.body.received_dozens) : null;
     }
+
+    // The stage the receipt will be at once this edit lands.
+    const nextStage = has('incoming_stage')
+      ? (String(req.body.incoming_stage ?? '').trim() || null)
+      : receipt.incoming_stage;
+    const stageMoved = (nextStage || null) !== (receipt.incoming_stage || null);
+
+    // Grades exist only at a graded stage. Sent ones replace the stored three and
+    // make Dozens Received their sum. A receipt moved OFF a graded stage drops
+    // them -- a Fresh count means nothing at Stitching.
+    const gradesSent = GRADE_FIELDS.some(([, col]) => has(col));
+    const nextGraded = isStitchingLine(receipt) && isGradedStage(nextStage);
+    const nextGrades = Object.fromEntries(GRADE_FIELDS.map(([, col]) => [
+      col,
+      !nextGraded ? 0 : gradesSent ? Number(req.body[col]) || 0 : Number(receipt[col]) || 0,
+    ]));
+    if (nextGraded && gradesSent) nextReceivedDozens = gradeSum(nextGrades);
+
+    let nextNote = receipt.note;
+    if (has('note')) nextNote = req.body.note != null ? (String(req.body.note).trim() || null) : null;
+
+    // The lot's Stage Party and Rate belong to the stage it sits at, so a receipt
+    // moved to another stage starts without them. Only reachable while nothing
+    // has been sent out of it -- the stage guard below refuses the move
+    // otherwise -- so no challan is left disagreeing with its lot.
+    const nextStageParty = stageMoved ? null : receipt.stage_party_name;
+    const nextStageRate = stageMoved ? null : receipt.stage_rate;
 
     // After Rate follows Billed + Process whenever the user has not pinned it
     // themselves. Without this, editing Process Rate on an existing receipt
@@ -1476,7 +1574,8 @@ async function updateReceipt(req, res, next) {
     }
     // A receipt bought in at a dozen stage is drawn on in dozens, so that is
     // what cannot be cut below what its challans already took.
-    if (has('received_dozens') && isStitchingLine(receipt) && countsDozens(receipt.incoming_stage)) {
+    if ((has('received_dozens') || (gradesSent && nextGraded))
+        && isStitchingLine(receipt) && countsDozens(receipt.incoming_stage)) {
       const { sentDozens } = await forwardedFromReceipt(receiptId);
       if (sentDozens - Number(nextReceivedDozens || 0) > EPSILON) {
         return res.status(400).json({
@@ -1506,7 +1605,8 @@ async function updateReceipt(req, res, next) {
     // the line, which is what updateLineShort is for.
     const RECEIPT_FIELDS = ['received_qty', 'received_rate', 'bill_no', 'checked_by', 'incoming_no',
       'process_rate', 'after_rate', 'incoming_prefix_id', 'unit_metric', 'qty_in_metres',
-      'received_dozens'];
+      'received_dozens', 'fresh_dozens', 'second_dozens', 'third_dozens', 'note',
+      'stage_party_name', 'stage_rate'];
     const changes = diffFields(receipt, {
       received_qty: nextQty, received_rate: nextRate, bill_no: nextBillNo,
       checked_by: nextCheckedBy, incoming_no: nextIncomingNo,
@@ -1514,6 +1614,9 @@ async function updateReceipt(req, res, next) {
       incoming_prefix_id: nextPrefixId, unit_metric: nextUnitMetric,
       qty_in_metres: nextQtyInMetres,
       received_dozens: nextReceivedDozens,
+      ...nextGrades,
+      note: nextNote,
+      stage_party_name: nextStageParty, stage_rate: nextStageRate,
     }, RECEIPT_FIELDS);
 
     // Moving a receipt INTO Panchal closes it, the same as saving one there does.
@@ -1523,7 +1626,6 @@ async function updateReceipt(req, res, next) {
     // deliberate reopen on the Stitching page is not undone by an unrelated edit.
     let closeChange = null;
     if (has('incoming_stage') && nextPrefixId !== receipt.incoming_prefix_id && isStitchingLine(receipt)) {
-      const nextStage = String(req.body.incoming_stage ?? '').trim() || null;
       const wasPanchal = receipt.incoming_stage === STOCK_STAGE;
       const isPanchal = nextStage === STOCK_STAGE;
       if (isPanchal && !wasPanchal) closeChange = 'close';
@@ -1555,10 +1657,14 @@ async function updateReceipt(req, res, next) {
           sql: `UPDATE outbound_po_line_receipts SET received_qty = ?, received_rate = ?, bill_no = ?,
                   checked_by = ?, incoming_no = ?, process_rate = ?, after_rate = ?,
                   incoming_prefix_id = ?, unit_metric = ?, qty_in_metres = ?, received_dozens = ?,
+                  fresh_dozens = ?, second_dozens = ?, third_dozens = ?, note = ?,
+                  stage_party_name = ?, stage_rate = ?,
                   updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
           args: [nextQty, nextRate, nextBillNo, nextCheckedBy, nextIncomingNo,
             nextProcessRate, nextAfterRate, nextPrefixId, nextUnitMetric,
             nextQtyInMetres, nextReceivedDozens,
+            nextGrades.fresh_dozens, nextGrades.second_dozens, nextGrades.third_dozens, nextNote,
+            nextStageParty, nextStageRate,
             req.user.id, receiptId],
         });
         await logAction({

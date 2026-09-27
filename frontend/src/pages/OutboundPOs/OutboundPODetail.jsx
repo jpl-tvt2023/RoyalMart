@@ -20,6 +20,7 @@ import { ROLES } from '../../utils/roles';
 import { FLAG_META } from '../../utils/outboundPOFlags';
 import { isValidDateString } from '../../utils/dateValidation';
 import { formatDateTime } from '../../utils/formatters';
+import { gradesOf } from '../../utils/stitching';
 import ReceiptModal from './ReceiptModal';
 // The line-shape contract lives with the receipt rules, not here, so one test
 // can hold this page and ReceiptModal to the same set of fields. Dropping one
@@ -442,7 +443,7 @@ export default function OutboundPODetail() {
                 normal sizes; min-w floors it so a tablet or a heavily zoomed
                 browser scrolls instead of crushing the columns to nothing. */}
             <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
-              <table className="w-full min-w-[1050px] text-xs xl:text-sm">
+              <table className="w-full min-w-[1250px] text-xs xl:text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
                     <th className={`${thCls} w-10`}>Line</th>
@@ -482,6 +483,9 @@ export default function OutboundPODetail() {
                         <th className={`${thCls} w-24`}>Bill No <span className="text-red-500">*</span></th>
                         <th className={`${thCls} w-28`}>Incoming No</th>
                         <th className={`${thCls} w-24`}>Checked By</th>
+                        {/* A paragraph, so it wraps inside a fixed width: the row
+                            grows taller and the column stays readable. */}
+                        <th className={`${thCls} w-48 xl:w-56`}>Note</th>
                         {/* Lowest-value pair, merged and dropped first on narrow
                             screens — the same information is in the History drawer. */}
                         <th className={`${thCls} w-28 hidden min-[1600px]:table-cell`}>Updated</th>
@@ -635,6 +639,13 @@ export default function OutboundPODetail() {
                                           countable pieces: fabric received at
                                           Stitching, Packing or Panchal. */}
                                       {receipt.received_dozens == null ? '' : num(receipt.received_dozens)}
+                                      {/* Bought in at Packing or Panchal, the
+                                          dozens arrived graded. */}
+                                      {gradesOf(receipt).length > 0 && (
+                                        <div className="text-[11px] text-gray-400">
+                                          {gradesOf(receipt).map(([t, n]) => `${t} ${num(n)}`).join(' · ')}
+                                        </div>
+                                      )}
                                     </td>
                                     <td
                                       className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''} ${(receipt.flags || []).includes('rate_mismatch') ? 'text-red-600 font-semibold' : ''}`}
@@ -660,6 +671,13 @@ export default function OutboundPODetail() {
                                       {(receipt.flags || []).includes('missing_incoming_stage') && <span className="ml-1">⚠</span>}
                                     </td>
                                     <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{receipt.checked_by_name || '—'}</td>
+                                    <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>
+                                      {receipt.note ? (
+                                        <div className="w-48 xl:w-56 whitespace-pre-line break-words leading-snug text-gray-700">
+                                          {receipt.note}
+                                        </div>
+                                      ) : '—'}
+                                    </td>
                                     <td className={`${tdCls} hidden min-[1600px]:table-cell ${receipt.deleted_at ? 'opacity-50' : ''}`}>
                                       <div className="text-gray-600">{receipt.updated_by_name || receipt.created_by_name || '—'}</div>
                                       <div className="text-[11px] text-gray-400">{formatDateTime(receipt.updated_at)}</div>
@@ -757,15 +775,15 @@ const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2 whitespace-nowrap';
 // Receipt-side column count, for the colSpan on the "Add receipt" and
 // "No receipts yet" rows. Keep in step with the receipt <th> block above:
 // Recd Qty, UM, Qty in metres, Dozens, Rate, Process, After, Bill No,
-// Incoming No, Checked By, Updated, Actions. The Updated column is hidden below 1600px but
-// still occupies a slot in the colSpan, which is correct — a spanned cell counts
-// hidden columns.
+// Incoming No, Checked By, Note, Updated, Actions. The Updated column is hidden
+// below 1600px but still occupies a slot in the colSpan, which is correct — a
+// spanned cell counts hidden columns.
 //
 // Challan No used to sit between Bill No and Incoming No. It moved to the
 // Stitching page, which is where material is dispatched to a processor and so
 // where a challan is actually raised — Bill No already covers what a PO receipt
 // needs to record.
-const RECEIPT_COLSPAN = 12;
+const RECEIPT_COLSPAN = 13;
 
 // Cell chrome WITHOUT a width. cellCls keeps w-full for the single-control
 // cells; a cell packing two controls composes from cellBase and sizes them

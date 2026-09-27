@@ -25,9 +25,12 @@ const SHORT_NAME_MAX = 10;
  * are sold to.
  *
  * Forked from MasterTab for the same reason StitchingPrefixesTab is: the row is
- * not just a name. What a party is ALLOWED TO DO is the point of the record —
- * the challan form offers only parties tagged for the destination being sent to,
- * so an untagged party is invisible there no matter how active it is.
+ * not just a name. What a party DOES is the point of the record — the stages it
+ * works at. A lot's Stage Party dropdown, and the sender on a challan out of a
+ * lot (the same party), offer only parties tagged for that lot's stage, so an
+ * untagged party is invisible there no matter how active it is. Until migration
+ * 090 a tag meant "may be sent TO this stage"; a challan names its sender, so it
+ * now means "works at this stage", Processing included.
  *
  * That is why the "Valid for" column shows "Not tagged yet" rather than a blank:
  * migration 079 imported every name already typed into a challan without tags,
@@ -121,8 +124,9 @@ export default function StitchingPartiesTab() {
     <>
       <div className="flex justify-between items-center mb-3">
         <p className="text-sm text-gray-500">
-          Who material is sent to. Each party is ticked for the jobs it may take, and the
-          challan form offers only parties tagged for where the goods are going.
+          Who works on the goods. Each party is ticked for the stages it works at, and a
+          lot&apos;s Stage Party (the sender on any challan out of it) offers only parties
+          tagged for that lot&apos;s stage.
         </p>
         <Button size="sm" onClick={openAdd}><Plus size={15} />Add Party</Button>
       </div>
@@ -257,8 +261,8 @@ export default function StitchingPartiesTab() {
             </div>
             <p className="mt-1 text-[11px] text-gray-400">
               {form.uses.length
-                ? 'Offered on a challan only when the goods are going to one of these.'
-                : 'With nothing ticked this party is never offered on a challan.'}
+                ? 'Offered as the Stage Party (and challan sender) on lots at these stages.'
+                : 'With nothing ticked this party is never offered anywhere.'}
             </p>
           </div>
 

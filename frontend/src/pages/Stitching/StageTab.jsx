@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { Plus, Pencil, Trash2, ExternalLink, Route, PackageCheck, RotateCcw, Undo2, Download, Ban } from 'lucide-react';
+import { Plus, Pencil, Trash2, ExternalLink, Route, PackageCheck, RotateCcw, Undo2, Download, Ban, Save } from 'lucide-react';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
@@ -11,12 +11,14 @@ import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { useSessionState } from '../../hooks/useSessionState';
 import {
   listStitchingLots, listStitchingStageCounts, deleteStitchingLot,
-  closeStitchingLot, reopenStitchingLot,
+  closeStitchingLot, reopenStitchingLot, listStitchingPartyNames, updateStitchingStage,
 } from '../../api/stitching.api';
 import {
-  statusesFor, STATUS_COLORS, fmtNum, EPSILON, ALL_TAB,
+  statusesFor, STATUS_COLORS, fmtNum, EPSILON, ALL_TAB, STAGES,
   EXIT_STAGE, STOCK_STAGE, countsDozens, metresPerDozen, NONE_SELECTED,
+  isGradedStage, isRateStage, gradesOf, CHALLAN_TYPES, GRADE_COLUMNS, stageRateUnit, stageRateSuffix,
 } from '../../utils/stitching';
+import { sortByText } from '../../utils/sort';
 import MultiSelect from '../../components/ui/MultiSelect';
 import { formatDateTime } from '../../utils/formatters';
 import JourneyModal from './JourneyModal';
@@ -167,6 +169,94 @@ function YieldCell({ r }) {
   return <HoverTip content={content}>{fmtNum(r.metres_per_dozen)}</HoverTip>;
 }
 
+// THE PO RATE on a Processing lot: what the fabric was billed at plus the
+// processing the vendor billed on the same receipt, both per metre -- one
+// landed figure, with the split on hover.
+function PoRateCell({ r }) {
+  if (r.po_rate == null) return <span className="text-gray-300">—</span>;
+  const billed = Number(r.po_rate);
+  const process = r.process_rate == null ? null : Number(r.process_rate);
+  const total = billed + (process || 0);
+  const content = (
+    <>
+      <span className="flex justify-between gap-3 py-0.5">
+        <span>PO rate</span><span className="font-mono">{fmtNum(billed)}/m</span>
+      </span>
+      <span className="flex justify-between gap-3 py-0.5">
+        <span>Process rate (on receipt)</span>
+        <span className="font-mono">{process == null ? '—' : `${fmtNum(process)}/m`}</span>
+      </span>
+      <span className="flex justify-between gap-3 border-t border-gray-100 mt-1 pt-1 font-semibold text-[#003049]">
+        <span>PO Rate</span><span className="font-mono">{fmtNum(total)}/m</span>
+      </span>
+    </>
+  );
+  return (
+    <HoverTip content={content}>
+      {fmtNum(total)}<span className="text-gray-400">/m</span>
+    </HoverTip>
+  );
+}
+
+// WHO HAS THE GOODS AT THIS STAGE, picked from the parties tagged for it.
+//
+// One value with every challan sent out of the lot: a challan names its sender,
+// so changing this changes the party on each of them too (the server does it).
+// A name no longer tagged for the stage stays selectable, so an existing lot
+// never shows a blank it does not have.
+function StagePartyCell({ r, options, busy, onSave }) {
+  const current = r.stage_party_name || '';
+  const names = current && !(options || []).includes(current) ? [...(options || []), current] : (options || []);
+  const sent = (r.outgoing || []).filter(c => !c.is_write_off).length;
+  return (
+    <select
+      value={current}
+      disabled={busy}
+      onChange={e => onSave(r, { stage_party_name: e.target.value || null })}
+      title={sent ? `Also the party on the ${sent} challan(s) sent out of this lot` : undefined}
+      className="w-40 px-2 py-1 border border-gray-200 rounded text-xs xl:text-sm bg-white focus:outline-none focus:ring-1 focus:ring-[#c1121f]/40 disabled:opacity-50"
+    >
+      <option value="">Select…</option>
+      {names.map(n => <option key={n} value={n}>{n}</option>)}
+    </select>
+  );
+}
+
+// THIS STAGE'S RATE, as a plain value -- per metre at Processing, per dozen at
+// Stitching and Packing -- and the "<stage> rate" on every challan out of the
+// lot, one value (the server keeps them so). Typed in place,
+// with a save that appears only once the number changes, the Short cell's
+// pattern on the PO detail page.
+function StageRateCell({ r, busy, onSave }) {
+  const stored = r.stage_rate == null ? '' : String(r.stage_rate);
+  const [draft, setDraft] = useState(null);
+  const value = draft ?? stored;
+  const dirty = draft != null && draft !== stored;
+  const save = async () => {
+    if (await onSave(r, { stage_rate: draft === '' ? null : Number(draft) })) setDraft(null);
+  };
+  return (
+    <div className="flex items-center gap-1 whitespace-nowrap">
+      <input
+        type="number" min={0} step="0.01"
+        value={value}
+        disabled={busy}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && dirty) save(); }}
+        placeholder="—"
+        className="w-20 px-2 py-1 border border-gray-200 rounded text-xs xl:text-sm focus:outline-none focus:ring-1 focus:ring-[#c1121f]/40 disabled:opacity-50"
+      />
+      <span className="text-gray-400 text-xs">{stageRateSuffix(r.stage)}</span>
+      {dirty && (
+        <button type="button" onClick={save} disabled={busy} title="Save rate"
+          className="p-1 rounded hover:bg-green-50 text-green-600 disabled:opacity-40">
+          <Save size={13} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 const qtyWithUnit = (value, unit) => (value == null ? '—' : `${fmtNum(value)} ${unit === 'dz' ? 'dz' : 'm'}`);
 
 const Dot = () => <span className="text-gray-300">·</span>;
@@ -284,9 +374,13 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
     </>
   );
 
+  // A challan into Packing, Panchal or Third Party is one lot holding its grades
+  // side by side, so it names them; a line into Stitching names its one type.
   const lineBody = (c) => (
     <>
-      {c.challan_type && <><Dot /><span className="text-gray-600">{c.challan_type}</span></>}
+      {isGradedStage(c.stage) && gradesOf(c).length > 0
+        ? <><Dot /><span className="text-gray-600">{gradesOf(c).map(([t, n]) => `${t} ${fmtNum(n)}`).join(' · ')}</span></>
+        : c.challan_type && <><Dot /><span className="text-gray-600">{c.challan_type}</span></>}
       <Dot />
       <span className="text-gray-400">{lineQty(c, unit)}</span>
       <Dot />
@@ -371,6 +465,7 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
 const EXPORT_COLUMNS = [
   { key: 'stage', header: 'Stage' },
   { key: 'vendor_name', header: 'PO Party Name' },
+  { key: 'stage_party_name', header: 'Stage Party' },
   { key: 'party_name', header: 'Challan Party' },
   { key: 'party_chain', header: 'Parties' },
   { key: 'item_name', header: 'Article' },
@@ -382,12 +477,20 @@ const EXPORT_COLUMNS = [
   { key: 'received_qty', header: 'Qty (m)' },
   { key: 'sent_dozens', header: 'Sent (dz)' },
   { key: 'received_dozens', header: 'Dozens' },
+  { key: 'fresh_dozens', header: 'Fresh' },
+  { key: 'second_dozens', header: 'Second' },
+  { key: 'third_dozens', header: 'Third' },
   { key: 'metres_per_dozen', header: 'M/Dozen' },
   { key: 'balance', header: 'Balance' },
   { key: 'balance_unit', header: 'Balance Unit' },
   { key: 'po_rate', header: 'PO Rate' },
+  { key: 'receipt_process_rate', header: 'Process Rate (receipt)' },
+  // This stage's own rate -- kept at Processing (per metre), Stitching and
+  // Packing (per dozen) -- with its unit beside it.
+  { key: 'stage_rate', header: 'Stage Rate' },
+  { key: 'stage_rate_unit', header: 'Stage Rate Per' },
   // The total and its working, flattened: a spreadsheet cannot hover.
-  { key: 'rate_total', header: 'Rate' },
+  { key: 'rate_total', header: 'Rate Total' },
   { key: 'rate_total_unit', header: 'Rate Per' },
   { key: 'rate_breakdown', header: 'Rate Breakdown' },
   // The challan this row was sent under. It is off the table on purpose — a lot
@@ -446,6 +549,9 @@ export default function StageTab({ stage, onOpenCounts }) {
   const [editingChallan, setEditingChallan] = useState(null);
   const [busyKey, setBusyKey] = useState(null);
   const [downloading, setDownloading] = useState(false);
+  // The Stage Party dropdown's options, per stage: parties tagged as working
+  // there. Refetched with every load so a party tagged in another tab shows up.
+  const [partiesByStage, setPartiesByStage] = useState({});
 
   // "All" is a view across every stage, not a stage the server knows about.
   const isAll = stage === ALL_TAB;
@@ -463,6 +569,29 @@ export default function StageTab({ stage, onOpenCounts }) {
   const showsBalance = !isTerminal;
   // The two destinations that record who checked the goods over.
   const showsChecker = isStockTab || isExitTab;
+  // Goods from Packing on arrive graded (one lot per challan). The All view
+  // mixes stages, so it leaves the split to the stage tabs and the export.
+  const showsGrades = isGradedStage(stage);
+  // The PO's metre figure matters while the goods are still metres or just
+  // turning into dozens. From Packing on it is noise.
+  const showsPoQty = isAll || stage === 'Processing' || stage === 'Stitching';
+
+  // A lot's Stage Party or Rate, saved in place. Resolves true on success so the
+  // rate cell can drop its draft.
+  const saveStage = async (r, patch) => {
+    setBusyKey(r.lot_key);
+    try {
+      await updateStitchingStage(r.src, r.id, patch);
+      toast.success('stage_rate' in patch ? 'Rate saved' : 'Stage party saved');
+      load();
+      return true;
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Could not save');
+      return false;
+    } finally {
+      setBusyKey(null);
+    }
+  };
 
   // THE COLUMNS, as one list, so a header can never drift from its cell and the
   // skeleton, empty row and nested colspans all count the same thing. Sr and
@@ -488,6 +617,19 @@ export default function StageTab({ stage, onOpenCounts }) {
       ),
     },
     {
+      // Who has the goods at this lot's stage -- and the sender on every
+      // challan out of it. Every stage has one, Processing included.
+      key: 'stage_party', header: 'Stage Party Name',
+      cell: r => (
+        <StagePartyCell
+          r={r}
+          options={partiesByStage[r.stage]}
+          busy={busyKey === r.lot_key}
+          onSave={saveStage}
+        />
+      ),
+    },
+    {
       // Between the article and its status, where a lot is identified.
       key: 'po', header: 'PO No',
       cell: r => (
@@ -500,8 +642,8 @@ export default function StageTab({ stage, onOpenCounts }) {
       key: 'status', header: 'Status',
       cell: r => <Badge color={STATUS_COLORS[r.status] || 'gray'}>{r.status}</Badge>,
     },
-    {
-      // The metre figure the whole chain started from, on every tab.
+    showsPoQty && {
+      // The metre figure the whole chain started from.
       key: 'po_qty', header: 'PO Qty (m)',
       cell: r => <span className="text-gray-600 whitespace-nowrap">{fmtNum(r.po_qty_metres)}</span>,
     },
@@ -518,6 +660,11 @@ export default function StageTab({ stage, onOpenCounts }) {
       key: 'dozens', header: 'Dozens',
       cell: r => <span className="text-gray-600 whitespace-nowrap">{r.received_dozens == null ? '' : fmtNum(r.received_dozens)}</span>,
     },
+    // What arrived per grade, 0 by default. The Dozens beside them is the total.
+    ...(showsGrades ? CHALLAN_TYPES.map(t => ({
+      key: `grade_${t}`, header: t,
+      cell: r => <span className="text-gray-600 whitespace-nowrap">{fmtNum(Number(r[GRADE_COLUMNS[t]]) || 0)}</span>,
+    })) : []),
     // The All view mixes units, so its quantity carries one.
     isAll && {
       key: 'qty', header: 'Qty',
@@ -540,10 +687,18 @@ export default function StageTab({ stage, onOpenCounts }) {
       key: 'bill', header: 'Outbound Bill No',
       cell: r => <span className="font-mono text-[#003049]">{r.outbound_bill_no || '—'}</span>,
     },
+    stage === 'Processing' && {
+      key: 'po_rate', header: 'PO Rate',
+      cell: r => <span className="whitespace-nowrap"><PoRateCell r={r} /></span>,
+    },
     {
-      // One figure -- the whole cost so far -- with the working on hover.
+      // At a stage that sends, this stage's own rate, typed in place. Panchal
+      // and Third Party still show the total worked out down the chain, until
+      // the client settles a formula for them.
       key: 'rate', header: 'Rate',
-      cell: r => <span className="whitespace-nowrap"><RateCell r={r} /></span>,
+      cell: r => (isRateStage(r.stage)
+        ? <StageRateCell key={`${r.lot_key}:${r.stage_rate}`} r={r} busy={busyKey === r.lot_key} onSave={saveStage} />
+        : <span className="whitespace-nowrap"><RateCell r={r} /></span>),
     },
     {
       key: 'incoming', header: 'Incoming No',
@@ -600,13 +755,17 @@ export default function StageTab({ stage, onOpenCounts }) {
       // The badges are scoped by the same filters as the table, so they are
       // fetched alongside it rather than on their own schedule — same split
       // OutboundPOList uses with load() + loadItemCounts().
-      const [data, counts] = await Promise.all([
+      const partyStages = isAll ? STAGES : [stage];
+      const [data, counts, partyLists] = await Promise.all([
         listStitchingLots(params),
         listStitchingStageCounts(params),
+        // The dropdowns are secondary: a failure here must not blank the table.
+        Promise.all(partyStages.map(s => listStitchingPartyNames(s).catch(() => []))),
       ]);
       setRows(data.rows || []);
       setTotal(data.total || 0);
       onOpenCounts?.(counts.counts || {});
+      setPartiesByStage(Object.fromEntries(partyStages.map((s, i) => [s, sortByText(partyLists[i])])));
     } catch (err) {
       toast.error(err.response?.data?.message || 'Could not load lots');
       setRows([]);
@@ -614,7 +773,7 @@ export default function StageTab({ stage, onOpenCounts }) {
     } finally {
       setLoading(false);
     }
-  }, [buildParams, page, pageSize, onOpenCounts]);
+  }, [buildParams, page, pageSize, onOpenCounts, isAll, stage]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -627,6 +786,7 @@ export default function StageTab({ stage, onOpenCounts }) {
       const exportRows = (res.rows || []).map(r => ({
         stage: r.stage,
         vendor_name: r.vendor_name || '',
+        stage_party_name: r.stage_party_name || '',
         party_name: r.party_name || '',
         party_chain: cameFrom(r).full,
         item_name: r.item_name || '',
@@ -640,10 +800,19 @@ export default function StageTab({ stage, onOpenCounts }) {
         received_qty: r.received_qty ?? '',
         sent_dozens: r.sent_dozens ?? '',
         received_dozens: r.received_dozens ?? '',
+        fresh_dozens: r.fresh_dozens ?? 0,
+        second_dozens: r.second_dozens ?? 0,
+        third_dozens: r.third_dozens ?? 0,
         metres_per_dozen: r.metres_per_dozen ?? '',
         balance: r.balance,
         balance_unit: r.balance_unit || '',
         po_rate: r.po_rate,
+        // The per-metre process rate billed on the origin receipt. Only an
+        // origin lot carries it here; a downstream row's process_rate is the
+        // challan rate, which is its source lot's stage rate.
+        receipt_process_rate: r.src === 'receipt' ? (r.process_rate ?? '') : '',
+        stage_rate: r.stage_rate ?? '',
+        stage_rate_unit: r.stage_rate == null ? '' : stageRateUnit(r.stage),
         rate_total: r.rate_total ?? '',
         rate_total_unit: r.rate_total_unit || '',
         rate_breakdown: (r.rate_breakdown || [])

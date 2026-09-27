@@ -12,8 +12,9 @@ import { checkerOptionsFor } from '../../utils/checkers';
 import {
   CHALLAN_MAX, CHALLAN_TYPES, challanError, qtyError, moneyError, fmtNum, EPSILON,
   destinationsFor, nextStage, EXIT_STAGE, STOCK_STAGE, DESTINATION_HINTS,
-  countsDozens, metresPerDozen, stageRateLabel,
+  countsDozens, metresPerDozen, stageRateLabel, isGradedStage, GRADE_COLUMNS, stageRateUnit,
 } from '../../utils/stitching';
+import { sortByText } from '../../utils/sort';
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
 const cellInputCls = 'w-full px-2 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
@@ -31,6 +32,9 @@ const newLine = () => ({
   key: Math.random().toString(36).slice(2),
   challan_type: '', sent_qty: '', received_dozens: '', sent_dozens: '',
 });
+
+// The three boxes a graded destination takes, 0 until filled in.
+const EMPTY_GRADES = { Fresh: '0', Second: '0', Third: '0' };
 
 const unitText = (dozen) => (dozen ? ' dozen' : 'm');
 const sum = (xs) => Math.round(xs.reduce((s, x) => s + (Number(x) || 0), 0) * 100) / 100;
@@ -69,9 +73,10 @@ function Field({ label, required, children, hint }) {
  *   Sent. What was sent IS what arrives — the dozens sent become the next lot's
  *   dozens received.
  *
- * THE RATE belongs to the stage the goods are LEAVING and is per dozen: raised
- * from the Processing tab it is the Processing rate. One rate per challan,
- * shared by its lines.
+ * THE RATE belongs to the stage the goods are LEAVING, in that stage's unit:
+ * raised from the Processing tab it is the Processing rate, PER METRE; from
+ * Stitching or Packing it is per dozen. One rate per challan, shared by its
+ * lines.
  *
  * EDIT MODE. Pass `challan` and this corrects one existing line. The header is
  * shared, so a header change is applied by the server to every line of the
@@ -84,11 +89,33 @@ function Field({ label, required, children, hint }) {
  * whoever entered the row. Panchal also gets the warehouse's own incoming
  * number — the carried-down one tracks the material, PCL Inc No is what the
  * warehouse files it under.
+ *
+ * THE PARTY IS THE SENDER — whoever holds the goods at the stage they leave —
+ * so it is offered from the parties tagged for the SOURCE stage, and it is the
+ * lot's own Stage Party, as the rate is the lot's own Rate. Both are pre-filled
+ * from the lot, and whatever is saved here becomes the lot's and every earlier
+ * challan's out of it: the server keeps them one value.
+ *
+ * GRADED DESTINATIONS (Packing, Panchal, Third Party) take the challan as ONE
+ * lot, so the line items become three fixed boxes — Fresh, Second, Third, 0
+ * by default — and, out of Processing, one Sent Qty (m) for the whole challan.
  */
 export default function ChallanModal({ lot, challan = null, onClose, onSaved }) {
   const isEdit = !!challan;
-  const [form, setForm] = useState(EMPTY_HEADER);
+  // A new challan starts from the lot's own Stage Party and Rate -- they are one
+  // value with every challan out of it. The modal mounts fresh for each open,
+  // so the lot is fixed for its life; an edit overwrites these below.
+  const [form, setForm] = useState(() => ({
+    ...EMPTY_HEADER,
+    party_name: lot?.stage_party_name || '',
+    process_rate: lot?.stage_rate ?? '',
+  }));
   const [lines, setLines] = useState(() => [newLine()]);
+  // A graded destination's grid, and the metres for the whole challan when it
+  // leaves Processing. Held apart from `lines`: a Processing lot can switch
+  // between a Stitching challan (lines) and a graded one (the grid).
+  const [grades, setGrades] = useState(EMPTY_GRADES);
+  const [gradedSentQty, setGradedSentQty] = useState('');
   const [saving, setSaving] = useState(false);
   const [parties, setParties] = useState([]);
   const [partiesLoaded, setPartiesLoaded] = useState(false);
@@ -104,7 +131,9 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
   const isExit = target === EXIT_STAGE;
   const isStock = target === STOCK_STAGE;
   const needsChecker = isStock || isExit;
-  const rateLabel = `${stageRateLabel(sourceStage)} (per dozen)`;
+  const graded = isGradedStage(target);
+  const rateUnit = stageRateUnit(sourceStage);
+  const rateLabel = `${stageRateLabel(sourceStage)} (per ${rateUnit})`;
 
   // What this challan may draw on, in the parent's unit. On an edit the line's
   // own quantity is already counted in the parent's forwarded total, so add it
@@ -114,33 +143,47 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
 
   const sentOf = (l) => (parentDozen ? l.sent_dozens : l.sent_qty);
   const dozensOf = (l) => (parentDozen ? l.sent_dozens : l.received_dozens);
-  const totalSent = sum(lines.map(sentOf));
-  const totalDozens = sum(lines.map(dozensOf));
+  const gradeTotal = sum(CHALLAN_TYPES.map(t => grades[t]));
+  const totalSent = graded
+    ? (parentDozen ? gradeTotal : sum([gradedSentQty]))
+    : sum(lines.map(sentOf));
+  const totalDozens = graded ? gradeTotal : sum(lines.map(dozensOf));
   const totalPerDozen = parentDozen ? null : metresPerDozen(totalSent || '', totalDozens || '');
 
-  // Refetched whenever the destination changes, not once on mount: the list is
-  // narrowed by where the goods are going, and the master can change under an
-  // already-open tab anyway.
+  // The sender is whoever holds the goods at the stage they LEAVE, so the list
+  // is the parties tagged for the source stage -- the same list the lot's Stage
+  // Party is picked from. Fetched when the modal opens: the master can change
+  // under a tab that has been sitting open.
   useEffect(() => {
     let cancelled = false;
     setPartiesLoaded(false);
     (async () => {
       try {
-        const names = await listStitchingPartyNames(target);
+        const names = await listStitchingPartyNames(sourceStage);
         if (cancelled) return;
-        setParties(names || []);
+        setParties(sortByText(names || []));
         setPartiesLoaded(true);
-        // A party valid for the old destination may not be valid for the new
-        // one, and silently keeping a name the server will reject is worse than
-        // clearing it.
-        setForm(f => (f.party_name && !(names || []).includes(f.party_name)
-          ? { ...f, party_name: '' } : f));
       } catch {
         if (!cancelled) toast.error('Could not load the party list');
       }
     })();
     return () => { cancelled = true; };
-  }, [lot?.lot_key, target]);
+  }, [lot?.lot_key, sourceStage]);
+
+
+  // The party picked before, kept selectable even when it is no longer tagged
+  // for this stage -- an existing lot must not show a blank it does not have.
+  const partyOptions = form.party_name && !parties.includes(form.party_name)
+    ? [...parties, form.party_name] : parties;
+
+  // The other challans already out of this lot, which a change to the party or
+  // rate here will change too. Counted by challan, not by line.
+  const otherChallans = new Set((lot?.outgoing || [])
+    .filter(c => !c.is_write_off
+      && !(challan && c.challan_no === challan.challan_no && c.party_name === challan.party_name))
+    .map(c => `${c.challan_no}|${c.party_name}`)).size;
+  const stageFieldsChanged = String(form.party_name || '') !== String(lot?.stage_party_name || '')
+    || String(form.process_rate ?? '') !== String(lot?.stage_rate ?? '');
 
   // Fetched when the modal opens rather than once per page: the roster can
   // change under a tab that has been sitting open.
@@ -175,11 +218,15 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
       received_dozens: challan.received_dozens ?? '',
       sent_dozens: challan.sent_dozens ?? '',
     }]);
+    // A graded lot is edited as the grid it was raised with.
+    setGrades(Object.fromEntries(CHALLAN_TYPES.map(t => [t, String(challan[GRADE_COLUMNS[t]] ?? 0)])));
+    setGradedSentQty(challan.sent_qty ?? '');
     setTarget(challan.stage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [challan?.id]);
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const setGrade = (t, v) => setGrades(g => ({ ...g, [t]: v }));
   const setLine = (key, patch) => setLines(ls => ls.map(l => (l.key === key ? { ...l, ...patch } : l)));
   const addLine = () => setLines(ls => [...ls, newLine()]);
   const removeLine = (key) => setLines(ls => (ls.length > 1 ? ls.filter(l => l.key !== key) : ls));
@@ -206,9 +253,23 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     if (!String(form.challan_no || '').trim()) return 'Challan No is required';
     const challanErr = challanError(form.challan_no);
     if (challanErr) return challanErr;
-    for (let i = 0; i < lines.length; i += 1) {
-      const err = lineError(lines[i], lines.length > 1 ? `Line ${i + 1}: ` : '');
-      if (err) return err;
+    if (graded) {
+      // Twin of gradesFieldsError on the server: the metres above the grid
+      // first, then each grade, then that they come to something.
+      if (!parentDozen) {
+        const sentErr = qtyError(gradedSentQty, 'Sent Qty');
+        if (sentErr) return sentErr;
+      }
+      for (const t of CHALLAN_TYPES) {
+        const err = moneyError(grades[t], `${t} dozens`);
+        if (err) return err;
+      }
+      if (gradeTotal <= EPSILON) return 'Enter the dozens for at least one grade';
+    } else {
+      for (let i = 0; i < lines.length; i += 1) {
+        const err = lineError(lines[i], lines.length > 1 ? `Line ${i + 1}: ` : '');
+        if (err) return err;
+      }
     }
     const rateErr = moneyError(form.process_rate, stageRateLabel(sourceStage));
     if (rateErr) return rateErr;
@@ -231,6 +292,12 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     // sent_qty, and letting it do so keeps one rule rather than two.
     : { challan_type: l.challan_type, sent_qty: Number(l.sent_qty), received_dozens: Number(l.received_dozens) });
 
+  // The graded shape: the three grades, and the metres when leaving Processing.
+  const gradePayload = () => ({
+    grades: Object.fromEntries(CHALLAN_TYPES.map(t => [t, Number(grades[t]) || 0])),
+    ...(parentDozen ? {} : { sent_qty: Number(gradedSentQty) }),
+  });
+
   const submit = async (e) => {
     e.preventDefault();
     const err = fieldError();
@@ -248,17 +315,22 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     };
     try {
       if (isEdit) {
-        // One line, flat: no parent and no target stage — an edit corrects this
-        // row where it stands. Header fields reach its sibling lines server-side.
-        await updateStitchingLot(challan.id, { ...header, ...linePayload(lines[0]) });
+        // One row, flat: no parent and no target stage — an edit corrects this
+        // row where it stands. Header fields reach its sibling lines server-side,
+        // and the party and rate reach the lot and every challan out of it.
+        await updateStitchingLot(challan.id, {
+          ...header, ...(graded ? gradePayload() : linePayload(lines[0])),
+        });
         toast.success(`Challan ${header.challan_no} updated`);
       } else {
         await addStitchingChallan({
           parent_src: lot.src, parent_id: lot.id, target_stage: target,
-          ...header, lines: lines.map(linePayload),
+          ...header, ...(graded ? gradePayload() : { lines: lines.map(linePayload) }),
         });
-        const what = `${totalSent}${unit}${lines.length > 1 ? ` on ${lines.length} lines` : ''}`;
-        toast.success(isExit ? `Sold ${what} to ${header.party_name}` : `Sent ${what} to ${target}`);
+        const what = `${totalSent}${unit}${!graded && lines.length > 1 ? ` on ${lines.length} lines` : ''}`;
+        // The party is the sender now, so a sale does not name the buyer here --
+        // that is the Third Party lot's own Stage Party, set on its tab.
+        toast.success(isExit ? `Sold ${what}` : `Sent ${what} to ${target}`);
       }
       onSaved();
     } catch (err2) {
@@ -325,6 +397,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             <p className="mt-1 text-[11px] text-gray-400">
               An edit corrects this challan where it is. To send it somewhere else, withdraw it and raise a new one.
               Challan No, Party, rate and the hand-over fields apply to every line of the challan.
+              Party and rate are also this lot&apos;s Stage Party and Rate, so they change on every challan sent out of it.
             </p>
           )}
         </div>
@@ -341,14 +414,14 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             />
           </Field>
 
-          {/* A dropdown, not free text, already narrowed to parties tagged for
-              this destination. */}
+          {/* The SENDER: a dropdown of the parties tagged for the stage the
+              goods are leaving, pre-filled with this lot's Stage Party. */}
           <Field
             label="Party Name"
             required
             hint={partiesLoaded && !parties.length
-              ? `No party is tagged for ${target} — add one in Admin → Purchase Config`
-              : (isExit ? 'Who the goods are sold to' : `Who the ${target?.toLowerCase()} work goes to`)}
+              ? `No party is tagged for ${sourceStage} — add one in Admin → Purchase Config`
+              : `Who is sending the goods — the party at ${sourceStage}`}
           >
             <select
               value={form.party_name}
@@ -356,14 +429,72 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
               className={inputCls}
             >
               <option value="">Select...</option>
-              {parties.map(p => <option key={p} value={p}>{p}</option>)}
+              {partyOptions.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           </Field>
 
         </div>
 
-        {/* LINE ITEMS — one row per grade sent. The total sits on top, so the
-            challan's whole is read before its parts. */}
+        {graded ? (
+          // THE GRADE GRID — one lot at the destination, its dozens by grade.
+          // Out of Processing the metres are said once, for the whole challan.
+          <div className="space-y-3">
+            {!parentDozen && (
+              <Field label="Sent Qty (m)" required hint="The metres on this challan, all grades together">
+                <input
+                  type="number" min={0.01} step="0.01"
+                  value={gradedSentQty}
+                  onChange={e => setGradedSentQty(e.target.value)}
+                  className={inputCls}
+                />
+              </Field>
+            )}
+            <div>
+              <label className={labelCls}>
+                {parentDozen ? 'Dozens Sent' : 'Dozens Received'}, by grade <span className="text-red-500">*</span>
+              </label>
+              <div className="overflow-x-auto border border-gray-200 rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-xs text-gray-500">
+                    <tr>
+                      <th className="px-2 py-2 text-left font-medium">Grade</th>
+                      <th className="px-2 py-2 text-left font-medium">{parentDozen ? 'Dozens Sent' : 'Dozens Received'}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    <tr className="bg-[#fdf0d5]/40 text-xs font-semibold text-[#003049]">
+                      <td className="px-2 py-2">Total</td>
+                      <td className="px-2 py-2">
+                        {parentDozen
+                          ? `${fmtNum(totalDozens)} dozen of ${fmtNum(available)}`
+                          : `${fmtNum(totalSent)}m of ${fmtNum(available)}m → ${fmtNum(totalDozens)} dozen`
+                            + (totalPerDozen == null ? '' : ` · ${fmtNum(totalPerDozen)} m/dz`)}
+                      </td>
+                    </tr>
+                    {CHALLAN_TYPES.map(t => (
+                      <tr key={t}>
+                        <td className="px-2 py-1.5 text-gray-700">{t}</td>
+                        <td className="px-2 py-1.5">
+                          <input
+                            type="number" min={0} step="0.01"
+                            value={grades[t]}
+                            onChange={e => setGrade(t, e.target.value)}
+                            className={cellInputCls}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-1 text-[11px] text-gray-400">
+                Arrives as one lot, with Fresh, Second and Third counted separately. Leave a grade at 0 if none was sent.
+              </p>
+            </div>
+          </div>
+        ) : (
+        /* LINE ITEMS — one row per grade sent. The total sits on top, so the
+            challan's whole is read before its parts. */
         <div>
           <div className="flex items-center justify-between mb-1">
             <label className={labelCls}>
@@ -492,6 +623,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
               : 'Each line becomes its own lot at the destination. Metre per Dozen is the metres sent divided by the dozens that came back.'}
           </p>
         </div>
+        )}
 
         {/* The rest of the header, set off by a light rule: what the stage
             cost, and the hand-over fields a warehouse or a sale asks for. */}
@@ -501,7 +633,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
               now, and one rate for the whole challan. */}
           <Field
             label={rateLabel}
-            hint={`What ${sourceStage?.toLowerCase()} cost per dozen for the goods on this challan`}
+            hint={`What ${sourceStage?.toLowerCase()} cost per ${rateUnit} — this lot's own Rate`}
           >
             <input
               type="number" min={0} step="0.01"
@@ -558,6 +690,12 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             </Field>
           )}
         </div>
+
+        {stageFieldsChanged && otherChallans > 0 && (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            Also changes this lot&apos;s Stage Party / Rate and its {otherChallans} other challan{otherChallans !== 1 ? 's' : ''}.
+          </p>
+        )}
 
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>

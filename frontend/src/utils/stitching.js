@@ -67,14 +67,32 @@ export const OPEN_STATUSES = ['Pending', 'Partial', 'In Stock'];
 export const NONE_SELECTED = '__none_selected__';
 
 // Twin of PARTY_USE_STAGES in the backend service and of the CHECK on
-// stitching_party_uses. Processing is absent on purpose: nothing is ever sent TO
-// it, so a party tagged for it could never be picked.
-export const PARTY_USE_STAGES = [...new Set(Object.values(DESTINATIONS).flat())];
+// stitching_party_uses (migration 090). EVERY stage: a tag means "works at this
+// stage" -- the Stage Party on a lot there, and the sender on any challan out of
+// it -- so a processing house is tagged Processing and a buyer Third Party.
+export const PARTY_USE_STAGES = [...STAGES];
 
 // The kinds of goods a challan may carry. Twin of CHALLAN_TYPES on the server.
 // Nothing is pre-selected in the form: a grade the user did not choose is worse
 // than one they have to pick.
 export const CHALLAN_TYPES = ['Fresh', 'Second', 'Third'];
+
+// Twin of GRADED_STAGES on the server (migration 089): the stages goods arrive
+// at as ONE lot per challan, its dozens split into Fresh, Second and Third side
+// by side. The split is what arrived -- balance and status still run on the
+// total. A PO receipt booked into Packing or Panchal records the same three.
+export const GRADED_STAGES = ['Packing', 'Panchal', 'Third Party'];
+
+export const isGradedStage = (stage) => GRADED_STAGES.includes(stage);
+
+// Twin of GRADE_COLUMNS on the server: which column holds which grade.
+export const GRADE_COLUMNS = { Fresh: 'fresh_dozens', Second: 'second_dozens', Third: 'third_dozens' };
+
+// The grades a row carries, in CHALLAN_TYPES order, keeping only those above 0:
+// [['Fresh', 10], ['Second', 5]]. What a graded lot shows in place of a type.
+export const gradesOf = (row) => CHALLAN_TYPES
+  .map(t => [t, Number(row?.[GRADE_COLUMNS[t]]) || 0])
+  .filter(([, n]) => n > 0);
 
 export const STATUS_COLORS = {
   Pending: 'blue',
@@ -97,10 +115,14 @@ export const countsDozens = (stage) => DOZEN_STAGES.includes(stage);
 // The unit a lot at this stage is counted in, and its balance kept in.
 export const balanceUnitFor = (stage) => (countsDozens(stage) ? 'dz' : 'm');
 
-// Every challan rate is per dozen and names the stage being LEFT — the rate on a
-// challan out of Processing is the Processing rate. Twin of CHALLAN_RATE_UNIT on
-// the server, which replaced the old DOZEN_RATE_STAGES/pricedPerDozen rule.
-export const CHALLAN_RATE_UNIT = 'dozen';
+// The unit a stage's own rate is quoted in, and so the unit of the rate on any
+// challan LEAVING it: the Processing rate is per metre, and from Stitching on
+// every rate is per dozen. Twin of stageRateUnit on the server, which replaced
+// 087's CHALLAN_RATE_UNIT (every rate per dozen).
+export const stageRateUnit = (stage) => (countsDozens(stage) ? 'dozen' : 'metre');
+
+// "/m" or "/dz" -- the suffix a stage's rate is shown with.
+export const stageRateSuffix = (stage) => (stageRateUnit(stage) === 'metre' ? '/m' : '/dz');
 
 // "Processing rate", "Stitching rate" — the label a challan's rate carries,
 // named for the stage the goods are leaving.
@@ -124,6 +146,13 @@ export const metresPerDozen = (receivedQty, receivedDozens) => {
 };
 
 export const destinationsFor = (stage) => DESTINATIONS[stage] || [];
+
+// Twin of RATE_STAGES on the server: the stages that SEND, and so keep a Rate of
+// their own -- the "<stage> rate" on every challan out of the lot, one value.
+// Panchal and Third Party send nothing; their Rate is still the worked-out total.
+export const RATE_STAGES = STAGES.filter(s => destinationsFor(s).length > 0);
+
+export const isRateStage = (stage) => RATE_STAGES.includes(stage);
 
 export const canSendTo = (fromStage, toStage) => destinationsFor(fromStage).includes(toStage);
 
