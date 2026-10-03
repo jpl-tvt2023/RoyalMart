@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Plus, X } from 'lucide-react';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
 import {
@@ -26,12 +25,19 @@ const EMPTY_HEADER = {
   checked_by: '', panchal_incoming_no: '',
 };
 
-// One line of the challan. Nothing pre-selected in the type, deliberately: a
-// grade the user did not choose is worse than one they have to pick.
-const newLine = () => ({
+// One line of the challan, for one grade.
+const newLine = (challanType = '') => ({
   key: Math.random().toString(36).slice(2),
-  challan_type: '', sent_qty: '', received_dozens: '', sent_dozens: '',
+  challan_type: challanType, sent_qty: '', received_dozens: '', sent_dozens: '',
 });
+
+// A new challan into Stitching lists every grade, Fresh, Second and Third, the
+// way the graded grid does -- the user fills in the ones that were sent.
+const gradeLines = () => CHALLAN_TYPES.map(t => newLine(t));
+
+// A grade row the user left empty (blank or 0 everywhere) was not sent, so it
+// is skipped rather than refused.
+const lineFilled = (l) => [l.sent_qty, l.received_dozens, l.sent_dozens].some(v => Number(v) > 0);
 
 // The three boxes a graded destination takes, 0 until filled in.
 const EMPTY_GRADES = { Fresh: '0', Second: '0', Third: '0' };
@@ -59,17 +65,18 @@ function Field({ label, required, children, hint }) {
  * whole hand-over — what left, what came back and what the stage cost. There is
  * no in-transit state to fill in later.
  *
- * ONE CHALLAN, SEVERAL LINES. The header — destination, challan no, party, rate
- * and the hand-over fields — is said once. Below it, one line per grade sent
- * (a Fresh line and a Second line, say); each becomes its own lot at the
- * destination, because the grades travel separately from there. A total row
- * sits above the lines so the challan's whole is visible while it is typed.
+ * ONE CHALLAN, ONE ROW PER GRADE. The header — destination, challan no, party,
+ * rate and the hand-over fields — is said once. Below it the three grades are
+ * always listed, Fresh, Second and Third, as on the graded grid; the user fills
+ * in the ones that were sent and leaves the rest empty. Into Stitching each
+ * filled grade becomes its own lot, because the grades travel separately from
+ * there. A total row sits above the rows so the challan's whole is visible
+ * while it is typed.
  *
- * WHAT A LINE HOLDS depends on the lot it leaves:
- * - Out of PROCESSING, the last stage in metres, a line is Challan Type · Sent
- *   Qty (m) · Dozens Received · Metre per Dozen. This is where fabric becomes
- *   pieces.
- * - Out of any stage that already counts dozens, a line is Challan Type · Dozens
+ * WHAT A ROW HOLDS depends on the lot it leaves:
+ * - Out of PROCESSING, the last stage in metres, a row is Grade · Sent Qty (m)
+ *   · Dozens Received · Metre per Dozen. This is where fabric becomes pieces.
+ * - Out of any stage that already counts dozens, a row is Grade · Dozens
  *   Sent. What was sent IS what arrives — the dozens sent become the next lot's
  *   dozens received.
  *
@@ -110,7 +117,9 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     party_name: lot?.stage_party_name || '',
     process_rate: lot?.stage_rate ?? '',
   }));
-  const [lines, setLines] = useState(() => [newLine()]);
+  // Every grade on a new challan. An edit corrects one existing line, and the
+  // prefill below replaces this with that one line.
+  const [lines, setLines] = useState(() => (challan ? [newLine()] : gradeLines()));
   // A graded destination's grid, and the metres for the whole challan when it
   // leaves Processing. Held apart from `lines`: a Processing lot can switch
   // between a Stitching challan (lines) and a graded one (the grid).
@@ -228,8 +237,10 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const setGrade = (t, v) => setGrades(g => ({ ...g, [t]: v }));
   const setLine = (key, patch) => setLines(ls => ls.map(l => (l.key === key ? { ...l, ...patch } : l)));
-  const addLine = () => setLines(ls => [...ls, newLine()]);
-  const removeLine = (key) => setLines(ls => (ls.length > 1 ? ls.filter(l => l.key !== key) : ls));
+
+  // What goes to the server: on a new challan the grades that were filled in,
+  // on an edit the one line being corrected.
+  const sendLines = isEdit ? lines : lines.filter(lineFilled);
 
   // Twin of lineFieldsError on the server, message for message and in the same
   // order: type, then quantity.
@@ -266,8 +277,11 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
       }
       if (gradeTotal <= EPSILON) return 'Enter the dozens for at least one grade';
     } else {
-      for (let i = 0; i < lines.length; i += 1) {
-        const err = lineError(lines[i], lines.length > 1 ? `Line ${i + 1}: ` : '');
+      // Rows are named by their grade here rather than by the server's "Line
+      // N:", which would count only the rows sent and so name the wrong one.
+      if (!sendLines.length) return 'Enter the dozens for at least one grade';
+      for (const l of sendLines) {
+        const err = lineError(l, isEdit ? '' : `${l.challan_type}: `);
         if (err) return err;
       }
     }
@@ -325,9 +339,9 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
       } else {
         await addStitchingChallan({
           parent_src: lot.src, parent_id: lot.id, target_stage: target,
-          ...header, ...(graded ? gradePayload() : { lines: lines.map(linePayload) }),
+          ...header, ...(graded ? gradePayload() : { lines: sendLines.map(linePayload) }),
         });
-        const what = `${totalSent}${unit}${!graded && lines.length > 1 ? ` on ${lines.length} lines` : ''}`;
+        const what = `${totalSent}${unit}${!graded && sendLines.length > 1 ? ` in ${sendLines.length} grades` : ''}`;
         // The party is the sender now, so a sale does not name the buyer here --
         // that is the Third Party lot's own Stage Party, set on its tab.
         toast.success(isExit ? `Sold ${what}` : `Sent ${what} to ${target}`);
@@ -493,29 +507,18 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             </div>
           </div>
         ) : (
-        /* LINE ITEMS — one row per grade sent. The total sits on top, so the
-            challan's whole is read before its parts. */
+        /* ONE ROW PER GRADE — Fresh, Second and Third always listed, like the
+            graded grid. The total sits on top, so the challan's whole is read
+            before its parts. */
         <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className={labelCls}>
-              Line Items <span className="text-red-500">*</span>
-            </label>
-            {!isEdit && (
-              <button
-                type="button"
-                onClick={addLine}
-                className="inline-flex items-center gap-1 text-xs text-[#c1121f] hover:underline"
-              >
-                <Plus size={12} />Add line
-              </button>
-            )}
-          </div>
+          <label className={labelCls}>
+            {parentDozen ? 'Dozens Sent' : 'Sent and received'}, by grade <span className="text-red-500">*</span>
+          </label>
           <div className="overflow-x-auto border border-gray-200 rounded-lg">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500">
                 <tr>
-                  <th className="px-2 py-2 text-left font-medium w-8">#</th>
-                  <th className="px-2 py-2 text-left font-medium">Challan Type</th>
+                  <th className="px-2 py-2 text-left font-medium">Grade</th>
                   {parentDozen ? (
                     <th className="px-2 py-2 text-left font-medium">Dozens Sent</th>
                   ) : (
@@ -525,15 +528,11 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
                       <th className="px-2 py-2 text-left font-medium">Metre per Dozen</th>
                     </>
                   )}
-                  <th className="px-2 py-2 w-8" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 <tr className="bg-[#fdf0d5]/40 text-xs font-semibold text-[#003049]">
-                  <td className="px-2 py-2" />
-                  <td className="px-2 py-2">
-                    Total{lines.length > 1 ? ` · ${lines.length} lines` : ''}
-                  </td>
+                  <td className="px-2 py-2">Total</td>
                   {parentDozen ? (
                     <td className="px-2 py-2">{fmtNum(totalDozens)} dozen of {fmtNum(available)}</td>
                   ) : (
@@ -543,28 +542,34 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
                       <td className="px-2 py-2">{totalPerDozen == null ? '—' : fmtNum(totalPerDozen)}</td>
                     </>
                   )}
-                  <td />
                 </tr>
-                {lines.map((l, i) => {
+                {lines.map((l) => {
                   const perDozen = parentDozen ? null : metresPerDozen(l.sent_qty, l.received_dozens);
                   return (
                     <tr key={l.key}>
-                      <td className="px-2 py-1.5 text-gray-400 text-xs">{i + 1}</td>
+                      {/* The grade is fixed on a new challan. On an edit it stays
+                          a choice, so a line raised under the wrong grade can be
+                          corrected where it stands. */}
                       <td className="px-2 py-1.5">
-                        <select
-                          value={l.challan_type}
-                          onChange={e => setLine(l.key, { challan_type: e.target.value })}
-                          className={cellInputCls}
-                        >
-                          <option value="">Select...</option>
-                          {CHALLAN_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                        </select>
+                        {isEdit ? (
+                          <select
+                            value={l.challan_type}
+                            onChange={e => setLine(l.key, { challan_type: e.target.value })}
+                            className={cellInputCls}
+                          >
+                            <option value="">Select...</option>
+                            {CHALLAN_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        ) : (
+                          <span className="text-gray-700">{l.challan_type}</span>
+                        )}
                       </td>
                       {parentDozen ? (
                         <td className="px-2 py-1.5">
                           <input
                             type="number" min={0.01} step="0.01"
                             value={l.sent_dozens}
+                            placeholder="0"
                             onChange={e => setLine(l.key, { sent_dozens: e.target.value })}
                             className={cellInputCls}
                           />
@@ -575,6 +580,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
                             <input
                               type="number" min={0.01} step="0.01"
                               value={l.sent_qty}
+                              placeholder="0"
                               onChange={e => setLine(l.key, { sent_qty: e.target.value })}
                               className={cellInputCls}
                             />
@@ -583,6 +589,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
                             <input
                               type="number" min={0.01} step="0.01"
                               value={l.received_dozens}
+                              placeholder="0"
                               onChange={e => setLine(l.key, { received_dozens: e.target.value })}
                               className={cellInputCls}
                             />
@@ -599,18 +606,6 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
                           </td>
                         </>
                       )}
-                      <td className="px-2 py-1.5 text-right">
-                        {!isEdit && lines.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => removeLine(l.key)}
-                            title="Remove this line"
-                            className="p-1 rounded hover:bg-red-50 text-red-500"
-                          >
-                            <X size={14} />
-                          </button>
-                        )}
-                      </td>
                     </tr>
                   );
                 })}
@@ -620,7 +615,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
           <p className="mt-1 text-[11px] text-gray-400">
             {parentDozen
               ? `From ${sourceStage} on the goods are counted in dozens: the dozens sent are what the next stage receives.`
-              : 'Each line becomes its own lot at the destination. Metre per Dozen is the metres sent divided by the dozens that came back.'}
+              : 'Each grade filled in becomes its own lot at Stitching; leave a grade empty if none was sent. Metre per Dozen is the metres sent divided by the dozens that came back.'}
           </p>
         </div>
         )}
