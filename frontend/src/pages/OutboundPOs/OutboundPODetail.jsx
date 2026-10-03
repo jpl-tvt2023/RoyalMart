@@ -148,12 +148,12 @@ export default function OutboundPODetail() {
   const changeVendor = (vendorId) => {
     setPo(p => ({ ...p, vendor_id: vendorId }));
     // Different vendor = different mapping catalogue; reset picked articles.
-    // The stitching type is derived from (category, item_name, unit_metric), so
-    // it has to go when they do -- otherwise the line keeps a stale type and the
+    // goes_to_stitching is derived from (category, item_name, unit_metric), so it
+    // has to go when they do -- otherwise the line keeps a stale flag and the
     // receipt modal offers stage fields for an article nobody has picked yet.
     setLines(ls => ls.map(l => ({
       ...l, mapping: '', category: '', item_name: '', variant: '', unit_metric: '',
-      goes_to_stitching: 0, stitching_type: null,
+      goes_to_stitching: 0,
     })));
   };
 

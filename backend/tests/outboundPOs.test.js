@@ -1282,22 +1282,22 @@ describe('Outbound POs API', () => {
       });
     });
 
-    // Migration 091. An article is now Fabric or Readymade, and a receipt asks
-    // only for what its UM does not already say: a quantity in dozens IS the
-    // dozens, one in metres IS the metres, and Readymade bought by the piece is
-    // twelve to the dozen. Readymade has no metres, so it skips Processing.
-    describe('Readymade, and receipts that read their UM', () => {
+    // A receipt asks only for what its UM does not already say: a quantity in
+    // dozens IS the dozens, one in pieces is twelve to the dozen, one in metres
+    // IS the metres. Goods bought in dozens or pieces are made up -- no metres,
+    // and they skip Processing. The UM decides this, not a setting on the item.
+    describe('Receipts that read their UM', () => {
       const disposable = [];
 
-      // A one-line PO for a fresh article of this type and unit metric, under a
-      // category unique to the test so cleanup never touches seeded taxonomy.
-      async function typedLine({ type, um, qty = 1000 }) {
+      // A one-line PO for a fresh stitching article in this unit metric, under
+      // a category unique to the test so cleanup never touches seeded taxonomy.
+      async function typedLine({ um, qty = 1000 }) {
         const category = `Cat ${uid()}`;
         const item_name = `Item ${uid()}`;
         disposable.push(category);
         const product = await request(app).post('/api/configurations/outbound-products')
           .set('Authorization', `Bearer ${token}`)
-          .send({ category, item_name, unit_metric: um, stitching_type: type });
+          .send({ category, item_name, unit_metric: um, goes_to_stitching: true });
         expect(product.status).toBe(201);
         await request(app).post('/api/packaging-raw-materials')
           .set('Authorization', `Bearer ${token}`)
@@ -1323,15 +1323,13 @@ describe('Outbound POs API', () => {
         }
       });
 
-      test('the line carries its type', async () => {
-        const { poId } = await typedLine({ type: 'Readymade', um: 'pcs' });
-        const line = await lineOf(poId);
-        expect(line.stitching_type).toBe('Readymade');
-        expect(line.goes_to_stitching).toBe(1);
+      test('the line carries the stitching tick', async () => {
+        const { poId } = await typedLine({ um: 'pcs' });
+        expect((await lineOf(poId)).goes_to_stitching).toBe(1);
       });
 
-      test('Readymade in pieces: twelve to the dozen, and no metres asked', async () => {
-        const { poId, lineId } = await typedLine({ type: 'Readymade', um: 'pcs' });
+      test('pieces: twelve to the dozen, and no metres asked', async () => {
+        const { poId, lineId } = await typedLine({ um: 'pcs' });
         const res = await postReceipt(poId, lineId, plainBody({ received_qty: 120 }));
         expect(res.status).toBe(201);
         const receipt = (await lineOf(poId)).receipts[0];
@@ -1339,40 +1337,45 @@ describe('Outbound POs API', () => {
         expect(receipt.qty_in_metres).toBeNull();
       });
 
-      test('Readymade skips Processing and carries no metres', async () => {
-        const { poId, lineId } = await typedLine({ type: 'Readymade', um: 'pcs' });
+      test('goods bought in pieces skip Processing and carry no metres', async () => {
+        const { poId, lineId } = await typedLine({ um: 'pcs' });
         const processing = await postReceipt(poId, lineId, plainBody({ incoming_stage: 'Processing' }));
         expect(processing.status).toBe(400);
-        expect(processing.body.message).toBe('Readymade goods skip Processing — pick Stitching, Packing, Panchal or Third Party');
+        expect(processing.body.message).toBe('Processing counts metres — goods bought in dozens or pieces cannot be received there');
 
         const metres = await postReceipt(poId, lineId, plainBody({ qty_in_metres: 40 }));
         expect(metres.status).toBe(400);
-        expect(metres.body.message).toBe('Readymade goods carry no metres — they are counted in dozens');
+        expect(metres.body.message).toBe('Goods bought in dozens or pieces carry no metres');
       });
 
       // The stage is the first answer the form asks for, so it is the first
       // error either side reports -- ahead even of a missing quantity.
       test('the stage is checked before anything else', async () => {
-        const { poId, lineId } = await typedLine({ type: 'Readymade', um: 'pcs' });
+        const { poId, lineId } = await typedLine({ um: 'pcs' });
         const res = await postReceipt(poId, lineId, plainBody({ incoming_stage: 'Processing', received_qty: '' }));
         expect(res.status).toBe(400);
-        expect(res.body.message).toMatch(/Readymade goods skip Processing/);
+        expect(res.body.message).toMatch(/Processing counts metres/);
       });
 
-      test('Readymade in another unit asks for the dozens', async () => {
-        const { poId, lineId } = await typedLine({ type: 'Readymade', um: 'kg' });
-        const res = await postReceipt(poId, lineId, plainBody());
-        expect(res.status).toBe(400);
-        expect(res.body.message).toBe('Dozens Received is required');
-        const ok = await postReceipt(poId, lineId, plainBody({ received_dozens: 8 }));
+      // Any other unit means nothing in particular: the metres and the dozens
+      // are both typed, as for fabric bought by the taga.
+      test('another unit asks for the metres and the dozens', async () => {
+        const { poId, lineId } = await typedLine({ um: 'kg' });
+        const noMetres = await postReceipt(poId, lineId, plainBody());
+        expect(noMetres.status).toBe(400);
+        expect(noMetres.body.message).toBe('Qty in metres is required');
+        const noDozens = await postReceipt(poId, lineId, plainBody({ qty_in_metres: 400 }));
+        expect(noDozens.status).toBe(400);
+        expect(noDozens.body.message).toBe('Dozens Received is required');
+        const ok = await postReceipt(poId, lineId, plainBody({ qty_in_metres: 400, received_dozens: 8 }));
         expect(ok.status).toBe(201);
       });
 
-      test('fabric bought in dozens: Received Qty is the dozens, and Processing is refused', async () => {
-        const { poId, lineId } = await typedLine({ type: 'Fabric', um: 'Dzn' });
+      test('bought in dozens: Received Qty is the dozens, and Processing is refused', async () => {
+        const { poId, lineId } = await typedLine({ um: 'Dzn' });
         const processing = await postReceipt(poId, lineId, plainBody({ incoming_stage: 'Processing', received_qty: 20 }));
         expect(processing.status).toBe(400);
-        expect(processing.body.message).toBe('Processing counts metres — goods bought in dozens cannot be received there');
+        expect(processing.body.message).toBe('Processing counts metres — goods bought in dozens or pieces cannot be received there');
 
         const ok = await postReceipt(poId, lineId, plainBody({ received_qty: 20 }));
         expect(ok.status).toBe(201);
@@ -1382,7 +1385,7 @@ describe('Outbound POs API', () => {
       });
 
       test('graded goods in dozens: the grades must split the Received Qty', async () => {
-        const { poId, lineId } = await typedLine({ type: 'Fabric', um: 'dozen' });
+        const { poId, lineId } = await typedLine({ um: 'dozen' });
         const short = await postReceipt(poId, lineId,
           plainBody({ incoming_stage: 'Packing', received_qty: 20, fresh_dozens: 15 }));
         expect(short.status).toBe(400);
@@ -1394,8 +1397,8 @@ describe('Outbound POs API', () => {
         expect((await lineOf(poId)).receipts[0].received_dozens).toBe(20);
       });
 
-      test('fabric bought in metres: Received Qty is the metres, and follows an edit', async () => {
-        const { poId, lineId } = await typedLine({ type: 'Fabric', um: 'mtr' });
+      test('bought in metres: Received Qty is the metres, and follows an edit', async () => {
+        const { poId, lineId } = await typedLine({ um: 'mtr' });
         const created = await postReceipt(poId, lineId, plainBody({ incoming_stage: 'Processing', received_qty: 250 }));
         expect(created.status).toBe(201);
         expect((await lineOf(poId)).receipts[0].qty_in_metres).toBe(250);
@@ -1406,7 +1409,7 @@ describe('Outbound POs API', () => {
       });
 
       test('a dozen count settled by the UM follows a corrected quantity', async () => {
-        const { poId, lineId } = await typedLine({ type: 'Readymade', um: 'dz' });
+        const { poId, lineId } = await typedLine({ um: 'dz' });
         const created = await postReceipt(poId, lineId, plainBody({ received_qty: 30 }));
         expect(created.status).toBe(201);
         const edited = await patchReceipt(poId, lineId, created.body.id, { received_qty: 36 });
@@ -1414,17 +1417,8 @@ describe('Outbound POs API', () => {
         expect((await lineOf(poId)).receipts[0].received_dozens).toBe(36);
       });
 
-      test('fabric in pieces still has its metres asked, and may land at Processing', async () => {
-        const { poId, lineId } = await typedLine({ type: 'Fabric', um: 'pcs' });
-        const missing = await postReceipt(poId, lineId, plainBody({ incoming_stage: 'Processing' }));
-        expect(missing.status).toBe(400);
-        expect(missing.body.message).toBe('Qty in metres is required');
-        const ok = await postReceipt(poId, lineId, plainBody({ incoming_stage: 'Processing', qty_in_metres: 400 }));
-        expect(ok.status).toBe(201);
-      });
-
-      test('a Readymade sale straight to a third party', async () => {
-        const { poId, lineId } = await typedLine({ type: 'Readymade', um: 'pcs' });
+      test('goods bought by the piece, sold straight on to a third party', async () => {
+        const { poId, lineId } = await typedLine({ um: 'pcs' });
         const res = await postReceipt(poId, lineId, plainBody({
           incoming_stage: 'Third Party', incoming_no: '', received_qty: 240,
           fresh_dozens: 18, second_dozens: 2, outbound_bill_no: 'OB-RM-1',
@@ -1435,7 +1429,7 @@ describe('Outbound POs API', () => {
       });
 
       test('moving a receipt into Third Party needs the sale fields, and drops the incoming no', async () => {
-        const { poId, lineId } = await typedLine({ type: 'Readymade', um: 'dz' });
+        const { poId, lineId } = await typedLine({ um: 'dz' });
         const created = await postReceipt(poId, lineId, plainBody({ incoming_stage: 'Panchal', received_qty: 10, fresh_dozens: 10 }));
         expect(created.status).toBe(201);
 
@@ -1486,7 +1480,7 @@ describe('Outbound POs API', () => {
           received_qty: 1, received_rate: 10, incoming_stage: 'Processing',
         });
         expect(res.status).toBe(400);
-        expect(res.body.message).toBe('Only Fabric and Readymade articles travel the Stitching stages');
+        expect(res.body.message).toBe('Only articles that go through Stitching travel the Stitching stages');
       });
 
       test('metres are refused', async () => {
@@ -1876,8 +1870,7 @@ describe('Outbound POs API', () => {
     // state every receipt written before the Stitching work is in, so it raises
     // missing_incoming_stage. The cases that are only about rate therefore pin a
     // prefix, to keep one flag's fixtures from testing another flag by accident.
-    // stitching_type on the line (Fabric or Readymade, 091) is what makes the
-    // flag applicable at all.
+    // goes_to_stitching on the line is what makes the flag applicable at all.
     test.each([
       [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, ['rate_mismatch']],
       [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, []],
@@ -1887,13 +1880,11 @@ describe('Outbound POs API', () => {
       [{ received_rate: null, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, []],
       [{ received_rate: 10, incoming_no: '   ' }, { rate: 10 }, ['missing_incoming_no']],
       // A number with no stage behind it — the legacy shape, on fabric.
-      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10, stitching_type: 'Fabric' }, ['missing_incoming_stage']],
-      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10, stitching_type: 'Fabric' }, ['rate_mismatch', 'missing_incoming_stage']],
-      // Readymade travels the chain too, so the same legacy shape is flagged.
-      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10, stitching_type: 'Readymade' }, ['missing_incoming_stage']],
+      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10, goes_to_stitching: 1 }, ['missing_incoming_stage']],
+      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10, goes_to_stitching: 1 }, ['rate_mismatch', 'missing_incoming_stage']],
       // Booked straight into Third Party: no prefix and no incoming number by
       // design, so neither flag fires.
-      [{ received_rate: 10, incoming_no: null, incoming_prefix_id: null, direct_stage: 'Third Party' }, { rate: 10, stitching_type: 'Readymade' }, []],
+      [{ received_rate: 10, incoming_no: null, incoming_prefix_id: null, direct_stage: 'Third Party' }, { rate: 10, goes_to_stitching: 1 }, []],
       // The same receipt on anything that is not fabric travels no stage
       // chain, so there is no stage to be missing.
       [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10 }, []],

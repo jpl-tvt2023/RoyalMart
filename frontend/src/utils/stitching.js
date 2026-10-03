@@ -32,22 +32,11 @@ export const DESTINATION_HINTS = {
   'Third Party': 'sold out, needs a bill no',
 };
 
-// The two sections of the Stitching page (migration 091). Twin of
-// STITCHING_TYPES on the server. An article's type is set on the Outbound
-// Product List; Readymade arrives already made up and skips Processing, which is
-// the only difference -- one stage graph, one prefix series, one party master.
-export const STITCHING_TYPES = ['Fabric', 'Readymade'];
-export const FABRIC = 'Fabric';
-export const READYMADE = 'Readymade';
-
-// Twin of READYMADE_STAGES / stagesForType on the server.
-export const READYMADE_STAGES = STAGES.filter(s => s !== 'Processing');
-export const stagesForType = (type) => (type === READYMADE ? READYMADE_STAGES : STAGES);
-
 // What a unit metric means, read off its name. Twin of umKind on the server --
 // keep the lists identical, or the form asks for a figure the server fills in
-// (or the reverse). dozen: Received Qty is the dozens. metre: Received Qty is
-// the metres. piece: on Readymade, Received Qty / 12 is the dozens.
+// (or the reverse). dozen: Received Qty is the dozens. piece: Received Qty / 12
+// is the dozens. metre: Received Qty is the metres. Goods bought in dozens or
+// pieces are made up: no metres, and they skip Processing.
 export const DOZEN_UMS = ['dozen', 'dozens', 'dzn', 'dz', 'doz'];
 export const METRE_UMS = ['metre', 'metres', 'meter', 'meters', 'mtr', 'mtrs', 'm'];
 export const PIECE_UMS = ['pcs', 'pc', 'piece', 'pieces'];
@@ -62,25 +51,27 @@ export const umKind = (um) => {
   return null;
 };
 
+// Twin of countsInDozens on the server: made-up goods, counted in dozens.
+export const countsInDozens = (kind) => kind === 'dozen' || kind === 'piece';
+
 // Twin of derivedDozens on the server: the dozens a UM already settles, or null.
-export const derivedDozens = (receivedQty, kind, type) => {
+export const derivedDozens = (receivedQty, kind) => {
   if (receivedQty == null || receivedQty === '') return null;
   const n = Number(receivedQty);
   if (!Number.isFinite(n)) return null;
   if (kind === 'dozen') return Math.round(n * 100) / 100;
-  if (kind === 'piece' && type === READYMADE) return Math.round((n / PIECES_PER_DOZEN) * 100) / 100;
+  if (kind === 'piece') return Math.round((n / PIECES_PER_DOZEN) * 100) / 100;
   return null;
 };
 
 // Twin of receiptHasMetres on the server.
-export const receiptHasMetres = (kind, type) => type === FABRIC && kind !== 'dozen';
+export const receiptHasMetres = (kind) => !countsInDozens(kind);
 
 // Twin of receiptStageBlockReason on the server, message text included -- the
 // form shows it beside the disabled Processing option.
-export const receiptStageBlockReason = (stage, { type, kind } = {}) => {
+export const receiptStageBlockReason = (stage, kind) => {
   if (stage !== 'Processing') return null;
-  if (type === READYMADE) return 'Readymade goods skip Processing — pick Stitching, Packing, Panchal or Third Party';
-  if (kind === 'dozen') return 'Processing counts metres — goods bought in dozens cannot be received there';
+  if (countsInDozens(kind)) return 'Processing counts metres — goods bought in dozens or pieces cannot be received there';
   return null;
 };
 

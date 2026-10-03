@@ -7,7 +7,7 @@ const {
   countsDozens, balanceUnitFor, DOZEN_STAGES, stageRateUnit, metresPerDozen,
   PARTY_USE_STAGES, CHALLAN_TYPES, isValidPartyUse, isValidChallanType,
   GRADE_COLUMNS, isGradedStage, isRateStage,
-  STITCHING_TYPES, isValidStitchingType, umKind,
+  umKind,
   partyTag, rateTotal,
   effectiveAfterRate, statusSql, moneyError, qtyError, challanError,
   revertReasonError, writeOffReasonError,
@@ -149,8 +149,8 @@ WITH lots AS (
     r.process_rate AS ladder_rate,
     r.process_rate AS process_rate,
     -- A receipt's process rate is quoted per metre, like the PO rate beside
-    -- it -- or per dozen on a receipt that has no metres at all (Readymade, or
-    -- anything bought in dozens, 091), where there is no metre to quote against.
+    -- it -- or per dozen on a receipt that has no metres at all (bought in
+    -- dozens or pieces, 091), where there is no metre to quote against.
     CASE WHEN r.qty_in_metres IS NULL THEN 'dozen' ELSE 'metre' END AS rate_unit,
     COALESCE(r.after_rate, r.received_rate + COALESCE(r.process_rate, 0)) AS after_rate,
     -- Our outbound bill, on a receipt booked straight into Third Party (091) --
@@ -174,22 +174,21 @@ WITH lots AS (
     'm' AS unit_metric,
     p.id AS po_id, v.name AS vendor_name,
     r.created_at AS created_at, r.updated_at AS updated_at, ub.name AS updated_by_name,
-    -- APPENDED LAST in both halves, so the positions above stay matched. The
-    -- section the lot shows in (Fabric or Readymade, 091), and the unit the PO
-    -- was bought in -- which prices the PO rate rung in withLineage.
-    op.stitching_type AS stitching_type, COALESCE(r.unit_metric, l.unit_metric) AS po_unit_metric
+    -- APPENDED LAST in both halves, so the positions above stay matched: the
+    -- unit the PO was bought in, which prices the PO rate rung in withLineage.
+    COALESCE(r.unit_metric, l.unit_metric) AS po_unit_metric
   FROM outbound_po_line_receipts r
   -- LEFT: a receipt booked straight into Third Party has no prefix -- nothing
   -- arrives there to number -- and holds its stage in direct_stage instead.
   LEFT JOIN stitching_prefixes sp ON sp.id = r.incoming_prefix_id
   JOIN outbound_po_lines l ON l.id = r.line_id AND l.deleted_at IS NULL
-  -- ONLY FABRIC AND READYMADE (stitching_type, 091 -- the goes_to_stitching
-  -- tick before it). Packaging, barcodes and corrugated boxes are received and
-  -- done with -- they travel no stage chain, and a lot of corrugated boxes was
-  -- what made that obvious. The type lives on the product master and is reached
-  -- through the triple a line carries, since a line holds no product id.
+  -- ONLY WHAT GOES THROUGH STITCHING (the goes_to_stitching tick). Packaging,
+  -- barcodes and corrugated boxes are received and done with -- they travel no
+  -- stage chain, and a lot of corrugated boxes was what made that obvious. The
+  -- tick lives on the product master and is reached through the triple a line
+  -- carries, since a line holds no product id.
   JOIN outbound_products op ON op.category = l.category AND op.item_name = l.item_name
-    AND op.unit_metric = l.unit_metric AND op.stitching_type IS NOT NULL
+    AND op.unit_metric = l.unit_metric AND op.goes_to_stitching = 1
   JOIN outbound_pos p ON p.id = l.po_id AND p.status <> 'Deleted'
   JOIN outbound_vendors v ON v.id = p.vendor_id
   LEFT JOIN users kb ON kb.id = r.checked_by
@@ -197,7 +196,7 @@ WITH lots AS (
   LEFT JOIN users clb ON clb.id = r.closed_by
   -- A receipt with no quantity recorded has nothing to track, so it waits off
   -- the page until someone fills it in rather than appearing as zero. Metres on
-  -- fabric, or -- on goods that have none, Readymade or bought in dozens -- the
+  -- fabric, or -- on goods bought in dozens or pieces, which have none -- the
   -- dozens.
   WHERE r.deleted_at IS NULL
     AND (sp.id IS NOT NULL OR r.direct_stage IS NOT NULL)
@@ -252,12 +251,10 @@ WITH lots AS (
     p.id AS po_id, v.name AS vendor_name,
     e.created_at AS created_at, e.updated_at AS updated_at, ub.name AS updated_by_name,
     -- Appended last, matching the receipt half: read off the chain's origin.
-    op.stitching_type AS stitching_type, COALESCE(orr.unit_metric, l.unit_metric) AS po_unit_metric
+    COALESCE(orr.unit_metric, l.unit_metric) AS po_unit_metric
   FROM stitching_entries e
   JOIN outbound_po_line_receipts orr ON orr.id = e.origin_receipt_id
   JOIN outbound_po_lines l ON l.id = orr.line_id
-  LEFT JOIN outbound_products op ON op.category = l.category AND op.item_name = l.item_name
-    AND op.unit_metric = l.unit_metric
   JOIN outbound_pos p ON p.id = l.po_id
   JOIN outbound_vendors v ON v.id = p.vendor_id
   LEFT JOIN stitching_prefixes sp ON sp.id = e.incoming_prefix_id
@@ -307,13 +304,6 @@ function buildWhere(query, { excludeStage = false, excludeStatus = false } = {})
   if (query.stage && !excludeStage) {
     where.push('stage = ?');
     args.push(query.stage);
-  }
-
-  // The section of the page (091): Fabric or Readymade. Applied to the counts
-  // too -- a Readymade tab badge must not count fabric lots.
-  if (query.type) {
-    where.push('stitching_type = ?');
-    args.push(query.type);
   }
 
   const statuses = String(query.status || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -480,8 +470,8 @@ async function withLineage(lots) {
       if (a.src === 'receipt') {
         // The PO rate is quoted in whatever the goods were bought in. Fabric in
         // taga or metres prices through the yield, as it always has. Goods
-        // bought in dozens are per dozen already, and Readymade bought by the
-        // piece is twelve pieces to the dozen (091).
+        // bought in dozens are per dozen already, and goods bought by the piece
+        // are twelve pieces to the dozen (091).
         const kind = umKind(a.po_unit_metric);
         const noMetres = a.received_qty == null;
         const poUnit = kind === 'dozen' ? 'dozen' : (kind === 'piece' && noMetres) ? 'piece' : 'metre';
@@ -514,8 +504,8 @@ async function withLineage(lots) {
     // show even if something above it did -- there is nothing above it.
     const yieldApplies = countsDozens(lot.stage) && mPerDozen != null;
 
-    // A dozen lot whose chain never had metres -- Readymade, or fabric bought in
-    // dozens -- is priced per dozen with no yield at all.
+    // A dozen lot whose chain never had metres -- bought in dozens or pieces --
+    // is priced per dozen with no yield at all.
     const total = rateTotal(components, yieldApplies ? mPerDozen : null, {
       dozenLot: countsDozens(lot.stage) && lot.po_qty_metres == null,
     });
@@ -540,18 +530,13 @@ async function withLineage(lots) {
   });
 }
 
-const typeError = (type) => (type && !isValidStitchingType(type)
-  ? `type must be one of ${STITCHING_TYPES.join(', ')}` : null);
-
-// GET /api/stitching?stage=Processing&type=Fabric&…
+// GET /api/stitching?stage=Processing&…
 async function list(req, res, next) {
   try {
     const stage = req.query.stage;
     if (stage && !isValidStage(stage)) {
       return res.status(400).json({ message: `Stage must be one of ${STAGES.join(', ')}` });
     }
-    const badType = typeError(req.query.type);
-    if (badType) return res.status(400).json({ message: badType });
     const { clause, args } = buildWhere(req.query);
     const { page, pageSize, offset } = buildPagination(req.query);
 
@@ -631,8 +616,6 @@ async function withOutgoing(lots) {
 // outer query over the subselect — the shape list()'s own count query uses.
 async function stageCounts(req, res, next) {
   try {
-    const badType = typeError(req.query.type);
-    if (badType) return res.status(400).json({ message: badType });
     const { clause, args } = buildWhere(req.query, { excludeStage: true, excludeStatus: true });
     const placeholders = OPEN_STATUSES.map(() => '?').join(',');
     const { rows } = await db.execute({

@@ -7,8 +7,8 @@
 
 import {
   moneyError, qtyError, defaultAfterRate, STAGES, EPSILON, countsDozens, metresPerDozen,
-  isGradedStage, CHALLAN_TYPES, GRADE_COLUMNS, EXIT_STAGE, FABRIC,
-  umKind, derivedDozens, receiptHasMetres, receiptStageBlockReason,
+  isGradedStage, CHALLAN_TYPES, GRADE_COLUMNS, EXIT_STAGE,
+  umKind, countsInDozens, derivedDozens, receiptHasMetres, receiptStageBlockReason,
 } from '../../utils/stitching';
 
 // Twin of INCOMING_NO_MAX in backend/src/controllers/outboundPOs.controller.js,
@@ -30,42 +30,34 @@ export const EMPTY_RECEIPT = {
   outbound_bill_no: '', checked_by: '',
 };
 
-// Which section of the Stitching page this line's article travels: Fabric or
-// Readymade (migration 091), or null for anything that travels none --
-// packaging, barcodes. The type lives on the outbound product master and rides
-// down on the PO line. A row shaped before 091 that still carries only the old
-// goes_to_stitching tick reads as Fabric, which is what every ticked row was.
+// Whether this line's article travels the Stitching stages -- the "Goes through
+// Stitching" tick on the outbound product master, riding down on the PO line.
+// HOW it travels is the receipt's UM: bought in dozens or pieces it is made up
+// and skips Processing.
 //
 // A MISSING field reads as "travels nothing", indistinguishably from a genuine
 // packaging line. That is why toLineState below lives in this file and is
-// pinned by a test: the type going astray on the way to the modal is silent,
+// pinned by a test: the tick going astray on the way to the modal is silent,
 // and shows up only as a server rejection the form never warned about.
-export const lineType = (line) => line?.stitching_type
-  || (Number(line?.goes_to_stitching) === 1 ? FABRIC : null);
-
-export const isStitchingLine = (line) => lineType(line) != null;
+export const isStitchingLine = (line) => Number(line?.goes_to_stitching) === 1;
 
 // What a receipt's unit metric means -- dozen, metre, piece or nothing in
 // particular (umKind) -- read off the receipt's own UM, else the line's.
 export const receiptUmKind = (v, line) => umKind(String(v?.unit_metric ?? '').trim() || line?.unit_metric);
 
-// Twin of receiptHasMetres on the server, for a line: only Fabric has metres,
-// and not when it was bought in dozens.
-export const receiptTakesMetres = (line, kind) =>
-  isStitchingLine(line) && receiptHasMetres(kind, lineType(line));
+// Twin of receiptHasMetres on the server, for a line: metres only on a
+// stitching line, and not when it was bought in dozens or pieces.
+export const receiptTakesMetres = (line, kind) => isStitchingLine(line) && receiptHasMetres(kind);
 
 // The dozens a receipt's UM already settles at this stage -- a Received Qty in
-// dozens, or in pieces on Readymade -- or null when they have to be typed. Twin
-// of the server's dozensFromQty + derivedDozens. `derivable` says whether the
-// UM settles them at all, so the form can hide the field before a quantity is
-// typed.
+// dozens, or in pieces -- or null when they have to be typed. Twin of the
+// server's dozensFromQty + derivedDozens. `derivable` says whether the UM
+// settles them at all, so the form can hide the field before a quantity is typed.
 export const receiptDozensDerivable = (line, kind, stage) =>
-  isStitchingLine(line) && countsDozens(stage) && derivedDozens(1, kind, lineType(line)) != null;
+  isStitchingLine(line) && countsDozens(stage) && countsInDozens(kind);
 
 export const receiptSettledDozens = (v, line, kind) => (
-  receiptDozensDerivable(line, kind, v?.incoming_stage)
-    ? derivedDozens(v?.received_qty, kind, lineType(line))
-    : null
+  receiptDozensDerivable(line, kind, v?.incoming_stage) ? derivedDozens(v?.received_qty, kind) : null
 );
 
 // An article's identity: the tuple, joined so it can live in a <select> value.
@@ -81,7 +73,7 @@ export const emptyLine = () => ({
   _key: `new-${Math.random().toString(36).slice(2)}`,
   id: null, mapping: '', category: '', item_name: '', variant: '',
   qty: 1, rate: 0, short: 0, received: 0, receipts: [], unit_metric: '', flags: [],
-  goes_to_stitching: 0, stitching_type: null,
+  goes_to_stitching: 0,
   updated_by_name: '', updated_at: null, deleted_at: null, deleted_by: null,
 });
 
@@ -104,11 +96,9 @@ export function toLineState(l) {
     unit_metric: l.unit_metric || '',
     flags: l.flags || [],
     // Server-derived, and the modal's ONLY signal that this line travels the
-    // stitching stages, and in which section. Defaulted rather than passed
-    // through so a row that predates them reads as travelling none instead of
-    // NaN. goes_to_stitching is one value with stitching_type on the server.
+    // stitching stages. Defaulted rather than passed through so a row that
+    // predates the flag reads as non-stitching instead of NaN.
     goes_to_stitching: l.goes_to_stitching ?? 0,
-    stitching_type: l.stitching_type ?? null,
     updated_by_name: l.updated_by_name, updated_at: l.updated_at,
     deleted_at: l.deleted_at, deleted_by: l.deleted_by,
     receipts: l.receipts || [],
@@ -117,8 +107,8 @@ export function toLineState(l) {
 
 // A receipt can arrive at ANY stage. Third Party joined in migration 091: goods
 // bought and sold straight on, without entering our stock. Processing is
-// refused per receipt rather than here -- for Readymade, and for goods bought in
-// dozens -- and shown disabled with its reason (stageOptionsFor). Twin of
+// refused per receipt rather than here -- for goods bought in dozens or pieces
+// -- and shown disabled with its reason (stageOptionsFor). Twin of
 // RECEIPT_STAGES on the server.
 export const RECEIPT_STAGES = [...STAGES];
 
@@ -185,7 +175,6 @@ export function offeredQtyDiffAction(difference) {
 // demanding a bill number nobody has — matching what the server enforces.
 export function receiptFieldError(v, { requireBillNo = true, line = null } = {}) {
   const stitching = isStitchingLine(line);
-  const type = lineType(line);
   const kind = receiptUmKind(v, line);
   const stage = String(v.incoming_stage ?? '').trim();
 
@@ -193,7 +182,7 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
   // it, and the server checks it before anything else too (receiptStageError).
   if (stitching) {
     if (!stage) return 'Stage is required';
-    const blocked = receiptStageBlockReason(stage, { type, kind });
+    const blocked = receiptStageBlockReason(stage, kind);
     if (blocked) return blocked;
   }
 
@@ -226,7 +215,7 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
     }
 
     // At a graded stage the dozens are the grades below, not a figure of their
-    // own. A UM in dozens (or pieces, on Readymade) settles them outright.
+    // own. A UM in dozens or pieces settles them outright.
     const settled = receiptSettledDozens(v, line, kind);
     if (countsDozens(stage) && !isGradedStage(stage) && settled == null) {
       const dozensErr = qtyError(v.received_dozens, 'Dozens Received');
@@ -306,18 +295,18 @@ export function withDerivedAfterRate(draft, field, value) {
 // server. That also means a receipt keeps rendering a prefix that has since been
 // deactivated without the dropdown having to carry it as an option.
 //
-// Processing is DISABLED rather than hidden for goods that have no metres --
-// every Readymade article, and fabric bought in dozens -- with the reason beside
-// it, so the user sees why it cannot be picked (receiptStageBlockReason).
-export function stageOptionsFor(line = null, kind = null) {
-  const type = lineType(line);
+// Processing is DISABLED rather than hidden for goods bought in dozens or
+// pieces, with the reason beside it, so the user sees why it cannot be picked
+// (receiptStageBlockReason).
+// `kind` is the umKind of the delivery's unit.
+export function stageOptionsFor(kind = null) {
   return RECEIPT_STAGES.map(stage => {
-    const reason = receiptStageBlockReason(stage, { type, kind });
+    const reason = receiptStageBlockReason(stage, kind);
     return { value: stage, label: stage, disabled: !!reason, reason };
   });
 }
 
 // The stage a new receipt starts on: the first one it may take. Processing for
-// fabric that has metres, Stitching for everything else.
-export const defaultReceiptStage = (line, kind) =>
-  stageOptionsFor(line, kind).find(o => !o.disabled)?.value || '';
+// goods with metres, Stitching for anything bought in dozens or pieces.
+export const defaultReceiptStage = (kind) =>
+  stageOptionsFor(kind).find(o => !o.disabled)?.value || '';
