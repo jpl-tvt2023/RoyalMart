@@ -3,11 +3,17 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
 import { addOutboundPOLineReceipt, updateOutboundPOLineReceipt } from '../../api/outboundPOs.api';
-import { fmtNum, STOCK_STAGE } from '../../utils/stitching';
+import { listUsersLite } from '../../api/users.api';
+import { ROLES } from '../../utils/roles';
+import { sortByText } from '../../utils/sort';
+import { checkerOptionsFor } from '../../utils/checkers';
+import { fmtNum, STOCK_STAGE, EXIT_STAGE, READYMADE, umKind, receiptStageBlockReason } from '../../utils/stitching';
 import {
   EMPTY_RECEIPT, INCOMING_NO_MAX, NOTE_MAX,
-  receiptFieldError, withDerivedAfterRate, stageOptionsFor,
-  isFabricLine, outstandingOf, qtyDifference, offeredQtyDiffAction,
+  receiptFieldError, withDerivedAfterRate, stageOptionsFor, defaultReceiptStage,
+  isStitchingLine, lineType, receiptUmKind, receiptTakesMetres,
+  receiptDozensDerivable, receiptSettledDozens, receiptIsSale,
+  outstandingOf, qtyDifference, offeredQtyDiffAction,
   receiptCountsDozens, metresPerDozen,
   receiptIsGraded, receiptGradeTotal, GRADE_FIELDS,
 } from './receiptFields';
@@ -141,18 +147,34 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
   const isAdd = !receipt;
   const [form, setForm] = useState(EMPTY_RECEIPT);
   const [saving, setSaving] = useState(false);
+  // Warehouse POCs, for the one stage that asks who checked the goods over.
+  const [checkers, setCheckers] = useState([]);
 
-  // Only fabric has a stage and a metres figure. Everything else on an outbound
-  // PO is received and done with -- it travels no stage chain.
-  const fabric = isFabricLine(line);
-  // Only fabric received at Stitching or later has pieces to count. The stage is
-  // part of the form, so this follows whatever the user has picked.
-  const dozens = receiptCountsDozens(line, form.incoming_stage);
-  // At Packing or Panchal the dozens are typed per grade, and the total is
-  // their sum rather than a field of its own.
-  const graded = receiptIsGraded(line, form.incoming_stage);
+  // Only Fabric and Readymade travel the Stitching stages, so only they have a
+  // stage. Everything else on an outbound PO is received and done with.
+  const stitching = isStitchingLine(line);
+  const type = lineType(line);
+  // What the delivery's unit means (umKind): a UM in dozens IS the dozen count,
+  // one in metres IS the metres, and Readymade by the piece is twelve to the
+  // dozen -- so the form asks only for what the UM does not already say.
+  const kind = receiptUmKind(form, line);
+  const stage = form.incoming_stage;
+  const stageOptions = stageOptionsFor(line, kind);
+  // Pieces to count from Stitching on; graded from Packing on; a sale at Third
+  // Party. The stage is the form's first field, so all of this follows it.
+  const dozens = receiptCountsDozens(line, stage);
+  const graded = receiptIsGraded(line, stage);
+  const sale = receiptIsSale(line, stage);
+  const takesMetres = receiptTakesMetres(line, kind);
+  const metresFromQty = takesMetres && kind === 'metre';
+  const dozensDerivable = receiptDozensDerivable(line, kind, stage);
+  const settled = receiptSettledDozens(form, line, kind);
   const gradeTotal = receiptGradeTotal(form);
-  const perDozen = metresPerDozen(form.qty_in_metres, graded ? (gradeTotal || '') : form.received_dozens);
+  const metres = metresFromQty ? form.received_qty : form.qty_in_metres;
+  const dozenCount = graded ? (gradeTotal || '') : dozensDerivable ? (settled ?? '') : form.received_dozens;
+  const perDozen = takesMetres ? metresPerDozen(metres, dozenCount) : null;
+  const umLabel = form.unit_metric || line.unit_metric || '';
+  const processingBlocked = stitching ? receiptStageBlockReason('Processing', { type, kind }) : null;
 
   // A receipt that never had a bill number (migration 053 synthesized those from
   // the legacy flat `received` value) stays editable without inventing one —
@@ -163,9 +185,9 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
     setForm(isAdd ? {
       ...EMPTY_RECEIPT,
       unit_metric: line.unit_metric || '',
-      // Fabric starts at the first stage that works on it, so that is what a
-      // new receipt offers. Picking a later stage is the exception.
-      incoming_stage: fabric ? stageOptionsFor()[0]?.value || '' : '',
+      // The first stage this delivery may take: Processing for fabric that has
+      // metres, Stitching for Readymade and anything bought in dozens.
+      incoming_stage: stitching ? defaultReceiptStage(line, umKind(line.unit_metric)) : '',
     } : {
       received_qty: receipt.received_qty ?? '',
       // A receipt taken before migration 084 has none of its own, so it shows
@@ -192,10 +214,36 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
       second_dozens: String(receipt.second_dozens ?? 0),
       third_dozens: String(receipt.third_dozens ?? 0),
       note: receipt.note ?? '',
+      // A sale's hand-over. Checked By is only a question at Third Party -- on
+      // every other receipt it is whoever entered it -- so it is only carried
+      // into the form for a receipt already there.
+      outbound_bill_no: receipt.outbound_bill_no ?? '',
+      checked_by: receipt.incoming_stage === EXIT_STAGE ? (receipt.checked_by ?? '') : '',
     });
-  }, [receipt, isAdd, line.unit_metric, fabric]);
+  // Primitives, not the line object: the page may hand over a fresh object on
+  // any render, and resetting on identity would wipe what the user is typing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [receipt, isAdd, line.unit_metric, type]);
 
-  const setField = (field, value) => setForm(f => withDerivedAfterRate(f, field, value));
+  // The Checked By list is only needed for a sale, but it is small and the
+  // stage can change under the user, so it is fetched once with the form.
+  useEffect(() => {
+    if (!stitching) return;
+    listUsersLite({ role: ROLES.WAREHOUSE_POC })
+      .then(users => setCheckers(sortByText(users || [], u => u.name)))
+      .catch(() => setCheckers([]));
+  }, [stitching]);
+
+  const setField = (field, value) => setForm((f) => {
+    const next = withDerivedAfterRate(f, field, value);
+    // A unit that cannot take the stage already picked -- Processing, for a UM
+    // in dozens -- moves the stage to the first one it can take.
+    if (field === 'unit_metric' && stitching && next.incoming_stage
+        && receiptStageBlockReason(next.incoming_stage, { type, kind: umKind(value || line.unit_metric) })) {
+      next.incoming_stage = defaultReceiptStage(line, umKind(value || line.unit_metric));
+    }
+    return next;
+  });
 
   const submit = async (e) => {
     e.preventDefault();
@@ -213,15 +261,24 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
         after_rate: form.after_rate === '' ? null : Number(form.after_rate),
         note: String(form.note ?? '').trim() || null,
       };
-      if (fabric) {
+      if (stitching) {
         payload.incoming_stage = form.incoming_stage || null;
-        payload.qty_in_metres = form.qty_in_metres === '' ? null : Number(form.qty_in_metres);
+        // Sent only when typed: a UM in metres is copied across by the server,
+        // and Readymade or goods bought in dozens carry none.
+        payload.qty_in_metres = takesMetres && !metresFromQty && form.qty_in_metres !== ''
+          ? Number(form.qty_in_metres) : null;
         if (graded) {
           for (const [, col] of GRADE_FIELDS) payload[col] = Number(form[col]) || 0;
           payload.received_dozens = gradeTotal;
         } else {
-          payload.received_dozens = dozens && form.received_dozens !== ''
+          // A UM-settled count is written by the server; only a typed one is sent.
+          payload.received_dozens = dozens && !dozensDerivable && form.received_dozens !== ''
             ? Number(form.received_dozens) : null;
+        }
+        if (sale) {
+          payload.incoming_no = null;
+          payload.outbound_bill_no = String(form.outbound_bill_no ?? '').trim();
+          payload.checked_by = Number(form.checked_by);
         }
       }
       // Only ever decided on the delivery that raised the difference.
@@ -252,17 +309,55 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
 
   const articleLabel = `${line.category} · ${line.item_name}${line.variant ? ` · ${line.variant}` : ''}`;
 
+  // What the stage hint says. Panchal and Third Party end the chain in two
+  // different ways, and a disabled Processing says why.
+  const stageHint = stage === STOCK_STAGE
+    ? `Goods received straight into ${STOCK_STAGE} are the end of the chain — this receipt will be recorded as Closed`
+    : sale
+      ? 'Sold straight on to a buyer — no incoming number; our outbound bill and a Warehouse POC instead'
+      : processingBlocked
+        ? `Processing is not available: ${processingBlocked.split(' — ')[0].toLowerCase()}`
+        : 'Where these goods arrived — the fields below follow from it';
+
   return (
     <Modal isOpen onClose={onClose} title={isAdd ? 'Add Receipt' : 'Edit Receipt'} size="lg">
       <form onSubmit={submit} className="space-y-4">
         <div className="rounded-lg bg-gray-50 border border-gray-200 px-4 py-3 text-sm">
-          <div className="font-medium text-[#003049]">{articleLabel}</div>
+          <div className="font-medium text-[#003049]">
+            {articleLabel}
+            {stitching && (
+              <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#003049]/10 text-[#003049] align-middle">
+                {type}
+              </span>
+            )}
+          </div>
           <div className="text-gray-500 text-xs mt-0.5">
             Ordered {line.qty}{line.unit_metric ? ` ${line.unit_metric}` : ''} @ {line.rate}
           </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* THE STAGE, first: everything below -- metres, dozens, grades, the
+              Third Party hand-over -- reshapes to it, so it is answered before
+              anything is typed. Processing is shown disabled, not hidden, for
+              goods that have no metres, and the hint says why. */}
+          {stitching && (
+            <Field label="Stage" required hint={stageHint} className="sm:col-span-2">
+              <select
+                value={stage || ''}
+                onChange={e => setField('incoming_stage', e.target.value)}
+                className={inputCls}
+              >
+                <option value="">Stage…</option>
+                {stageOptions.map(o => (
+                  <option key={o.value} value={o.value} disabled={o.disabled}>
+                    {o.label}{o.disabled ? ' (not available)' : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+
           <Field
             label="Received Qty"
             required
@@ -315,9 +410,15 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
           </Field>
 
           {/* Fabric is bought in taga and worked in metres, and no factor
-              converts the two — the user counts and enters it. Next to Received
-              Qty because they describe the same delivery. */}
-          {fabric && (
+              converts the two — the user counts and enters it. A UM that IS
+              metres says so itself, and Readymade (or anything bought in dozens)
+              has no metres at all. Next to Received Qty because they describe
+              the same delivery. */}
+          {takesMetres && (metresFromQty ? (
+            <Field label="Qty in metres" hint={`Same as Received Qty — the UM is ${umLabel}`}>
+              <input value={form.received_qty === '' ? '' : fmtNum(form.received_qty)} disabled className={`${inputCls} bg-gray-50 text-gray-500`} />
+            </Field>
+          ) : (
             <Field
               label="Qty in metres"
               required
@@ -330,13 +431,21 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
                 className={inputCls}
               />
             </Field>
-          )}
+          ))}
 
-          {/* Fabric bought in already stitched or already packed arrives as
-              countable pieces, so it carries the same dozen count and yield a
-              challan into those stages does. Nothing earlier in the chain has
-              pieces to count. */}
-          {dozens && !graded && (
+          {/* Goods bought in already stitched or later arrive as countable
+              pieces. A UM in dozens is that count already, and Readymade by the
+              piece is twelve to the dozen -- shown, not asked. */}
+          {dozens && !graded && (dozensDerivable ? (
+            <Field
+              label="Dozens Received"
+              hint={type === READYMADE && umKind(umLabel) === 'piece'
+                ? `${fmtNum(form.received_qty || 0)} ${umLabel} ÷ 12 — worked out for you`
+                : `Same as Received Qty — the UM is ${umLabel}`}
+            >
+              <input value={settled == null ? '' : fmtNum(settled)} disabled className={`${inputCls} bg-gray-50 text-gray-500`} />
+            </Field>
+          ) : (
             <Field
               label="Dozens Received"
               required
@@ -349,22 +458,25 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
                 className={inputCls}
               />
             </Field>
-          )}
+          ))}
 
-          {/* Goods bought in at Packing or Panchal arrive graded, exactly as a
-              challan into those stages does: one box per grade, 0 until filled
-              in, and Dozens Received is their sum. */}
+          {/* Goods bought in at Packing, Panchal or Third Party arrive graded,
+              exactly as a challan into those stages does: one box per grade, 0
+              until filled in, and Dozens Received is their sum -- or, when the
+              UM already says how many dozens came, the split of that figure. */}
           {graded && (
             <Field
               label="Dozens Received, by grade"
               required
-              hint={`Total ${gradeTotal} dozen — enter at least one grade`}
+              hint={dozensDerivable
+                ? `Total ${gradeTotal} dozen — must add up to ${settled == null ? 'the Received Qty' : `${fmtNum(settled)} dozen`}`
+                : `Total ${gradeTotal} dozen — enter at least one grade`}
               className="sm:col-span-2"
             >
               <div className="grid grid-cols-3 gap-2">
-                {GRADE_FIELDS.map(([type, col]) => (
+                {GRADE_FIELDS.map(([gradeType, col]) => (
                   <label key={col} className="block">
-                    <span className="block text-[11px] text-gray-500 mb-0.5">{type}</span>
+                    <span className="block text-[11px] text-gray-500 mb-0.5">{gradeType}</span>
                     <input
                       type="number" min={0} step="0.01"
                       value={form[col]}
@@ -377,7 +489,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
             </Field>
           )}
 
-          {dozens && (
+          {dozens && takesMetres && (
             <Field label="Metre per Dozen" hint="Metres divided by dozens — worked out for you">
               <input
                 value={perDozen == null ? '' : fmtNum(perDozen)}
@@ -424,44 +536,49 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
             />
           </Field>
 
-          {/* Full width: two controls in one field, and squeezing them into half
-              the grid left the number box too small to read. On anything that is
-              not fabric there is no stage at all, so it is one plain input. */}
-          <Field
-            label="Incoming No"
-            required={fabric}
-            hint={!fabric
-              ? 'Free text — the gate register reference'
-              // Panchal is the end of the chain, so goods bought straight into
-              // it have nothing left to happen to them. The server closes the
-              // lot on save, and this says so before it happens.
-              : form.incoming_stage === STOCK_STAGE
-                ? `Goods received straight into ${STOCK_STAGE} are the end of the chain — this receipt will be recorded as Closed`
-                : 'The stage records where these goods arrived — the code that prints on it follows from it'}
-            className="sm:col-span-2"
-          >
-            <div className="flex gap-2">
-              {fabric && (
+          {/* A sale takes no incoming number -- nothing arrives anywhere -- and
+              records our outbound bill and who checked the goods over instead,
+              the same two questions a challan into Third Party asks. */}
+          {sale ? (
+            <>
+              <Field label="Outbound Bill No" required hint="Our invoice to the buyer — the only handle on goods that have left">
+                <input
+                  value={form.outbound_bill_no}
+                  onChange={e => setField('outbound_bill_no', e.target.value)}
+                  className={inputCls}
+                  maxLength={INCOMING_NO_MAX}
+                />
+              </Field>
+              <Field label="Checked By" required hint="A Warehouse POC who checked the goods over">
                 <select
-                  value={form.incoming_stage || ''}
-                  onChange={e => setField('incoming_stage', e.target.value)}
-                  className={`${inputBase} w-40 shrink-0`}
+                  value={form.checked_by === '' || form.checked_by == null ? '' : String(form.checked_by)}
+                  onChange={e => setField('checked_by', e.target.value)}
+                  className={inputCls}
                 >
-                  <option value="">Stage…</option>
-                  {stageOptionsFor().map(o => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
+                  <option value="">Select…</option>
+                  {checkerOptionsFor(checkers, receipt?.incoming_stage === EXIT_STAGE ? receipt.checked_by : null, receipt?.checked_by_name).map(o => (
+                    <option key={o.value} value={String(o.value)}>{o.label}</option>
                   ))}
                 </select>
-              )}
+              </Field>
+            </>
+          ) : (
+            <Field
+              label="Incoming No"
+              required={stitching}
+              hint={stitching
+                ? 'The gate register number — the code that prints before it follows from the stage'
+                : 'Free text — the gate register reference'}
+            >
               <input
                 value={form.incoming_no}
                 onChange={e => setField('incoming_no', e.target.value)}
-                className={`${inputBase} flex-1 min-w-0`}
+                className={inputCls}
                 maxLength={INCOMING_NO_MAX}
                 placeholder="e.g. 0077"
               />
-            </div>
-          </Field>
+            </Field>
+          )}
 
           {/* A paragraph for whoever reads this PO next. Shown in full, wrapped,
               in the receipts table. */}

@@ -2,6 +2,8 @@ const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
 const { userHasRole } = require('../services/userRoles.service');
 const { isValidDateString } = require('../utils/dateValidation');
+const { ensureRtvRow } = require('./rtv.controller');
+const { QUALIFIES_SQL: RTV_QUALIFIES_SQL, rtvQualifies } = require('../services/rtv.service');
 
 const ORDER_SUMMARY_FIELDS = [
   'office_poc', 'warehouse_poc', 'status', 'dispatch_date', 'courier_id', 'tracking_id', 'box',
@@ -150,8 +152,14 @@ async function list(req, res, next) {
              cr.name AS courier_name,
              ub.name AS updated_by_name,
              (SELECT COUNT(*)            FROM marketplace_po_lines WHERE po_id = p.po_id) AS line_count,
-             (SELECT COALESCE(SUM(qty),0) FROM marketplace_po_lines WHERE po_id = p.po_id) AS total_qty
+             (SELECT COALESCE(SUM(qty),0) FROM marketplace_po_lines WHERE po_id = p.po_id) AS total_qty,
+             -- On the RTV page right now (092): it qualifies and has its row.
+             -- The GRN page highlights these, and warns before a save that
+             -- would take one off.
+             rt.rtv_no AS rtv_no,
+             CASE WHEN rt.id IS NOT NULL AND ${RTV_QUALIFIES_SQL} THEN 1 ELSE 0 END AS in_rtv
       FROM marketplace_pos p
+      LEFT JOIN rtv_returns rt ON rt.po_id = p.po_id
       LEFT JOIN users op ON op.id = p.office_poc
       LEFT JOIN users wp ON wp.id = p.warehouse_poc
       LEFT JOIN couriers cr ON cr.id = p.courier_id
@@ -565,6 +573,12 @@ async function updateOne(req, res, next) {
         discrepancy_number: nextDiscrepancyNumber, note: nextNote, delivery_code: nextDeliveryCode,
         party_name: nextPartyName,
       }, ORDER_SUMMARY_FIELDS);
+      // Returned to Vendor, or short on receipt: the goods are owed back, so the
+      // PO gets its RTV row -- numbered the first time, in this transaction. A
+      // PO that stops qualifying keeps its row; it just drops off the RTV page.
+      if (rtvQualifies({ status: nextStatus, grn_status: nextGrnStatus, discrepancy_qty: nextDiscrepancyQty })) {
+        await ensureRtvRow(tx, { po_id: poId, vendor: current.vendor }, req.user.id);
+      }
       await logAction({
         client: tx,
         userId: req.user.id,

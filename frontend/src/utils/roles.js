@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, ClipboardList, Package, Truck, ClipboardCheck, Timer,
   Tag, Settings, Users, SlidersHorizontal,
-  ShoppingCart, PackageSearch, PackageOpen, Send, Store, Building2, Boxes, Scissors,
+  ShoppingCart, PackageSearch, PackageOpen, Send, Store, Building2, Boxes, Scissors, Undo2,
 } from 'lucide-react';
 
 export const ROLES = {
@@ -72,6 +72,13 @@ export const NAV = [
         roles: ORDER_FLOW_ROLES,
       },
       {
+        label: 'RTV',
+        path: '/rtv',
+        icon: Undo2,
+        description: 'Returns from the marketplaces, to credit note',
+        roles: ORDER_FLOW_ROLES,
+      },
+      {
         label: 'Lead Time Report',
         path: '/lead-time-report',
         icon: Timer,
@@ -102,7 +109,7 @@ export const NAV = [
         label: 'Stitching',
         path: '/outbound/stitching',
         icon: Scissors,
-        description: 'Stage-wise fabric tracking, Processing through Panchal',
+        description: 'Fabric and readymade, stage by stage to Panchal',
         roles: ALL_ROLES,
       },
     ],

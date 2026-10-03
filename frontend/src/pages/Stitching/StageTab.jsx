@@ -14,7 +14,7 @@ import {
   closeStitchingLot, reopenStitchingLot, listStitchingPartyNames, updateStitchingStage,
 } from '../../api/stitching.api';
 import {
-  statusesFor, STATUS_COLORS, fmtNum, EPSILON, ALL_TAB, STAGES,
+  statusesFor, STATUS_COLORS, fmtNum, EPSILON, ALL_TAB, FABRIC, READYMADE, stagesForType,
   EXIT_STAGE, STOCK_STAGE, countsDozens, metresPerDozen, NONE_SELECTED,
   isGradedStage, isRateStage, gradesOf, CHALLAN_TYPES, GRADE_COLUMNS, stageRateUnit, stageRateSuffix,
 } from '../../utils/stitching';
@@ -105,7 +105,7 @@ function HoverTip({ content, children }) {
   );
 }
 
-const unitLabel = (unit) => (unit === 'dozen' ? 'dz' : 'm');
+const unitLabel = (unit) => (unit === 'dozen' ? 'dz' : unit === 'piece' ? 'pc' : 'm');
 
 // ONE rate per lot: what a dozen of it has cost so far, every stage included.
 // The server builds it (rateTotal in stitching.service.js) and hands back the
@@ -123,9 +123,11 @@ function RateCell({ r }) {
         <span key={l.label} className="flex justify-between gap-3 py-0.5">
           <span>{l.label}</span>
           <span className="font-mono text-right">
-            {l.unit === 'metre' && perDozen
+            {l.unit === 'metre' && perDozen && r.metres_per_dozen != null
               ? `${fmtNum(l.rate)}/m × ${fmtNum(r.metres_per_dozen)} m/dz = ${fmtNum(l.contributes)}`
-              : `${fmtNum(l.contributes ?? l.rate)}/${unitLabel(l.unit)}`}
+              : l.unit === 'piece' && perDozen
+                ? `${fmtNum(l.rate)}/pc × 12 = ${fmtNum(l.contributes)}`
+                : `${fmtNum(l.contributes ?? l.rate)}/${unitLabel(l.unit)}`}
           </span>
         </span>
       ))}
@@ -134,9 +136,11 @@ function RateCell({ r }) {
         <span className="font-mono">{fmtNum(r.rate_total)}/{perDozen ? 'dz' : 'm'}</span>
       </span>
       <span className="block mt-2 text-[11px] text-gray-400">
-        {perDozen
+        {perDozen && r.metres_per_dozen != null
           ? `Rates quoted per metre are turned into per-dozen by multiplying by the metres it takes to make a dozen (${fmtNum(r.metres_per_dozen)} m).`
-          : 'This lot is still in metres, so the rate is per metre. It becomes per dozen once the goods are counted in dozens.'}
+          : perDozen
+            ? 'These goods have no metres, so every rate is per dozen — a per-piece rate is twelve to the dozen.'
+            : 'This lot is still in metres, so the rate is per metre. It becomes per dozen once the goods are counted in dozens.'}
       </span>
     </>
   );
@@ -507,13 +511,15 @@ const EXPORT_COLUMNS = [
   { key: 'updated_at', header: 'Updated At' },
 ];
 
-export default function StageTab({ stage, onOpenCounts }) {
+export default function StageTab({ type = FABRIC, stage, onOpenCounts }) {
   const pageSizeKey = 'stitching.pageSize';
   // v3: status went from a single string to an array of them. useSessionState
   // does no shape validation, so a session holding the old value would arrive
-  // in a component that now calls .length on it.
+  // in a component that now calls .length on it. Fabric keeps its pre-091 key,
+  // so nobody's saved filters vanish; Readymade has its own.
   const [storedFilters, setFilters] = useSessionState(
-    `stitching.filters.v3.${stage}`, () => defaultFilters(stage),
+    type === FABRIC ? `stitching.filters.v3.${stage}` : `stitching.filters.v3.${type}.${stage}`,
+    () => defaultFilters(stage),
   );
   // Only statuses this tab can show. A session saved before the filter was
   // narrowed may hold one the tab never produces -- dropped here, and if that
@@ -565,7 +571,10 @@ export default function StageTab({ stage, onOpenCounts }) {
   const isStockTab = stage === STOCK_STAGE;
   const isTerminal = isStockTab || isExitTab;
   const showsDozens = countsDozens(stage);
-  const showsYield = isAll || (showsDozens && !isTerminal);
+  // Readymade has no metres anywhere in its chain (091), so the metre columns
+  // would be blank on every row.
+  const metreFree = type === READYMADE;
+  const showsYield = !metreFree && (isAll || (showsDozens && !isTerminal));
   const showsBalance = !isTerminal;
   // The two destinations that record who checked the goods over.
   const showsChecker = isStockTab || isExitTab;
@@ -574,7 +583,7 @@ export default function StageTab({ stage, onOpenCounts }) {
   const showsGrades = isGradedStage(stage);
   // The PO's metre figure matters while the goods are still metres or just
   // turning into dozens. From Packing on it is noise.
-  const showsPoQty = isAll || stage === 'Processing' || stage === 'Stitching';
+  const showsPoQty = !metreFree && (isAll || stage === 'Processing' || stage === 'Stitching');
 
   // A lot's Stage Party or Rate, saved in place. Resolves true on success so the
   // rate cell can drop its draft.
@@ -730,9 +739,11 @@ export default function StageTab({ stage, onOpenCounts }) {
     // Chain order matters here and nowhere else — the point of the tab is
     // following one PO from Gray to Packed, which the default updated_at sort
     // interleaves by edit time.
+    // The section always rides along: a Fabric tab must never list, count or
+    // export a Readymade lot, nor the other way round.
     const params = isAll
-      ? { sort_by: 'po_stage', sort_dir: 'asc' }
-      : { stage };
+      ? { type, sort_by: 'po_stage', sort_dir: 'asc' }
+      : { type, stage };
     for (const [k, v] of Object.entries(filters)) {
       // Status is the one multi-value filter, and the only one where an EMPTY
       // value has to be sent rather than dropped: the loop below treats a blank
@@ -746,7 +757,7 @@ export default function StageTab({ stage, onOpenCounts }) {
       }
     }
     return params;
-  }, [isAll, stage, filters]);
+  }, [isAll, stage, filters, type]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -755,7 +766,7 @@ export default function StageTab({ stage, onOpenCounts }) {
       // The badges are scoped by the same filters as the table, so they are
       // fetched alongside it rather than on their own schedule — same split
       // OutboundPOList uses with load() + loadItemCounts().
-      const partyStages = isAll ? STAGES : [stage];
+      const partyStages = isAll ? stagesForType(type) : [stage];
       const [data, counts, partyLists] = await Promise.all([
         listStitchingLots(params),
         listStitchingStageCounts(params),
@@ -773,7 +784,7 @@ export default function StageTab({ stage, onOpenCounts }) {
     } finally {
       setLoading(false);
     }
-  }, [buildParams, page, pageSize, onOpenCounts, isAll, stage]);
+  }, [buildParams, page, pageSize, onOpenCounts, isAll, stage, type]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -826,7 +837,7 @@ export default function StageTab({ stage, onOpenCounts }) {
         updated_by_name: r.updated_by_name || '',
         updated_at: r.updated_at || '',
       }));
-      downloadRows(`stitching-${String(stage).toLowerCase()}`, EXPORT_COLUMNS, exportRows);
+      downloadRows(`stitching-${type.toLowerCase()}-${String(stage).toLowerCase().replace(/\s+/g, '-')}`, EXPORT_COLUMNS, exportRows);
     } catch {
       toast.error('Failed to export');
     } finally { setDownloading(false); }

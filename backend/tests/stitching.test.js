@@ -2419,6 +2419,32 @@ describe('Dozens from Stitching on', () => {
     expect(parent.balance).toBe(25);
   });
 
+  // 5.01 - 5 is 0.00999... in floating point. The balance used to leave the
+  // server raw, and the write-off form handed it to the browser as the input's
+  // max -- which then refused the very 0.01 the page showed as available.
+  test('a balance left with float residue reads 0.01 and can be written off', async () => {
+    const { receiptId } = await processingLot({ qty: 100 });
+    const lot = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye',
+      sent_qty: 100, received_qty: 96, received_dozens: 5.01,
+    });
+    expect(lot.status).toBe(201);
+    const sent = await api.forward({
+      parent_src: 'entry', parent_id: lot.body.id, party_name: 'Pack', sent_dozens: 5,
+    });
+    expect(sent.status).toBe(201);
+
+    const before = findLot((await api.listStage({ stage: 'Stitching' })).body.rows, 'entry', lot.body.id);
+    expect(before.balance).toBe(0.01);
+    expect(before.status).toBe('Partial');
+
+    const res = await api.writeOff({ parent_src: 'entry', parent_id: lot.body.id, qty: 0.01, reason: 'residue' });
+    expect(res.status).toBe(201);
+    const after = findLot((await api.listStage({ stage: 'Stitching' })).body.rows, 'entry', lot.body.id);
+    expect(after.balance).toBe(0);
+    expect(after.status).toBe('Forwarded');
+  });
+
   test('the yield is derived, never stored, and agrees with the service', () => {
     expect(svc.metresPerDozen(96, 40)).toBe(2.4);
     // Two places, rounded not truncated.
@@ -2693,6 +2719,126 @@ describe('Checked By and PCL Inc No at the two hand-overs', () => {
     });
     expect(Number(rows[0].checked_by)).toBe(warehousePocId);
     expect(rows[0].panchal_incoming_no).toBeNull();
+  });
+});
+
+// Migration 091: the page has two sections. Readymade goods skip Processing
+// and are counted in dozens from the moment they are booked in, and any goods
+// may be bought straight into Third Party -- sold on without entering stock.
+describe('Readymade section and Third Party receipts', () => {
+  // A one-line PO for a fresh article of this type and unit metric.
+  async function typedLine({ type, um }) {
+    const category = `Cat ${uid()}`;
+    const item_name = `Item ${uid()}`;
+    const product = await A(request(app).post('/api/configurations/outbound-products'))
+      .send({ category, item_name, unit_metric: um, stitching_type: type });
+    expect(product.status).toBe(201);
+    await A(request(app).post('/api/packaging-raw-materials')).send({ category, item_name, unit_metric: um });
+    const vendor = await A(request(app).post('/api/outbound-vendors'))
+      .send({ name: `RM Vend ${uid()}`, articles: [{ category, item_name }] });
+    const po = await A(request(app).post('/api/outbound-pos')).send({
+      vendor_id: vendor.body.id,
+      lines: [{ line_no: 1, category, item_name, qty: 10000, rate: 10 }],
+    });
+    const detail = await A(request(app).get(`/api/outbound-pos/${po.body.id}`));
+    return { poId: po.body.id, lineId: detail.body.lines[0].id };
+  }
+
+  // 120 socks bought by the piece at 10 each, booked in at Stitching.
+  async function readymadeLot() {
+    const { poId, lineId } = await typedLine({ type: 'Readymade', um: 'pcs' });
+    const receipt = await A(request(app).post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`)).send({
+      received_qty: 120, received_rate: 10, bill_no: `B-${uid()}`,
+      incoming_no: `RM-${uid()}`, incoming_stage: 'Stitching',
+    });
+    expect(receipt.status).toBe(201);
+    return { poId, lineId, receiptId: receipt.body.id };
+  }
+
+  test('a Readymade lot shows in its own section, in dozens, with no metres', async () => {
+    const { receiptId } = await readymadeLot();
+    const readymade = await api.listStage({ stage: 'Stitching', type: 'Readymade' });
+    const row = findLot(readymade.body.rows, 'receipt', receiptId);
+    expect(row).toMatchObject({
+      stitching_type: 'Readymade', received_dozens: 10, balance: 10, balance_unit: 'dz',
+      po_qty_metres: null, metres_per_dozen: null,
+    });
+    expect(readymade.body.rows.every(r => r.stitching_type === 'Readymade')).toBe(true);
+
+    const fabric = await api.listStage({ stage: 'Stitching', type: 'Fabric' });
+    expect(findLot(fabric.body.rows, 'receipt', receiptId)).toBeUndefined();
+    expect(fabric.body.rows.every(r => r.stitching_type === 'Fabric')).toBe(true);
+  });
+
+  test('the tab badges count each section on its own', async () => {
+    await readymadeLot();
+    const all = (await api.counts({})).body.counts;
+    const readymade = (await api.counts({ type: 'Readymade' })).body.counts;
+    const fabric = (await api.counts({ type: 'Fabric' })).body.counts;
+    expect(readymade.Stitching).toBeGreaterThan(0);
+    // No Readymade lot is ever at Processing.
+    expect(readymade.Processing).toBe(0);
+    for (const stage of Object.keys(all)) expect(readymade[stage] + fabric[stage]).toBe(all[stage]);
+  });
+
+  // The frontend's utils/__tests__/stitching.test.js asserts these same values
+  // against its twins, so the two halves cannot drift apart unnoticed.
+  test('the mirrored constants', () => {
+    const svc = require('../src/services/stitching.service');
+    expect(svc.STITCHING_TYPES).toEqual(['Fabric', 'Readymade']);
+    expect(svc.READYMADE_STAGES).toEqual(['Stitching', 'Packing', 'Panchal', 'Third Party']);
+    expect(svc.DOZEN_UMS).toEqual(['dozen', 'dozens', 'dzn', 'dz', 'doz']);
+    expect(svc.METRE_UMS).toEqual(['metre', 'metres', 'meter', 'meters', 'mtr', 'mtrs', 'm']);
+    expect(svc.PIECE_UMS).toEqual(['pcs', 'pc', 'piece', 'pieces']);
+    expect(svc.derivedDozens(30, svc.umKind('Dzn'), 'Fabric')).toBe(30);
+    expect(svc.derivedDozens(100, svc.umKind('pcs'), 'Readymade')).toBe(8.33);
+    expect(svc.derivedDozens(100, svc.umKind('pcs'), 'Fabric')).toBeNull();
+    expect(svc.receiptHasMetres(svc.umKind('taga'), 'Fabric')).toBe(true);
+    expect(svc.receiptHasMetres(svc.umKind('dozen'), 'Fabric')).toBe(false);
+  });
+
+  test('an unknown section is refused', async () => {
+    const res = await api.listStage({ type: 'Knitted' });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('type must be one of Fabric, Readymade');
+    expect((await api.counts({ type: 'Knitted' })).status).toBe(400);
+  });
+
+  // No yield exists anywhere in a Readymade chain, so a per-piece PO rate is
+  // twelve to the dozen and the stage rates add as they are.
+  test('a Readymade lot is priced per dozen without a yield', async () => {
+    const { receiptId } = await readymadeLot();
+    const sent = await api.forward({
+      parent_src: 'receipt', parent_id: receiptId, party_name: 'Knit Co',
+      sent_dozens: 10, target_stage: 'Panchal', process_rate: 5,
+    });
+    expect(sent.status).toBe(201);
+    const row = findLot((await api.listStage({ stage: 'Panchal', type: 'Readymade' })).body.rows, 'entry', sent.body.id);
+    expect(row.rate_total_unit).toBe('dozen');
+    expect(row.rate_breakdown).toEqual([
+      { label: 'PO rate', rate: 10, unit: 'piece', contributes: 120 },
+      { label: 'Stitching rate', rate: 5, unit: 'dozen', contributes: 5 },
+    ]);
+    expect(row.rate_total).toBe(125);
+  });
+
+  test('goods bought straight into Third Party are a Sold lot carrying our bill', async () => {
+    const { poId, lineId } = await typedLine({ type: 'Readymade', um: 'dz' });
+    const bill = `OB-${uid()}`;
+    const receipt = await A(request(app).post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`)).send({
+      received_qty: 20, received_rate: 10, bill_no: `B-${uid()}`, incoming_stage: 'Third Party',
+      fresh_dozens: 20, outbound_bill_no: bill, checked_by: warehousePocId,
+    });
+    expect(receipt.status).toBe(201);
+    const row = findLot((await api.listStage({ stage: 'Third Party', type: 'Readymade' })).body.rows, 'receipt', receipt.body.id);
+    expect(row).toMatchObject({
+      stage: 'Third Party', status: 'Sold', outbound_bill_no: bill, received_dozens: 20,
+      incoming_prefix: null, incoming_no: null, can_forward: false,
+    });
+    // Sold is not open work, so it never lands on a badge.
+    const journey = await api.journey('receipt', receipt.body.id);
+    expect(journey.status).toBe(200);
+    expect(journey.body.summary.sold_dozens).toBe(20);
   });
 });
 

@@ -105,8 +105,7 @@ const isValidChallanType = (s) => CHALLAN_TYPES.includes(s);
 // Fresh, Second and Third side by side, rather than one lot per grade line. A
 // challan into Stitching still makes one lot per line -- the client asked for
 // the split from Packing on. A PO receipt booked straight into one of these
-// (Packing or Panchal -- nothing is received at Third Party) records the same
-// three.
+// (Packing, Panchal, or since 091 Third Party) records the same three.
 //
 // The split is what ARRIVED. Balance, status and every send limit still run on
 // the total dozens, so a lot's grades are never a second balance to keep.
@@ -174,6 +173,82 @@ const metresPerDozen = (receivedQty, receivedDozens) => {
 };
 
 const isValidStage = (s) => STAGES.includes(s);
+
+// THE TWO SECTIONS of the Stitching page (migration 091). An article's type
+// lives on the Outbound Product List -- none, Fabric or Readymade -- and is read
+// back through the triple a PO line carries, exactly as goes_to_stitching was.
+//
+// Fabric is bought by the taga, processed, and becomes pieces at Stitching.
+// Readymade arrives already made up -- socks, caps -- so it skips Processing and
+// is counted in dozens from the moment it is booked in. That is the only
+// difference: one stage graph, one prefix series, one party master. The
+// section decides which list a lot shows in, nothing else.
+const STITCHING_TYPES = ['Fabric', 'Readymade'];
+const FABRIC = 'Fabric';
+const READYMADE = 'Readymade';
+
+const isValidStitchingType = (t) => STITCHING_TYPES.includes(t);
+
+// Readymade never sees Processing: it is the metre stage, and readymade goods
+// have no metres. DESTINATIONS never names Processing as a target, so a
+// Readymade lot cannot be sent there either -- this list is only what the
+// section's tabs and a receipt's stage options are built from.
+const READYMADE_STAGES = STAGES.filter(s => s !== 'Processing');
+
+const stagesForType = (type) => (type === READYMADE ? READYMADE_STAGES : STAGES);
+
+// WHAT A UNIT METRIC MEANS, so a receipt asks only for what it does not already
+// know. A PO line's UM is a dropdown of what the Outbound Product List publishes,
+// but the names on that list are typed by an admin -- so the meaning is read off
+// the name, case- and space-insensitively, against these fixed lists:
+//
+//   dozen -- Received Qty IS the dozens. No metres asked, no dozen count asked.
+//   metre -- Received Qty IS the metres. Qty in metres is filled from it.
+//   piece -- on READYMADE only, Received Qty / 12 is the dozens.
+//
+// Anything else (taga, kg) means nothing in particular, and the receipt asks for
+// the metres and the dozens as it always has. Twin in frontend/src/utils/stitching.js.
+const DOZEN_UMS = ['dozen', 'dozens', 'dzn', 'dz', 'doz'];
+const METRE_UMS = ['metre', 'metres', 'meter', 'meters', 'mtr', 'mtrs', 'm'];
+const PIECE_UMS = ['pcs', 'pc', 'piece', 'pieces'];
+const PIECES_PER_DOZEN = 12;
+
+const umKind = (um) => {
+  const key = String(um ?? '').toLowerCase().replace(/[\s.]/g, '');
+  if (!key) return null;
+  if (DOZEN_UMS.includes(key)) return 'dozen';
+  if (METRE_UMS.includes(key)) return 'metre';
+  if (PIECE_UMS.includes(key)) return 'piece';
+  return null;
+};
+
+// The dozens a receipt's UM already settles, or null when they have to be
+// counted and typed. Pieces convert on Readymade only -- a fabric bought "by the
+// piece" is not a dozen of anything until Stitching says so.
+const derivedDozens = (receivedQty, kind, type) => {
+  if (receivedQty == null || receivedQty === '') return null;
+  const n = Number(receivedQty);
+  if (!Number.isFinite(n)) return null;
+  if (kind === 'dozen') return Math.round(n * 100) / 100;
+  if (kind === 'piece' && type === READYMADE) return Math.round((n / PIECES_PER_DOZEN) * 100) / 100;
+  return null;
+};
+
+// Whether a receipt can carry metres at all. Readymade never does, and neither
+// does anything bought in dozens or (on Readymade) pieces.
+const receiptHasMetres = (kind, type) => type === FABRIC && kind !== 'dozen';
+
+// Why a receipt may not land at this stage, or null. Processing counts metres,
+// so goods that have none -- every Readymade article, and fabric bought in
+// dozens -- cannot be booked into it. Fabric in pieces still has metres asked
+// for, so it may. The form shows Processing disabled with this as its reason.
+// Twin in frontend/src/utils/stitching.js.
+const receiptStageBlockReason = (stage, { type, kind } = {}) => {
+  if (stage !== 'Processing') return null;
+  if (type === READYMADE) return 'Readymade goods skip Processing — pick Stitching, Packing, Panchal or Third Party';
+  if (kind === 'dozen') return 'Processing counts metres — goods bought in dozens cannot be received there';
+  return null;
+};
 
 // Where a lot at this stage may be sent. Empty at the two terminal stages.
 const destinationsFor = (stage) => DESTINATIONS[stage] || [];
@@ -352,31 +427,40 @@ const partyShort = (name, shortName) => {
 const partyTag = (stage, name, shortName) => `${stage} - ${partyShort(name, shortName)}`;
 
 // THE PER-DOZEN RATE TOTAL. components are the lot's rates as they were
-// entered, each with its unit: [{ label, rate, unit: 'metre'|'dozen' }].
+// entered, each with its unit: [{ label, rate, unit: 'metre'|'dozen'|'piece' }].
 // A per-metre rate costs (rate x metres-per-dozen) per dozen. A per-dozen rate
-// is already there. The total is only meaningful once the lot has a yield --
-// before it (a lot still at Processing) every component is per metre, so the
-// total is returned per metre instead and says so in `unit`.
+// is already there. A per-piece rate -- a Readymade article bought by the piece
+// (091) -- costs twelve times itself per dozen, no yield needed.
+//
+// The total is per dozen once the lot has a yield, or once it counts dozens
+// with no metres anywhere in its chain (`dozenLot` -- Readymade, or fabric
+// bought in dozens), where a per-metre rung simply cannot be priced. A lot
+// still at Processing has neither, so every component is per metre and the
+// total is returned per metre instead, and says so in `unit`.
 //
 // Returns { total, unit, lines }. Each line keeps the original rate and unit
 // next to what it contributed, which is exactly what the tooltip spells out.
 const round2 = (n) => Math.round(n * 100) / 100;
 
-const rateTotal = (components, mPerDozen) => {
+const rateTotal = (components, mPerDozen, { dozenLot = false } = {}) => {
   const present = (components || []).filter(c => c.rate != null && c.rate !== '');
   const mpd = mPerDozen == null ? null : Number(mPerDozen);
-  const perDozen = mpd != null && Number.isFinite(mpd) && mpd > 0;
+  const hasYield = mpd != null && Number.isFinite(mpd) && mpd > 0;
+  const perDozen = hasYield || dozenLot;
   const lines = present.map(c => {
     const rate = Number(c.rate);
     let value;
-    if (perDozen) value = c.unit === 'dozen' ? rate : rate * mpd;
-    // No yield yet: only per-metre rates can be summed honestly. A per-dozen one
-    // cannot exist here -- a lot with no yield has never been counted in dozens.
-    else value = c.unit === 'dozen' ? null : rate;
+    if (c.unit === 'piece') value = perDozen ? rate * PIECES_PER_DOZEN : null;
+    else if (c.unit === 'dozen') value = perDozen ? rate : null;
+    // A per-metre rung prices through the yield. With none -- a lot still at
+    // Processing -- the total is per metre and the rung counts as it is. A
+    // dozen lot with no metres anywhere cannot price it at all.
+    else if (hasYield) value = rate * mpd;
+    else value = perDozen ? null : rate;
     return { label: c.label, rate, unit: c.unit, contributes: value == null ? null : round2(value) };
   });
   const total = round2(lines.reduce((sum, l) => sum + (l.contributes || 0), 0));
-  return { total: lines.length ? total : null, unit: perDozen ? 'dozen' : 'metre', m_per_dozen: perDozen ? mpd : null, lines };
+  return { total: lines.length ? total : null, unit: perDozen ? 'dozen' : 'metre', m_per_dozen: hasYield ? mpd : null, lines };
 };
 
 module.exports = {
@@ -384,6 +468,9 @@ module.exports = {
   DESTINATIONS, EXIT_STAGE, STOCK_STAGE, DOZEN_STAGES, stageRateUnit,
   PARTY_USE_STAGES, CHALLAN_TYPES, GRADED_STAGES, GRADE_COLUMNS, RATE_STAGES,
   REVERT_REASON_MAX, WRITE_OFF_REASON_MAX, CHALLAN_MAX,
+  STITCHING_TYPES, FABRIC, READYMADE, READYMADE_STAGES, isValidStitchingType, stagesForType,
+  DOZEN_UMS, METRE_UMS, PIECE_UMS, PIECES_PER_DOZEN, umKind, derivedDozens, receiptHasMetres,
+  receiptStageBlockReason,
   isValidStage, isValidPartyUse, isValidChallanType, isGradedStage, isRateStage,
   countsDozens, balanceUnitFor, metresPerDozen,
   partyShort, partyTag, rateTotal,

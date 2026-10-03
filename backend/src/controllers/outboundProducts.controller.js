@@ -1,7 +1,49 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
+const { STITCHING_TYPES, FABRIC, isValidStitchingType } = require('../services/stitching.service');
 
-const OUTBOUND_PRODUCT_FIELDS = ['category', 'item_name', 'unit_metric', 'is_active', 'goes_to_stitching'];
+const OUTBOUND_PRODUCT_FIELDS = ['category', 'item_name', 'unit_metric', 'is_active', 'stitching_type', 'goes_to_stitching'];
+
+// Which section of the Stitching page this article's lots show in (migration
+// 091): null for anything that never travels it -- packaging, barcodes --
+// 'Fabric' or 'Readymade' otherwise. Returns [type, error].
+//
+// goes_to_stitching is still accepted from a caller that has not moved on: a
+// tick means Fabric (or keeps the type already set), an untick means none.
+// stitching_type wins when both are sent.
+function resolveStitchingType(body, current = null) {
+  const has = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
+  if (has('stitching_type')) {
+    const raw = body.stitching_type;
+    if (raw == null || String(raw).trim() === '') return [null, null];
+    const t = String(raw).trim();
+    if (!isValidStitchingType(t)) return [null, `stitching_type must be one of ${STITCHING_TYPES.join(', ')}, or empty`];
+    return [t, null];
+  }
+  if (has('goes_to_stitching')) {
+    return [body.goes_to_stitching ? (current?.stitching_type || FABRIC) : null, null];
+  }
+  return [current ? current.stitching_type : null, null];
+}
+
+// Receipts of this exact (category, item_name, unit_metric) triple that are
+// lots on the Stitching page right now -- the same qualification LOTS_CTE
+// applies: a live receipt with a stage, on a live line of a live PO. COLLATE
+// NOCASE because the LOTS_CTE join compares against the master's NOCASE columns.
+async function liveLotCount(product) {
+  const { rows } = await db.execute({
+    sql: `SELECT COUNT(*) AS n
+            FROM outbound_po_line_receipts r
+            JOIN outbound_po_lines l ON l.id = r.line_id AND l.deleted_at IS NULL
+            JOIN outbound_pos p ON p.id = l.po_id AND p.status <> 'Deleted'
+           WHERE r.deleted_at IS NULL
+             AND (r.incoming_prefix_id IS NOT NULL OR r.direct_stage IS NOT NULL)
+             AND l.category = ? COLLATE NOCASE AND l.item_name = ? COLLATE NOCASE
+             AND l.unit_metric = ? COLLATE NOCASE`,
+    args: [product.category, product.item_name, product.unit_metric],
+  });
+  return Number(rows[0]?.n) || 0;
+}
 
 function normName(v) {
   return v == null ? '' : String(v).trim();
@@ -29,7 +71,7 @@ async function list(req, res, next) {
     const [{ rows }, counts] = await Promise.all([
       db.execute(
         `SELECT p.id, p.category, p.item_name, p.unit_metric, p.is_active, p.goes_to_stitching,
-                p.created_at, p.updated_at, u.name AS updated_by_name
+                p.stitching_type, p.created_at, p.updated_at, u.name AS updated_by_name
          FROM outbound_products p
          LEFT JOIN users u ON u.id = p.updated_by
          ORDER BY p.is_active DESC, p.category ASC, p.item_name ASC`
@@ -51,14 +93,18 @@ async function create(req, res, next) {
     if (!category) return res.status(400).json({ message: 'category is required' });
     if (!itemName) return res.status(400).json({ message: 'item_name is required' });
     if (!unitMetric) return res.status(400).json({ message: 'unit_metric is required' });
+    const [stitchingType, typeError] = resolveStitchingType(req.body);
+    if (typeError) return res.status(400).json({ message: typeError });
 
+    // goes_to_stitching is superseded by stitching_type (091) but kept in step,
+    // the house rule for a column nothing reads any more.
     const { rows } = await db.execute({
-      sql: `INSERT INTO outbound_products (category, item_name, unit_metric, goes_to_stitching,
+      sql: `INSERT INTO outbound_products (category, item_name, unit_metric, stitching_type, goes_to_stitching,
               updated_by, updated_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))
-            RETURNING id, category, item_name, unit_metric, is_active, goes_to_stitching,
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+            RETURNING id, category, item_name, unit_metric, is_active, stitching_type, goes_to_stitching,
                       created_at, updated_at`,
-      args: [category, itemName, unitMetric, req.body?.goes_to_stitching ? 1 : 0, req.user.id],
+      args: [category, itemName, unitMetric, stitchingType, stitchingType ? 1 : 0, req.user.id],
     });
     await logAction({
       userId: req.user.id,
@@ -81,7 +127,7 @@ async function update(req, res, next) {
     const { id } = req.params;
     const has = (k) => Object.prototype.hasOwnProperty.call(req.body || {}, k);
     const { rows: existing } = await db.execute({
-      sql: `SELECT id, category, item_name, unit_metric, is_active, goes_to_stitching
+      sql: `SELECT id, category, item_name, unit_metric, is_active, stitching_type, goes_to_stitching
             FROM outbound_products WHERE id = ?`,
       args: [id],
     });
@@ -109,11 +155,27 @@ async function update(req, res, next) {
     let nextActive = current.is_active;
     if (has('is_active')) nextActive = req.body.is_active ? 1 : 0;
 
-    // Whether this article travels the Stitching stages. Only fabric does, and
-    // ticking it is what makes a receipt of it demand a stage and a metres
-    // figure -- so it is a master decision, not two names baked into code.
-    let nextStitching = current.goes_to_stitching;
-    if (has('goes_to_stitching')) nextStitching = req.body.goes_to_stitching ? 1 : 0;
+    // Whether this article travels the Stitching stages, and in which section.
+    // Setting it is what makes a receipt of it demand a stage -- so it is a
+    // master decision, not names baked into code.
+    const [nextType, typeError] = resolveStitchingType(req.body, current);
+    if (typeError) return res.status(400).json({ message: typeError });
+    const nextStitching = nextType ? 1 : 0;
+
+    // LOCKED while the article has lots on the Stitching page. Moving it between
+    // Fabric and Readymade would carry every lot into the other section -- and a
+    // Fabric lot at Processing into a section with no Processing tab -- and
+    // clearing it would drop them off the page entirely. Setting a type on an
+    // article that had none is always allowed: its older receipts carry no
+    // stage, so they are not lots and stay where they are.
+    if (current.stitching_type && nextType !== current.stitching_type) {
+      const lots = await liveLotCount(current);
+      if (lots > 0) {
+        return res.status(409).json({
+          message: `${current.item_name} has ${lots} lot${lots !== 1 ? 's' : ''} on the Stitching page — its type can't change`,
+        });
+      }
+    }
 
     // Renaming the identity pair is cascaded onto every packaging product
     // onboarded under it (and, transitively, any vendor mapping onto those),
@@ -128,7 +190,7 @@ async function update(req, res, next) {
       current,
       {
         category: nextCategory, item_name: nextItemName, unit_metric: nextUnitMetric,
-        is_active: nextActive, goes_to_stitching: nextStitching,
+        is_active: nextActive, stitching_type: nextType, goes_to_stitching: nextStitching,
       },
       OUTBOUND_PRODUCT_FIELDS,
     );
@@ -144,11 +206,11 @@ async function update(req, res, next) {
       const { rows } = await tx.execute({
         sql: `UPDATE outbound_products
               SET category = ?, item_name = ?, unit_metric = ?, is_active = ?,
-                  goes_to_stitching = ?, updated_by = ?, updated_at = datetime('now')
+                  stitching_type = ?, goes_to_stitching = ?, updated_by = ?, updated_at = datetime('now')
               WHERE id = ?
-              RETURNING id, category, item_name, unit_metric, is_active, goes_to_stitching,
+              RETURNING id, category, item_name, unit_metric, is_active, stitching_type, goes_to_stitching,
                         created_at, updated_at`,
-        args: [nextCategory, nextItemName, nextUnitMetric, nextActive, nextStitching, req.user.id, id],
+        args: [nextCategory, nextItemName, nextUnitMetric, nextActive, nextType, nextStitching, req.user.id, id],
       });
       updated = rows[0];
 
@@ -219,7 +281,7 @@ async function remove(req, res, next) {
 
     const { rows } = await db.execute({
       sql: `UPDATE outbound_products SET is_active = 0, updated_by = ?, updated_at = datetime('now')
-            WHERE id = ? RETURNING id, category, item_name, unit_metric, is_active, created_at, updated_at`,
+            WHERE id = ? RETURNING id, category, item_name, unit_metric, is_active, stitching_type, created_at, updated_at`,
       args: [req.user.id, id],
     });
     await logAction({
