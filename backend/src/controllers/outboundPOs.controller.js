@@ -38,6 +38,17 @@ const INCOMING_NO_MAX = 50;
 // frontend/src/pages/OutboundPOs/receiptFields.js, keep the two in step.
 const NOTE_MAX = 1000;
 
+// The agreed rate on a line, and the rate billed on a receipt against it, are
+// quoted to at most 3 decimal places -- small articles (socks at 0.156 a piece)
+// are priced below a paisa. Process Rate and every Stitching rate stay at the 2
+// places moneyError allows. Twin in frontend/src/pages/OutboundPOs/receiptFields.js.
+//
+// The tolerance is absolute on the scaled value: a genuine 4th decimal leaves at
+// least 0.1 after scaling by 1000, float residue is many orders smaller.
+const RATE_DECIMALS = 3;
+const tooManyRateDecimals = (n) =>
+  Math.abs(Math.round(n * 10 ** RATE_DECIMALS) - n * 10 ** RATE_DECIMALS) > 1e-6;
+
 const padOrderNo = (id) => String(id).padStart(3, '0');
 
 const SORT_COLUMNS = {
@@ -117,6 +128,7 @@ function validateLines(lines, mappingSet, grandfathered = new Set()) {
     // flag treats 0 as "nothing to compare against".
     const rate = l.rate === '' || l.rate == null ? 0 : Number(l.rate);
     if (!Number.isFinite(rate) || rate < 0) return `Line ${i + 1}: rate must be a number >= 0`;
+    if (tooManyRateDecimals(rate)) return `Line ${i + 1}: rate can have at most ${RATE_DECIMALS} decimal places`;
     const key = lineKey(l);
     if (!mappingSet.has(key) && !grandfathered.has(key)) {
       return `Line ${i + 1}: "${category} - ${itemName}${l.variant ? ` - ${l.variant}` : ''}" is not in the vendor's article mappings`;
@@ -185,19 +197,32 @@ function resolveLineMetric(l, idx, umMap, metricsByPair, storedMetric) {
   return { error: `Line ${idx + 1}: "${submitted}" is not a listed unit metric for "${label}"${options}` };
 }
 
-// The unit a RECEIPT was counted in, resolved against the same published list as
-// the line, and stored in the master's canonical casing.
+// The unit a receipt is counted in: the one its line was ordered in. On the
+// update path `row` is the receipt joined to its line, so its own stored unit
+// comes first -- an older receipt keeps the unit it was taken in.
+const receiptUnitOf = (row) => row?.unit_metric ?? row?.line_unit_metric ?? null;
+
+// The unit a RECEIPT was counted in, stored on the receipt (migration 084).
 //
-// The line's own metric is always acceptable, which is the whole point: a
-// receipt defaults to it, so a delivery counted exactly as the PO was written
-// can never be refused -- not even when the article has since been retired from
-// the Outbound Product List. Everything beyond that must be a metric the list
-// actually publishes for the (category, item_name) pair, so the column cannot
-// fragment into free text the way migration 064 set out to prevent.
+// It is the line's, and nothing else. 084 let a receipt pick any unit the
+// article was listed under, but a delivery counted in a different unit from
+// the one ordered changes what its quantity means -- and with the UM deciding
+// whether goods count metres or dozens, it would change which figures the
+// receipt asks for too. The client asked for it to be fixed to the order. Not
+// one receipt had ever used a different unit.
+//
+// The line's unit in any casing is accepted and stored as the line has it.
+// Only a line with no unit at all (none left on prod) still resolves a
+// supplied unit against the published list, so such a line stays receivable.
 //
 // Returns { metric } or { error }.
 async function resolveReceiptMetric(submittedRaw, line) {
   const submitted = String(submittedRaw ?? '').trim();
+  const fixed = receiptUnitOf(line);
+  if (fixed) {
+    if (!submitted || eqMetric(fixed, submitted)) return { metric: fixed };
+    return { error: `A receipt is counted in the unit the line was ordered in (${fixed})` };
+  }
   const [umMap, metricsByPair] = await Promise.all([catalogUnitMetrics(), unitMetricsByPair()]);
   // line_unit_metric is set on the update path, where `line` is the receipt row
   // joined to its line and unit_metric is the RECEIPT's own. Both are
@@ -407,6 +432,7 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
     if (blank(body?.received_rate)) return 'Billed Rate is required';
     const rate = Number(body.received_rate);
     if (!Number.isFinite(rate) || rate < 0) return 'Billed Rate must be a number >= 0';
+    if (tooManyRateDecimals(rate)) return `Billed Rate can have at most ${RATE_DECIMALS} decimal places`;
   }
 
   // Checked By is no longer asked for on a receipt, and no longer a
@@ -591,18 +617,10 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
     }
   }
 
-  // The unit the delivery was counted in, recorded on the receipt rather than
-  // read off the line (migration 084 says why).
-  //
-  // Absent means "the line's own metric" -- the same answer the form pre-fills,
-  // and the same leniency resolveLineMetric gives a blank line metric. That is
-  // what keeps every existing API caller working, and it is the honest default:
-  // a receipt entered against a line IS in that line's unit unless someone says
-  // otherwise. The form still asks for it and will not submit it blank.
-  //
-  // A SUPPLIED value is held to the published list for the article. Last in this
-  // function for the reason given above -- the first error a multi-omission body
-  // returns is the contract.
+  // The unit the delivery was counted in: always the line's (see
+  // resolveReceiptMetric). The form shows it and sends nothing. A caller that
+  // does send one must send the line's. Last in this function for the reason
+  // given above -- the first error a multi-omission body returns is the contract.
   if (present('unit_metric') && !blank(body?.unit_metric)) {
     const { error } = await resolveReceiptMetric(body.unit_metric, line);
     if (error) return error;
@@ -1377,9 +1395,9 @@ async function createReceipt(req, res, next) {
       return res.status(400).json({ message: 'This line is already Closed — no further receipts can be added' });
     }
 
-    // What the delivery's unit means -- the receipt's own UM when it names one,
-    // else the line's (umKind). Decides which figures are still to be asked.
-    const kind = umKind(nonBlank(req.body?.unit_metric) ?? line.unit_metric);
+    // What the delivery's unit means (umKind) -- the line's, which is the only
+    // unit a receipt can be counted in. Decides which figures are still to be asked.
+    const kind = umKind(line.unit_metric ?? nonBlank(req.body?.unit_metric));
 
     // The stage first: the form asks for it first, because everything below
     // reshapes to it.
@@ -1419,9 +1437,7 @@ async function createReceipt(req, res, next) {
     const pairError = incomingPairError(incomingNo, prefixId);
     if (pairError) return res.status(400).json({ message: pairError });
 
-    // The unit this delivery was counted in. Defaults to the line's own, which
-    // is what the form pre-fills -- a receipt is in the line's unit unless
-    // someone says otherwise.
+    // The unit this delivery was counted in: the line's (resolveReceiptMetric).
     let unitMetric = line.unit_metric;
     if (req.body?.unit_metric != null && String(req.body.unit_metric).trim() !== '') {
       const { metric, error: metricError } = await resolveReceiptMetric(req.body.unit_metric, line);
@@ -1556,11 +1572,9 @@ async function updateReceipt(req, res, next) {
 
     const has = (k) => Object.prototype.hasOwnProperty.call(req.body || {}, k);
 
-    // The unit this delivery will be counted in once the edit lands -- the same
-    // fallback the UM resolution below applies -- as a kind (umKind).
-    const kind = umKind(has('unit_metric')
-      ? (nonBlank(req.body.unit_metric) ?? receipt.line_unit_metric)
-      : (receipt.unit_metric ?? receipt.line_unit_metric));
+    // The unit this delivery is counted in, as a kind (umKind). It cannot change
+    // on an edit (resolveReceiptMetric), so it is the receipt's own.
+    const kind = umKind(receiptUnitOf(receipt) ?? nonBlank(req.body.unit_metric));
 
     const stageError = receiptStageError(req.body, { requireAll: false, line: receipt, kind });
     if (stageError) return res.status(400).json({ message: stageError });
@@ -1680,18 +1694,14 @@ async function updateReceipt(req, res, next) {
     const pairError = incomingPairError(nextIncomingNo, nextPrefixId);
     if (pairError) return res.status(400).json({ message: pairError });
 
-    // Left alone unless the edit names it. A receipt taken in a unit keeps that
-    // unit -- an older row that predates migration 084 and still has none falls
-    // back to its line's, which is what the read path shows anyway.
-    let nextUnitMetric = receipt.unit_metric ?? receipt.line_unit_metric;
-    if (has('unit_metric')) {
-      if (req.body.unit_metric == null || String(req.body.unit_metric).trim() === '') {
-        nextUnitMetric = receipt.line_unit_metric;
-      } else {
-        const { metric, error: metricError } = await resolveReceiptMetric(req.body.unit_metric, receipt);
-        if (metricError) return res.status(400).json({ message: metricError });
-        nextUnitMetric = metric;
-      }
+    // The receipt keeps the unit it was taken in -- an older row that predates
+    // migration 084 and still has none takes its line's, which is what the read
+    // path shows anyway. An edit naming a different unit is refused.
+    let nextUnitMetric = receiptUnitOf(receipt);
+    if (has('unit_metric') && nonBlank(req.body.unit_metric)) {
+      const { metric, error: metricError } = await resolveReceiptMetric(req.body.unit_metric, receipt);
+      if (metricError) return res.status(400).json({ message: metricError });
+      nextUnitMetric = metric;
     }
 
     // Guards against re-cutting the ground under lots already forwarded on the

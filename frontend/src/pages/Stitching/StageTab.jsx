@@ -14,7 +14,7 @@ import {
   closeStitchingLot, reopenStitchingLot, listStitchingPartyNames, updateStitchingStage,
 } from '../../api/stitching.api';
 import {
-  statusesFor, STATUS_COLORS, fmtNum, EPSILON, ALL_TAB, STAGES,
+  statusesFor, STATUS_COLORS, fmtNum, fmtRate, EPSILON, ALL_TAB, STAGES,
   EXIT_STAGE, STOCK_STAGE, countsDozens, metresPerDozen, NONE_SELECTED,
   isGradedStage, isRateStage, gradesOf, CHALLAN_TYPES, GRADE_COLUMNS, stageRateUnit, stageRateSuffix,
 } from '../../utils/stitching';
@@ -124,10 +124,10 @@ function RateCell({ r }) {
           <span>{l.label}</span>
           <span className="font-mono text-right">
             {l.unit === 'metre' && perDozen && r.metres_per_dozen != null
-              ? `${fmtNum(l.rate)}/m × ${fmtNum(r.metres_per_dozen)} m/dz = ${fmtNum(l.contributes)}`
+              ? `${fmtRate(l.rate)}/m × ${fmtNum(r.metres_per_dozen)} m/dz = ${fmtNum(l.contributes)}`
               : l.unit === 'piece' && perDozen
-                ? `${fmtNum(l.rate)}/pc × 12 = ${fmtNum(l.contributes)}`
-                : `${fmtNum(l.contributes ?? l.rate)}/${unitLabel(l.unit)}`}
+                ? `${fmtRate(l.rate)}/pc × 12 = ${fmtNum(l.contributes)}`
+                : `${fmtRate(l.contributes ?? l.rate)}/${unitLabel(l.unit)}`}
           </span>
         </span>
       ))}
@@ -184,20 +184,20 @@ function PoRateCell({ r }) {
   const content = (
     <>
       <span className="flex justify-between gap-3 py-0.5">
-        <span>PO rate</span><span className="font-mono">{fmtNum(billed)}/m</span>
+        <span>PO rate</span><span className="font-mono">{fmtRate(billed)}/m</span>
       </span>
       <span className="flex justify-between gap-3 py-0.5">
         <span>Process rate (on receipt)</span>
         <span className="font-mono">{process == null ? '—' : `${fmtNum(process)}/m`}</span>
       </span>
       <span className="flex justify-between gap-3 border-t border-gray-100 mt-1 pt-1 font-semibold text-[#003049]">
-        <span>PO Rate</span><span className="font-mono">{fmtNum(total)}/m</span>
+        <span>PO Rate</span><span className="font-mono">{fmtRate(total)}/m</span>
       </span>
     </>
   );
   return (
     <HoverTip content={content}>
-      {fmtNum(total)}<span className="text-gray-400">/m</span>
+      {fmtRate(total)}<span className="text-gray-400">/m</span>
     </HoverTip>
   );
 }

@@ -291,6 +291,10 @@ export const writeOffReasonError = (value) => {
 // Trailing zeros are noise in a table; 62.5 reads better than 62.50.
 export const fmtNum = (v) => (v == null || v === '' ? '—' : String(Math.round(Number(v) * 100) / 100));
 
+// A purchase rate -- the agreed or billed rate -- can carry 3 decimal places
+// (socks at 0.156 a piece), which fmtNum would round to 0.16.
+export const fmtRate = (v) => (v == null || v === '' ? '—' : String(Math.round(Number(v) * 1000) / 1000));
+
 // A quantity with its unit attached. The unit comes from the PO line, because
 // this page carries fabric measured in metres AND packaging bought by the piece
 // -- printing "5 m" against 5 corrugated boxes is simply false. Falls back to a

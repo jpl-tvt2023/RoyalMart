@@ -143,7 +143,7 @@ function QtyDifference({ form, setField, line, isAdd }) {
  * the PO detail grid past the width it had, and a form gives each field a label
  * and room to breathe. `receipt` null means add mode.
  */
-export default function ReceiptModal({ poId, line, receipt, metricOptions = [], onClose, onSaved }) {
+export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) {
   const isAdd = !receipt;
   const [form, setForm] = useState(EMPTY_RECEIPT);
   const [saving, setSaving] = useState(false);
@@ -231,16 +231,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
       .catch(() => setCheckers([]));
   }, [stitching]);
 
-  const setField = (field, value) => setForm((f) => {
-    const next = { ...f, [field]: value };
-    // A unit that cannot take the stage already picked -- Processing, for a UM
-    // in dozens -- moves the stage to the first one it can take.
-    if (field === 'unit_metric' && stitching && next.incoming_stage
-        && receiptStageBlockReason(next.incoming_stage, umKind(value || line.unit_metric))) {
-      next.incoming_stage = defaultReceiptStage(umKind(value || line.unit_metric));
-    }
-    return next;
-  });
+  const setField = (field, value) => setForm((f) => ({ ...f, [field]: value }));
 
   const submit = async (e) => {
     e.preventDefault();
@@ -251,7 +242,6 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
       const billNo = String(form.bill_no ?? '').trim();
       const payload = {
         received_qty: Number(form.received_qty),
-        unit_metric: form.unit_metric || null,
         received_rate: Number(form.received_rate),
         incoming_no: String(form.incoming_no ?? '').trim() || null,
         process_rate: form.process_rate === '' ? null : Number(form.process_rate),
@@ -362,40 +352,18 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
             />
           </Field>
 
-          {/* The unit the quantity above is in, recorded on the receipt rather
-              than inferred from the line. Pre-filled with the line's own, which
-              is the answer on almost every delivery — the field exists so the
-              row can say what it means without reaching back to the line, and so
-              a later edit to the line cannot reinterpret a past delivery.
-
-              A select, never free text: the options are what the Outbound
-              Product List publishes for this article, which is the same set the
-              server accepts. An article listed under one metric has nothing to
-              choose, so it shows the value plainly instead of a one-item menu. */}
-          <Field
-            label="UM"
-            required
-            hint={metricOptions.length > 1
-              ? 'The unit this delivery was counted in'
-              : 'From the line — this article is listed in one unit'}
-          >
-            {metricOptions.length > 1 ? (
-              <select
-                value={form.unit_metric || ''}
-                onChange={e => setField('unit_metric', e.target.value)}
-                className={inputCls}
-                required
-              >
-                <option value="">Select...</option>
-                {metricOptions.map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
-            ) : (
-              <input
-                value={form.unit_metric || ''}
-                disabled
-                className={`${inputCls} bg-gray-50 text-gray-500`}
-              />
-            )}
+          {/* The unit the quantity above is in: the one the line was ordered in,
+              never chosen here. A delivery counted in another unit would change
+              what its quantity means -- and, with the UM deciding whether goods
+              count metres or dozens, which figures this form asks for. Stored
+              on the receipt (migration 084) so a later edit to the line cannot
+              reinterpret a past delivery; the server refuses any other unit. */}
+          <Field label="UM" required hint="As ordered on the line">
+            <input
+              value={form.unit_metric || ''}
+              disabled
+              className={`${inputCls} bg-gray-50 text-gray-500`}
+            />
           </Field>
 
           {/* Fabric is bought in taga and worked in metres, and no factor
@@ -490,7 +458,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
 
           <Field label="Received Rate" required hint={`Agreed rate on the line is ${line.rate}`}>
             <input
-              type="number" min={0} step="0.01"
+              type="number" min={0} step="0.001"
               value={form.received_rate}
               onChange={e => setField('received_rate', e.target.value)}
               className={inputCls}

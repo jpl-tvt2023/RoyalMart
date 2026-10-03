@@ -1671,6 +1671,36 @@ describe('Outbound POs API', () => {
       expect(detail.body.lines[0].flags).not.toContain('rate_mismatch');
     });
 
+    // Line and billed rates are quoted to 3 decimal places (socks at 0.156 a
+    // piece), so a difference in the third place is a real mismatch.
+    test('a line rate and a billed rate take 3 decimal places, and match at 3', async () => {
+      const { poId, lineId } = await setupLine({ rate: 0.156 });
+      const res = await postReceipt(poId, lineId, { received_qty: 1, received_rate: 0.156, incoming_no: 'IN-1' });
+      expect(res.status).toBe(201);
+      const detail = await getPO(poId);
+      expect(detail.body.lines[0].rate).toBe(0.156);
+      expect(detail.body.lines[0].receipts[0].received_rate).toBe(0.156);
+      expect(detail.body.lines[0].flags).not.toContain('rate_mismatch');
+    });
+
+    test('a billed rate off in the third decimal place flags the line', async () => {
+      const { poId, lineId } = await setupLine({ rate: 0.156 });
+      await postReceipt(poId, lineId, { received_qty: 1, received_rate: 0.152, incoming_no: 'IN-1' });
+      expect((await getPO(poId)).body.lines[0].flags).toContain('rate_mismatch');
+    });
+
+    test('a 4th decimal place is refused, on the line and on the billed rate', async () => {
+      const vendor = await createVendor();
+      const line = await createPO({ vendor_id: vendor.body.id, lines: [lineFor(vendor.body.articles[0], { rate: 0.1567 })] });
+      expect(line.status).toBe(400);
+      expect(line.body.message).toBe('Line 1: rate can have at most 3 decimal places');
+
+      const { poId, lineId } = await setupLine({ rate: 0.156 });
+      const billed = await postReceipt(poId, lineId, { received_qty: 1, received_rate: 0.1567, incoming_no: 'IN-1' });
+      expect(billed.status).toBe(400);
+      expect(billed.body.message).toBe('Billed Rate can have at most 3 decimal places');
+    });
+
     test('a receipt with no incoming number flags the line and the PO', async () => {
       const { poId, lineId } = await setupLine();
       await postReceipt(poId, lineId, { received_qty: 1 });
@@ -2106,15 +2136,20 @@ describe('Outbound PO lines — unit metric selection', () => {
     });
   });
 
-  // Migration 084. A receipt records the unit it was counted in rather than
-  // borrowing the line's at render time, so a later edit to the line cannot
-  // reinterpret a delivery already taken.
+  // Migration 084 stored the unit a receipt was counted in, and let it be any
+  // unit the article was listed under. It is now the line's and nothing else:
+  // a delivery counted in another unit changes what its quantity means, and
+  // with the UM deciding metres or dozens, which figures the receipt asks for.
   describe('the unit a RECEIPT was counted in', () => {
     const receiptOf = async (poId, lineId) => {
       const po = await getPO(poId);
       const line = po.body.lines.find(l => l.id === lineId);
       return line.receipts[line.receipts.length - 1];
     };
+    const patchReceipt = (poId, lineId, receiptId, body) => request(app)
+      .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${receiptId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(body);
 
     test('defaults to the unit the line was written in', async () => {
       const article = await twoMetricArticle();
@@ -2123,61 +2158,57 @@ describe('Outbound PO lines — unit metric selection', () => {
       expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
     });
 
-    test('stores a supplied metric, in the canonical casing of the master', async () => {
+    test("the line's own unit in another casing is accepted, and stored as the line has it", async () => {
       const article = await twoMetricArticle();
-      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'mtrs' });
       expect((await postReceipt(poId, lineId, { received_qty: 2, unit_metric: 'MTRS' })).status).toBe(201);
       expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
     });
 
-    test('refuses a metric the article is not listed under', async () => {
+    test('any other unit is refused, even one the article is listed under', async () => {
       const article = await twoMetricArticle();
       const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
-      const res = await postReceipt(poId, lineId, { received_qty: 2, unit_metric: 'furlongs' });
-      expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/not a listed unit metric/i);
+      const listed = await postReceipt(poId, lineId, { received_qty: 2, unit_metric: 'mtrs' });
+      expect(listed.status).toBe(400);
+      expect(listed.body.message).toBe('A receipt is counted in the unit the line was ordered in (Taga)');
+      const unlisted = await postReceipt(poId, lineId, { received_qty: 2, unit_metric: 'furlongs' });
+      expect(unlisted.status).toBe(400);
+      expect(unlisted.body.message).toBe('A receipt is counted in the unit the line was ordered in (Taga)');
     });
 
-    // The rule is appended AFTER the existing ones on both sides, because the
-    // first error a body with several omissions returns is the contract the
-    // client mirrors. A bad metric must not mask a missing Bill No.
+    // The rule sits AFTER the existing ones, because the first error a body with
+    // several omissions returns is the contract the client mirrors. A wrong unit
+    // must not mask a missing Bill No.
     test('is reported after the older required fields', async () => {
       const article = await twoMetricArticle();
       const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
       const res = await request(app)
         .post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`)
         .set('Authorization', `Bearer ${token}`)
-        .send({ received_qty: 2, received_rate: 10, checked_by: warehousePocId, unit_metric: 'furlongs' });
+        .send({ received_qty: 2, received_rate: 10, checked_by: warehousePocId, unit_metric: 'mtrs' });
       expect(res.status).toBe(400);
       expect(res.body.message).toMatch(/Bill No is required/);
     });
 
-    test('an edit can change it, and the change is audited', async () => {
+    test('an edit cannot change it, and one that leaves it alone still saves', async () => {
       const article = await twoMetricArticle();
       const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
       const created = await postReceipt(poId, lineId, { received_qty: 2 });
       expect((await receiptOf(poId, lineId)).unit_metric).toBe('Taga');
 
-      const res = await request(app)
-        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
-        .set('Authorization', `Bearer ${token}`)
-        .send({ unit_metric: 'mtrs' });
-      expect(res.status).toBe(200);
-      expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
+      const moved = await patchReceipt(poId, lineId, created.body.id, { unit_metric: 'mtrs' });
+      expect(moved.status).toBe(400);
+      expect(moved.body.message).toBe('A receipt is counted in the unit the line was ordered in (Taga)');
 
-      const audit = await request(app).get('/api/audit-logs')
-        .set('Authorization', `Bearer ${token}`)
-        .query({ entity_type: 'outbound_po_line', entity_id: lineId });
-      const rows = audit.body.rows || audit.body;
-      const entry = rows.find(r => r.action_type === 'OUTBOUND_PO_LINE_RECEIPT_UPDATE');
-      expect(entry.changes.some(c => c.field === 'unit_metric' && c.new === 'mtrs')).toBe(true);
+      const kept = await patchReceipt(poId, lineId, created.body.id, { unit_metric: 'taga', received_qty: 3 });
+      expect(kept.status).toBe(200);
+      expect(await receiptOf(poId, lineId)).toMatchObject({ unit_metric: 'Taga', received_qty: 3 });
     });
 
-    // Grandfathering, on the same principle as the line rule above: a receipt
-    // must stay editable in the unit it was taken in.
-    test('a receipt keeps its metric after that metric is retired from the master', async () => {
+    // A taxonomy edit must never leave an existing receipt unsaveable.
+    test("a receipt stays editable after its line's unit is retired from the master", async () => {
       const article = await twoMetricArticle();
-      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'Taga' });
+      const { poId, lineId } = await poForArticle(article, { qty: 5, unit_metric: 'mtrs' });
       const created = await postReceipt(poId, lineId, { received_qty: 2, unit_metric: 'mtrs' });
       expect(created.status).toBe(201);
       await db.execute({
@@ -2185,10 +2216,7 @@ describe('Outbound PO lines — unit metric selection', () => {
         args: [article.category, 'mtrs'],
       });
 
-      const res = await request(app)
-        .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${created.body.id}`)
-        .set('Authorization', `Bearer ${token}`)
-        .send({ unit_metric: 'mtrs', received_qty: 3 });
+      const res = await patchReceipt(poId, lineId, created.body.id, { unit_metric: 'mtrs', received_qty: 3 });
       expect(res.status).toBe(200);
       expect((await receiptOf(poId, lineId)).unit_metric).toBe('mtrs');
     });

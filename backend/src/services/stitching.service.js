@@ -63,7 +63,8 @@ const STOCK_STAGE = 'Panchal';
 // Half a paisa, half a millimetre, half a piece. Quantities and rates round-trip
 // through SQLite REAL, so exact comparisons would call 100 and 99.99999999
 // different lots.
-// Same value and same reasoning as RATE_EPSILON in outboundPOFlags.js.
+// RATE_EPSILON in outboundPOFlags.js is finer (0.0005): line and billed
+// rates are quoted to 3 decimal places.
 const EPSILON = 0.005;
 
 const STATUS = {
