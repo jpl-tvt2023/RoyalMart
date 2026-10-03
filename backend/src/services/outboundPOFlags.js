@@ -21,9 +21,12 @@
 //       header), so these flags carry no `js` predicate and are excluded from
 //       the line/receipt flag lists rather than being wrapped in EXISTS.
 
-// Half a paisa. Rates round-trip through SQLite REAL, so an exact !== would
-// flag pairs that are equal for every practical purpose.
-const RATE_EPSILON = 0.005;
+// Half of the smallest step a rate is quoted in. Line and billed rates take 3
+// decimal places (socks at 0.156 a piece), so 0.156 against 0.152 is a real
+// mismatch and the tolerance sits below 0.001. Rates round-trip through SQLite
+// REAL, so an exact !== would flag pairs that are equal for every practical
+// purpose.
+const RATE_EPSILON = 0.0005;
 
 const FLAGS = {
   rate_mismatch: {

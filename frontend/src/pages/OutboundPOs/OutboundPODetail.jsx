@@ -20,7 +20,7 @@ import { ROLES } from '../../utils/roles';
 import { FLAG_META } from '../../utils/outboundPOFlags';
 import { isValidDateString } from '../../utils/dateValidation';
 import { formatDateTime } from '../../utils/formatters';
-import { gradesOf } from '../../utils/stitching';
+import { gradesOf, fmtRate } from '../../utils/stitching';
 import ReceiptModal from './ReceiptModal';
 // The line-shape contract lives with the receipt rules, not here, so one test
 // can hold this page and ReceiptModal to the same set of fields. Dropping one
@@ -560,7 +560,7 @@ export default function OutboundPODetail() {
                                   })()}
                                 </td>
                                 <td rowSpan={rowCount} className={`${tdCls} align-top`}>
-                                  <input type="number" min={0} step="0.01" value={l.rate} onChange={e => setLine(l._key, { rate: e.target.value })} disabled={readOnly || !!l.deleted_at} className={cellCls} />
+                                  <input type="number" min={0} step="0.001" value={l.rate} onChange={e => setLine(l._key, { rate: e.target.value })} disabled={readOnly || !!l.deleted_at} className={cellCls} />
                                 </td>
                                 {/* Line-level actions: remove plus History. Both are
                                     line-scoped and rowSpan the same rows, so they
@@ -650,7 +650,7 @@ export default function OutboundPODetail() {
                                       className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''} ${(receipt.flags || []).includes('rate_mismatch') ? 'text-red-600 font-semibold' : ''}`}
                                       title={(receipt.flags || []).includes('rate_mismatch') ? `${FLAG_META.rate_mismatch.hint} (agreed ${l.rate})` : undefined}
                                     >
-                                      {num(receipt.received_rate)}
+                                      {fmtRate(receipt.received_rate)}
                                     </td>
                                     <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{num(receipt.process_rate)}</td>
                                     <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{receipt.bill_no || '—'}</td>
@@ -749,7 +749,6 @@ export default function OutboundPODetail() {
           poId={id}
           line={receiptModal.line}
           receipt={receiptModal.receipt}
-          metricOptions={metricOptionsFor(receiptModal.line)}
           onClose={() => setReceiptModal(null)}
           onSaved={() => { setReceiptModal(null); load(); }}
         />

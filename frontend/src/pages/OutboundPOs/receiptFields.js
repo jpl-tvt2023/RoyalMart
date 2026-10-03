@@ -19,6 +19,13 @@ export const INCOMING_NO_MAX = 50;
 // NOTE_MAX in backend/src/controllers/outboundPOs.controller.js, keep in step.
 export const NOTE_MAX = 1000;
 
+// The rate billed on a receipt -- like the agreed rate on its line -- is quoted
+// to at most 3 decimal places (socks at 0.156 a piece). Twin of RATE_DECIMALS in
+// backend/src/controllers/outboundPOs.controller.js, same message, same slot.
+export const RATE_DECIMALS = 3;
+const tooManyRateDecimals = (n) =>
+  Math.abs(Math.round(n * 10 ** RATE_DECIMALS) - n * 10 ** RATE_DECIMALS) > 1e-6;
+
 // The three grades start at 0 -- the client's default -- and only mean anything
 // on goods received at Packing, Panchal or Third Party (receiptIsGraded).
 // outbound_bill_no and checked_by are asked only at Third Party.
@@ -189,6 +196,7 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
   if (!v.received_qty || Number(v.received_qty) <= 0) return 'Received Qty is required';
   if (v.received_rate === '' || v.received_rate == null) return 'Billed Rate is required';
   if (!Number.isFinite(Number(v.received_rate)) || Number(v.received_rate) < 0) return 'Billed Rate must be a number >= 0';
+  if (tooManyRateDecimals(Number(v.received_rate))) return `Billed Rate can have at most ${RATE_DECIMALS} decimal places`;
   if (requireBillNo && !String(v.bill_no ?? '').trim()) return 'Bill No is required';
   if (v.incoming_no !== '' && v.incoming_no != null) {
     const s = String(v.incoming_no).trim();

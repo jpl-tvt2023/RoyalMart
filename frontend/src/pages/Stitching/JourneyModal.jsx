@@ -4,7 +4,7 @@ import Modal from '../../components/ui/Modal';
 import Badge from '../../components/ui/Badge';
 import { getStitchingJourney } from '../../api/stitching.api';
 import {
-  STATUS_COLORS, fmtNum, fmtQty, isGradedStage, gradesOf, stageRateSuffix,
+  STATUS_COLORS, fmtNum, fmtRate, fmtQty, isGradedStage, gradesOf, stageRateSuffix,
 } from '../../utils/stitching';
 import { formatDateTime } from '../../utils/formatters';
 
@@ -171,7 +171,7 @@ export default function JourneyModal({ src, id, onClose }) {
                             off — which is the whole reason the rates were
                             unbundled. */}
                         <span>
-                          <span className="text-gray-400">PO</span> {fmtNum(n.po_rate)}
+                          <span className="text-gray-400">PO</span> {fmtRate(n.po_rate)}
                           {n.stage_rate != null && (
                             <>
                               {' · '}<span className="text-gray-400">{n.stage}</span>{' '}
@@ -224,7 +224,7 @@ export default function JourneyModal({ src, id, onClose }) {
             {s.origin_rate != null && (
               <span>
                 <span className="text-gray-400">PO rate</span>{' '}
-                <span className="font-semibold text-[#003049]">{fmtNum(s.origin_rate)}</span>
+                <span className="font-semibold text-[#003049]">{fmtRate(s.origin_rate)}</span>
               </span>
             )}
           </div>

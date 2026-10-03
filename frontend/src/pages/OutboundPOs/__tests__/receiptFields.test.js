@@ -125,6 +125,14 @@ describe('offeredQtyDiffAction', () => {
 });
 
 describe('receiptFieldError', () => {
+  // Billed Rate is quoted to 3 decimal places like the agreed rate on its line
+  // (socks at 0.156 a piece) -- the server's wording, word for word.
+  test('Billed Rate takes 3 decimal places and refuses a 4th', () => {
+    expect(receiptFieldError({ ...valid, received_rate: 0.156 }, { line: fabric })).toBeNull();
+    expect(receiptFieldError({ ...valid, received_rate: 0.1567 }, { line: fabric }))
+      .toBe('Billed Rate can have at most 3 decimal places');
+  });
+
   test('a fabric receipt needs a stage, a number and its metres', () => {
     expect(receiptFieldError({ ...valid, incoming_stage: '' }, { line: fabric }))
       .toMatch(/Stage is required/);
@@ -142,8 +150,9 @@ describe('receiptFieldError', () => {
     expect(receiptFieldError(bare, { line: packaging })).toBeNull();
   });
 
-  // Every receipt carries the unit it was counted in, fabric or not -- the form
-  // pre-fills it from the line, so a blank one means the user cleared it.
+  // Every receipt carries the unit it was counted in, fabric or not. The form
+  // fills it from the line and offers no way to change it, so a blank one means
+  // a line that has no unit of its own.
   //
   // LAST of the rules, matching where the server puts it: a body missing both
   // this and something earlier must report the earlier one, because the first
