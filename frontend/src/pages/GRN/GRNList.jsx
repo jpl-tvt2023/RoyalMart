@@ -7,6 +7,7 @@ import AppShell from '../../components/layout/AppShell';
 import Button from '../../components/ui/Button';
 import Badge from '../../components/ui/Badge';
 import Legend from '../../components/ui/Legend';
+import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { useSessionState } from '../../hooks/useSessionState';
 import { listOrderSummary, updateOrderSummary, getGrnAppointmentCounts, getOrderSummaryCountsByVendor } from '../../api/orderSummary.api';
@@ -17,10 +18,17 @@ import { sortByText } from '../../utils/sort';
 import { usesPickupDate } from '../../utils/pickupDate';
 import { isValidDateString } from '../../utils/dateValidation';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
+import { rtvQualifies } from '../../utils/rtv';
 
-// Row highlight for rows with edits not yet saved (single source for row + legend).
+// Row highlights, each one source for the row and the legend: edits not yet
+// saved, and POs that are on the RTV page (returned to vendor, or short).
+// Unsaved wins when a row is both -- it is the one that needs acting on now.
 const DIRTY_ROW = 'bg-amber-50/60';
-const UNSAVED_LEGEND = [{ swatch: DIRTY_ROW, label: 'Unsaved changes' }];
+const IN_RTV_ROW = 'bg-purple-50/70';
+const GRN_LEGEND = [
+  { swatch: DIRTY_ROW, label: 'Unsaved changes' },
+  { swatch: IN_RTV_ROW, label: 'On the RTV page' },
+];
 import { useRBAC } from '../../hooks/useRBAC';
 
 const GRN_STATUS_OPTIONS = [
@@ -299,6 +307,8 @@ export default function GRNList() {
   const [edits, setEdits] = useState({});
   const [savingId, setSavingId] = useState(null);
   const [exporting, setExporting] = useState(false);
+  // A save that would take a PO off the RTV page waits here for a yes.
+  const [confirmLeaveRtv, setConfirmLeaveRtv] = useState(null);
 
   const COLUMNS = buildColumns(vendorTab);
 
@@ -456,7 +466,7 @@ export default function GRNList() {
 
   const isDispatched = (po) => po.status === 'Closed';
 
-  const saveRow = async (po) => {
+  const saveRow = async (po, { confirmedLeaveRtv = false } = {}) => {
     const e = edits[po.po_id];
     if (!e) return;
     const nextGrnStatus = 'grn_status' in e ? e.grn_status : po.grn_status;
@@ -507,6 +517,15 @@ export default function GRNList() {
       if (dq > 0 && !String(nextDiscNo || '').trim()) {
         return toast.error('Discrepancy Number is required when Discrepancy Qty > 0');
       }
+    }
+
+    // On the RTV page now, and this save would take it off (status changed,
+    // discrepancy cleared): say so first. Its RTV details are kept, and it
+    // comes back with them if it qualifies again.
+    if (!confirmedLeaveRtv && po.in_rtv
+        && !rtvQualifies({ status: po.status, grn_status: nextGrnStatus, discrepancy_qty: nextDiscQty })) {
+      setConfirmLeaveRtv(po);
+      return;
     }
 
     setSavingId(po.po_id);
@@ -701,7 +720,11 @@ export default function GRNList() {
                 const discQtyNum = editDiscQty == null || editDiscQty === '' ? 0 : Number(editDiscQty);
                 const onKey = onCellKeyDown(po.po_id);
                 return (
-                  <tr key={po.po_id} className={`border-b border-gray-100 ${dirty ? DIRTY_ROW : 'hover:bg-gray-50'}`}>
+                  <tr
+                    key={po.po_id}
+                    className={`border-b border-gray-100 ${dirty ? DIRTY_ROW : po.in_rtv ? IN_RTV_ROW : 'hover:bg-gray-50'}`}
+                    title={po.in_rtv && !dirty ? `On the RTV page as ${po.rtv_no}` : undefined}
+                  >
                     {COLUMNS.map(col => {
                       switch (col.key) {
                         case 'dispatch_date':
@@ -976,9 +999,24 @@ export default function GRNList() {
           total={total}
           onPageChange={handlePageChange}
           onPageSizeChange={handlePageSizeChange}
-          leftExtra={<Legend items={UNSAVED_LEGEND} />}
+          leftExtra={<Legend items={GRN_LEGEND} />}
         />
       </div>
+
+      <ConfirmDialog
+        isOpen={!!confirmLeaveRtv}
+        onClose={() => setConfirmLeaveRtv(null)}
+        onConfirm={() => {
+          const po = confirmLeaveRtv;
+          setConfirmLeaveRtv(null);
+          saveRow(po, { confirmedLeaveRtv: true });
+        }}
+        title="Take this PO off the RTV page?"
+        message={confirmLeaveRtv
+          ? `PO ${confirmLeaveRtv.po_id} is on the RTV page as ${confirmLeaveRtv.rtv_no}. After this change it is no longer returned or short, so it drops off. Its RTV details are kept and come back if it qualifies again.`
+          : ''}
+        confirmLabel="Save anyway"
+      />
     </AppShell>
   );
 }

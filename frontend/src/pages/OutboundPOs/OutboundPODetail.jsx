@@ -148,12 +148,12 @@ export default function OutboundPODetail() {
   const changeVendor = (vendorId) => {
     setPo(p => ({ ...p, vendor_id: vendorId }));
     // Different vendor = different mapping catalogue; reset picked articles.
-    // goes_to_stitching is derived from (category, item_name, unit_metric), so it
-    // has to go when they do -- otherwise the line keeps a stale flag and the
+    // The stitching type is derived from (category, item_name, unit_metric), so
+    // it has to go when they do -- otherwise the line keeps a stale type and the
     // receipt modal offers stage fields for an article nobody has picked yet.
     setLines(ls => ls.map(l => ({
       ...l, mapping: '', category: '', item_name: '', variant: '', unit_metric: '',
-      goes_to_stitching: 0,
+      goes_to_stitching: 0, stitching_type: null,
     })));
   };
 
@@ -663,9 +663,14 @@ export default function OutboundPODetail() {
                                       className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''} ${(receipt.flags || []).some(f => f === 'missing_incoming_no' || f === 'missing_incoming_stage') ? 'text-amber-600' : ''}`}
                                       title={receiptIncomingHint(receipt)}
                                     >
-                                      {receipt.incoming_no
-                                        ? <span className="font-mono">{receipt.incoming_prefix || ''}{receipt.incoming_no}</span>
-                                        : '—'}
+                                      {/* Bought straight into Third Party (091): no incoming number
+                                          by design -- nothing arrived anywhere -- so the cell names
+                                          the sale and our outbound bill instead. */}
+                                      {receipt.direct_stage
+                                        ? <span className="text-gray-600">Sold · <span className="font-mono">{receipt.outbound_bill_no || '—'}</span></span>
+                                        : receipt.incoming_no
+                                          ? <span className="font-mono">{receipt.incoming_prefix || ''}{receipt.incoming_no}</span>
+                                          : '—'}
                                       {/* Colour alone is not a signal everyone can see, so the
                                           flagged state also carries a glyph. */}
                                       {(receipt.flags || []).includes('missing_incoming_stage') && <span className="ml-1">⚠</span>}

@@ -7,8 +7,10 @@ const {
 const { pairKey, unitMetricsByPair } = require('../services/outboundProducts.service');
 const {
   effectiveAfterRate, moneyError, qtyError, EPSILON, isValidStage, STAGES, countsDozens, DOZEN_STAGES,
-  STOCK_STAGE, CHALLAN_TYPES, GRADE_COLUMNS, isGradedStage,
+  STOCK_STAGE, EXIT_STAGE, CHALLAN_TYPES, GRADE_COLUMNS, isGradedStage,
+  READYMADE, umKind, derivedDozens, receiptHasMetres, receiptStageBlockReason,
 } = require('../services/stitching.service');
+const { userHasRole } = require('../services/userRoles.service');
 
 const VALID_STATUSES = ['Open', 'Partially Received', 'Closed'];
 
@@ -256,12 +258,22 @@ async function catalogUnitMetrics() {
 // receipts migration 053 synthesized (bill_no NULL, no bill was ever recorded)
 // editable: the client omits bill_no entirely for those rather than sending an
 // explicit null, which would count as present and trip the rule.
-// Whether this line's article travels the Stitching page. Only fabric does, and
-// the answer decides three things on a receipt: whether a stage is demanded,
-// whether Qty in metres is demanded, and whether missing_incoming_stage can
-// fire. fetchLines resolves the flag through the (category, item_name,
-// unit_metric) triple, since a line carries no product id.
-const isStitchingLine = (line) => Number(line?.goes_to_stitching) === 1;
+// Whether this line's article travels the Stitching page, and in which section:
+// its stitching_type, Fabric or Readymade (migration 091 -- the goes_to_stitching
+// tick before it). The answer decides what a receipt asks for: a stage, the
+// metres (Fabric only), the dozens, and whether missing_incoming_stage can fire.
+// Every line query resolves it through the (category, item_name, unit_metric)
+// triple, since a line carries no product id.
+const lineType = (line) => line?.stitching_type || null;
+const isStitchingLine = (line) => lineType(line) != null;
+
+// The article's type, read off the master through the triple. A correlated
+// subquery so every line query spells it the same way.
+const STITCHING_TYPE_SQL = `(SELECT op.stitching_type FROM outbound_products op
+                              WHERE op.category = l.category AND op.item_name = l.item_name
+                                AND op.unit_metric = l.unit_metric)`;
+
+const nonBlank = (v) => (v != null && String(v).trim() !== '' ? String(v).trim() : null);
 
 // The prefix a receipt's stage will carry. DERIVED, never chosen: the user picks
 // the stage the goods arrived at and the code picks the code that prints on it.
@@ -282,15 +294,75 @@ async function prefixIdForStage(stage) {
   return [rows[0].id, null];
 }
 
-// A receipt can arrive at any stage EXCEPT Third Party, which is where material
-// leaves us -- nothing is ever bought into it.
-const RECEIPT_STAGES = STAGES.filter(st => st !== 'Third Party');
+// A receipt can arrive at ANY stage. Third Party joined in 091: goods bought and
+// sold straight on, without entering our stock -- like a challan into Third
+// Party it takes no incoming number, carries our outbound bill number and a
+// Warehouse POC who checked it over. Processing is refused per receipt rather
+// than here, for goods that have no metres (receiptStageBlockReason).
+const RECEIPT_STAGES = [...STAGES];
 
-// The receipt stages whose goods arrive GRADED -- Packing and Panchal. Fabric
-// bought in there records its dozens split into Fresh, Second and Third, the
-// same split a challan into those stages carries, and Dozens Received is their
-// sum. Stitching is a dozen stage but not a graded one (see GRADED_STAGES).
+// The receipt stages whose goods arrive GRADED -- Packing, Panchal and Third
+// Party. Goods bought in there record their dozens split into Fresh, Second and
+// Third, the same split a challan into those stages carries, and Dozens
+// Received is their sum. Stitching is a dozen stage but not a graded one.
 const RECEIPT_GRADED_STAGES = RECEIPT_STAGES.filter(isGradedStage);
+
+// Whether the dozens on a receipt at this stage are already settled by its UM --
+// a Received Qty in dozens, or in pieces on Readymade (umKind, derivedDozens).
+// Then nothing is asked for: the server writes received_dozens itself.
+const dozensFromQty = (type, kind, stage) => type != null && countsDozens(stage)
+  && derivedDozens(1, kind, type) != null;
+
+// THE STAGE, checked FIRST: it sits at the top of the receipt form because
+// everything below it -- metres, dozens, grades, the Third Party hand-over --
+// reshapes to match it, so it is the first answer the form asks for and the
+// first error either side reports. Called before Received Qty on both paths.
+// Twin of the stage check at the top of receiptFieldError on the client.
+//
+// The STAGE the goods arrived at, not a prefix. Nobody picks a prefix anywhere
+// any more -- the stage is the fact, and the code that prints on it follows
+// from it. Only stitching articles have a stage at all, and for them it is
+// mandatory: material that cannot be placed on the chain cannot be tracked.
+//
+// `kind` is umKind of the unit this delivery is counted in. Goods with no
+// metres (Readymade, or anything bought in dozens) cannot land at Processing.
+function receiptStageError(body, { requireAll, line, kind }) {
+  const present = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
+  const type = lineType(line);
+  const stage = present('incoming_stage') ? nonBlank(body.incoming_stage) : null;
+  if (stage) {
+    if (!type) return 'Only Fabric and Readymade articles travel the Stitching stages';
+    if (!RECEIPT_STAGES.includes(stage)) return `Stage must be one of ${RECEIPT_STAGES.join(', ')}`;
+    const blocked = receiptStageBlockReason(stage, { type, kind });
+    if (blocked) return blocked;
+  } else if (type && requireAll) {
+    return 'Stage is required';
+  } else if (type && !present('incoming_stage') && present('unit_metric') && line?.incoming_stage) {
+    // An edit that changes only the unit: the stage the receipt already sits at
+    // has to be able to take goods counted that way.
+    const blocked = receiptStageBlockReason(line.incoming_stage, { type, kind });
+    if (blocked) return blocked;
+  }
+  return null;
+}
+
+// THIRD PARTY's two hand-over fields on a receipt, in the slot the client
+// checks them. Message strings are the stitching challan's, verbatim, so both
+// modules reject a sale in identical wording.
+async function thirdPartyCheckerError(checkedBy) {
+  if (checkedBy == null || String(checkedBy).trim() === '') return 'Checked By is required';
+  const { rows } = await db.execute({ sql: 'SELECT id FROM users WHERE id = ?', args: [checkedBy] });
+  if (!rows.length) return 'Checked By: user not found';
+  if (!(await userHasRole(rows[0].id, 'Warehouse_POC'))) return 'Checked By must be a user tagged Warehouse_POC';
+  return null;
+}
+
+const thirdPartyBillError = (bill) => {
+  const b = nonBlank(bill);
+  if (!b) return 'Outbound Bill No is required when sending to a third party';
+  if (b.length > INCOMING_NO_MAX) return `Outbound Bill No must be ${INCOMING_NO_MAX} characters or less`;
+  return null;
+};
 
 // The grade inputs, in CHALLAN_TYPES order: [['Fresh', 'fresh_dozens'], ...].
 const GRADE_FIELDS = CHALLAN_TYPES.map(t => [t, GRADE_COLUMNS[t]]);
@@ -324,7 +396,7 @@ function qtyDiffAction(body, qtyDiff) {
   return [raw, null];
 }
 
-async function validateReceiptFields(body, { requireAll, line }) {
+async function validateReceiptFields(body, { requireAll, line, kind = null }) {
   const present = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
   const blank = (v) => v == null || v === '';
   // bill_no is stored trimmed-or-NULL, so a whitespace-only value would slip
@@ -388,33 +460,46 @@ async function validateReceiptFields(body, { requireAll, line }) {
     if (err) return err;
   }
 
-  // The STAGE the goods arrived at, not a prefix. Nobody picks a prefix anywhere
-  // any more -- the stage is the fact, and the code that prints on it follows
-  // from it. Only fabric has a stage at all, and for fabric it is mandatory:
-  // material that cannot be placed on the chain cannot be tracked through it.
-  const fabric = isStitchingLine(line);
-  if (present('incoming_stage') && !blank(body?.incoming_stage)) {
-    if (!fabric) {
-      return 'Only fabric articles travel the Stitching stages';
-    }
-    if (!RECEIPT_STAGES.includes(body.incoming_stage)) {
-      return `Stage must be one of ${RECEIPT_STAGES.join(', ')}`;
-    }
-  } else if (fabric && requireAll) {
-    return 'Stage is required';
+  // The stage itself was checked first, by receiptStageError. What follows from
+  // it starts here.
+  const type = lineType(line);
+  const fabric = type != null;
+  const bodyStage = String(body?.incoming_stage ?? '').trim();
+  // The stage the receipt will sit at: the one sent, or on an edit that does not
+  // restate it, the one it has -- `line` is the stored receipt on an update.
+  const effStage = present('incoming_stage') ? bodyStage : String(line?.incoming_stage ?? '').trim();
+  const thirdParty = fabric && effStage === EXIT_STAGE;
+
+  // Nothing ARRIVES at Third Party -- the goods are gone -- so there is no gate
+  // register to number them into, exactly as a challan into Third Party is
+  // given no incoming number. Refused rather than ignored, so a number typed
+  // against a sale surfaces as a question instead of vanishing.
+  if (thirdParty && present('incoming_no') && !blankText(body?.incoming_no)) {
+    return 'Third Party takes no Incoming No — nothing arrives there';
   }
-  if (fabric && requireAll && blankText(body?.incoming_no)) {
+  if (fabric && !thirdParty && requireAll && blankText(body?.incoming_no)) {
     return 'Incoming No is required';
   }
 
   // Fabric is bought in taga and worked in metres, and no factor converts the
-  // two -- the user counts and enters it. Absent on anything else, where there
+  // two -- the user counts and enters it. A unit that IS metres says so itself,
+  // and the server copies Received Qty across (umKind). Readymade, and anything
+  // bought in dozens, has no metres at all. Absent on anything else, where there
   // is nothing downstream to measure.
+  const metresApply = fabric && receiptHasMetres(kind, type);
+  const metresFromQty = metresApply && kind === 'metre';
   if (present('qty_in_metres') && !blank(body?.qty_in_metres)) {
     if (!fabric) return 'Qty in metres applies to fabric articles only';
-    const err = qtyError(body.qty_in_metres, 'Qty in metres');
-    if (err) return err;
-  } else if (fabric && requireAll) {
+    if (!metresApply) {
+      return type === READYMADE
+        ? 'Readymade goods carry no metres — they are counted in dozens'
+        : 'Goods bought in dozens carry no metres';
+    }
+    if (!metresFromQty) {
+      const err = qtyError(body.qty_in_metres, 'Qty in metres');
+      if (err) return err;
+    }
+  } else if (metresApply && !metresFromQty && requireAll) {
     return 'Qty in metres is required';
   }
 
@@ -425,22 +510,28 @@ async function validateReceiptFields(body, { requireAll, line }) {
   // different kind of row.
   //
   // Keyed on the stage being RECEIVED AT, not on fabric alone: a Processing receipt
-  // has no pieces to count. Third Party never reaches here -- RECEIPT_STAGES
-  // rejects it above, because nothing is received at the exit.
-  const dozenStage = fabric && countsDozens(String(body?.incoming_stage ?? '').trim());
+  // has no pieces to count.
+  const dozenStage = fabric && countsDozens(bodyStage);
   // At a graded stage the dozens are typed per grade and Dozens Received is
   // their sum, so a missing total is not an omission there -- the grade check
   // below asks for the grades instead.
   // An edit that sends grades without restating the stage is judged against the
   // stage the receipt already has -- `line` is the stored receipt on an update.
-  const gradedStage = fabric && isGradedStage(present('incoming_stage')
-    ? String(body?.incoming_stage ?? '').trim()
-    : String(line?.incoming_stage ?? '').trim());
+  const gradedStage = fabric && isGradedStage(effStage);
+  // A Received Qty in dozens IS the dozen count, and on Readymade one in pieces
+  // is twelve to the dozen -- the server writes received_dozens itself, so it
+  // is neither asked for nor checked. On an update the quantity is the one
+  // sent, or the one stored.
+  const settled = dozensFromQty(type, kind, effStage)
+    ? derivedDozens(present('received_qty') ? body.received_qty : line?.received_qty, kind, type)
+    : null;
   if (present('received_dozens') && !blank(body?.received_dozens)) {
     if (!dozenStage) return `Dozens are only counted on fabric received at ${DOZEN_STAGES.join(', ')}`;
-    const err = qtyError(body.received_dozens, 'Dozens Received');
-    if (err) return err;
-  } else if (dozenStage && requireAll && !gradedStage) {
+    if (settled == null) {
+      const err = qtyError(body.received_dozens, 'Dozens Received');
+      if (err) return err;
+    }
+  } else if (dozenStage && requireAll && !gradedStage && settled == null) {
     return 'Dozens Received is required';
   }
 
@@ -460,12 +551,36 @@ async function validateReceiptFields(body, { requireAll, line }) {
     }
     const total = gradeSum(body);
     if (total <= EPSILON) return 'Enter the dozens for at least one grade';
-    if (present('received_dozens') && !blank(body?.received_dozens)
+    // When the UM already says how many dozens arrived, the grades split that
+    // figure rather than define it.
+    if (settled != null && Math.abs(settled - total) > EPSILON) {
+      return `Fresh + Second + Third must add up to ${settled} dozen`;
+    }
+    if (settled == null && present('received_dozens') && !blank(body?.received_dozens)
         && Math.abs(Number(body.received_dozens) - total) > EPSILON) {
       return 'Fresh + Second + Third must add up to Dozens Received';
     }
   } else if (gradedStage && requireAll) {
     return 'Enter the dozens for at least one grade';
+  }
+
+  // THIRD PARTY's hand-over (091), the same two questions a challan into Third
+  // Party asks: OUR outbound bill number, the only handle on goods that have
+  // left, and the Warehouse POC who checked them over -- a real qualification
+  // here, as at the challan, not the session stamp every other receipt gets.
+  // An edit moving a receipt INTO Third Party is held to both by updateReceipt,
+  // which knows what is already stored.
+  if (thirdParty) {
+    if (requireAll || present('outbound_bill_no')) {
+      const err = thirdPartyBillError(body?.outbound_bill_no);
+      if (err) return err;
+    }
+    if (requireAll || present('checked_by')) {
+      const err = await thirdPartyCheckerError(body?.checked_by);
+      if (err) return err;
+    }
+  } else if (present('outbound_bill_no') && !blankText(body?.outbound_bill_no)) {
+    return 'Outbound Bill No applies only to goods sold to a third party';
   }
 
   // What to do about a delivery that does not match what was outstanding. The
@@ -587,13 +702,12 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
                  ub.name AS updated_by_name,
                  COALESCE((SELECT SUM(r.received_qty) FROM outbound_po_line_receipts r
                            WHERE r.line_id = l.id AND r.deleted_at IS NULL), 0) AS received,
-                 -- Whether this article travels the Stitching page. Resolved by
-                 -- the (category, item_name, unit_metric) triple because a line
-                 -- carries those denormalised and no product id -- the same
-                 -- lookup migration 057 used to backfill unit_metric.
-                 COALESCE((SELECT op.goes_to_stitching FROM outbound_products op
-                            WHERE op.category = l.category AND op.item_name = l.item_name
-                              AND op.unit_metric = l.unit_metric), 0) AS goes_to_stitching,
+                 -- Whether this article travels the Stitching page, and in which
+                 -- section. Resolved by the (category, item_name, unit_metric)
+                 -- triple because a line carries those denormalised and no
+                 -- product id -- the same lookup migration 057 used to backfill
+                 -- unit_metric. goes_to_stitching is derived from it below.
+                 ${STITCHING_TYPE_SQL} AS stitching_type,
                  ${flagSelect(lineFlagExists, RECEIPT_FLAG_KEYS)}
           FROM outbound_po_lines l
           LEFT JOIN users ub ON ub.id = l.updated_by
@@ -613,7 +727,10 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
                    r.process_rate, r.after_rate, r.incoming_prefix_id,
                    r.fresh_dozens, r.second_dozens, r.third_dozens, r.note,
                    r.stage_party_name, r.stage_rate,
-                   sp.prefix AS incoming_prefix, sp.stage AS incoming_stage,
+                   -- A receipt booked straight into Third Party has no prefix,
+                   -- and its stage is held on the receipt itself (091).
+                   sp.prefix AS incoming_prefix, COALESCE(sp.stage, r.direct_stage) AS incoming_stage,
+                   r.direct_stage, r.outbound_bill_no,
                    r.created_by, r.created_at, r.updated_by, r.updated_at, r.deleted_by, r.deleted_at,
                    cb.name AS created_by_name, ub.name AS updated_by_name, kb.name AS checked_by_name,
                    -- Lots already forwarded onto the Stitching page. The detail
@@ -645,6 +762,9 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
 
   const byPo = new Map();
   for (const l of rows) {
+    // Kept on the payload for callers that still read the old tick -- one
+    // value with stitching_type, never a second source of truth.
+    l.goes_to_stitching = l.stitching_type ? 1 : 0;
     l.flags = pickFlags(l);
     if (!byPo.has(l.po_id)) byPo.set(l.po_id, []);
     byPo.get(l.po_id).push(l);
@@ -1256,15 +1376,14 @@ async function createReceipt(req, res, next) {
       sql: `SELECT l.id, l.category, l.item_name, l.variant, l.qty, l.short, l.rate, l.unit_metric,
                    COALESCE((SELECT SUM(r.received_qty) FROM outbound_po_line_receipts r
                              WHERE r.line_id = l.id AND r.deleted_at IS NULL), 0) AS received,
-                   COALESCE((SELECT op.goes_to_stitching FROM outbound_products op
-                              WHERE op.category = l.category AND op.item_name = l.item_name
-                                AND op.unit_metric = l.unit_metric), 0) AS goes_to_stitching
+                   ${STITCHING_TYPE_SQL} AS stitching_type
             FROM outbound_po_lines l
             WHERE l.id = ? AND l.po_id = ? AND l.deleted_at IS NULL`,
       args: [lineId, id],
     });
     if (!lineRows.length) return res.status(404).json({ message: 'Line not found' });
     const line = lineRows[0];
+    const type = lineType(line);
 
     // A fully accounted-for line takes no further receipts. If a vendor really
     // over-delivers, raise the line's qty on the detail page first.
@@ -1272,11 +1391,20 @@ async function createReceipt(req, res, next) {
       return res.status(400).json({ message: 'This line is already Closed — no further receipts can be added' });
     }
 
+    // What the delivery's unit means -- the receipt's own UM when it names one,
+    // else the line's (umKind). Decides which figures are still to be asked.
+    const kind = umKind(nonBlank(req.body?.unit_metric) ?? line.unit_metric);
+
+    // The stage first: the form asks for it first, because everything below
+    // reshapes to it.
+    const stageError = receiptStageError(req.body, { requireAll: true, line, kind });
+    if (stageError) return res.status(400).json({ message: stageError });
+
     const receivedQty = Number(req.body?.received_qty);
     if (!Number.isFinite(receivedQty) || receivedQty <= 0) {
       return res.status(400).json({ message: 'Received Qty must be a number > 0' });
     }
-    const validationError = await validateReceiptFields(req.body, { requireAll: true, line });
+    const validationError = await validateReceiptFields(req.body, { requireAll: true, line, kind });
     if (validationError) return res.status(400).json({ message: validationError });
     const receivedRate = Number(req.body.received_rate);
     const billNo = req.body?.bill_no != null ? (String(req.body.bill_no).trim() || null) : null;
@@ -1284,17 +1412,21 @@ async function createReceipt(req, res, next) {
     const checkedBy = req.body.checked_by == null || req.body.checked_by === ''
       ? req.user.id
       : Number(req.body.checked_by);
-    const incomingNo = req.body?.incoming_no != null
-      ? (String(req.body.incoming_no).trim() || null) : null;
 
     // The client sends a stage, never a prefix. Resolving it here is what keeps
     // the prefix master a display concern rather than something a user picks.
     const incomingStage = req.body?.incoming_stage != null
       ? (String(req.body.incoming_stage).trim() || null) : null;
+    // Third Party has no prefix -- nothing arrives there to number -- so the
+    // stage is held on the receipt itself, and there is no incoming number.
+    const thirdParty = isStitchingLine(line) && incomingStage === EXIT_STAGE;
+    const directStage = thirdParty ? EXIT_STAGE : null;
+    const outboundBillNo = thirdParty ? nonBlank(req.body?.outbound_bill_no) : null;
+    const incomingNo = thirdParty ? null : nonBlank(req.body?.incoming_no);
     let prefixId = null;
-    if (incomingStage) {
-      const [resolved, stageError] = await prefixIdForStage(incomingStage);
-      if (stageError) return res.status(400).json({ message: stageError });
+    if (incomingStage && !thirdParty) {
+      const [resolved, prefixError] = await prefixIdForStage(incomingStage);
+      if (prefixError) return res.status(400).json({ message: prefixError });
       prefixId = resolved;
     }
 
@@ -1311,24 +1443,32 @@ async function createReceipt(req, res, next) {
       unitMetric = metric;
     }
 
-    // Fabric only, and the number the whole Stitching page counts in.
-    const qtyInMetres = isStitchingLine(line)
-      && req.body?.qty_in_metres != null && req.body.qty_in_metres !== ''
-      ? Number(req.body.qty_in_metres) : null;
+    // Fabric only, and the number a Processing lot counts in. A UM that IS
+    // metres says so itself, so Received Qty is copied across. Readymade, and
+    // anything bought in dozens, has none.
+    const metresApply = isStitchingLine(line) && receiptHasMetres(kind, type);
+    const qtyInMetres = !metresApply ? null
+      : kind === 'metre' ? receivedQty
+        : req.body?.qty_in_metres != null && req.body.qty_in_metres !== ''
+          ? Number(req.body.qty_in_metres) : null;
 
-    // At a graded stage (Packing, Panchal) the dozens arrive split by grade and
-    // the total is their sum. Everywhere else the three stay 0.
+    // At a graded stage (Packing, Panchal, Third Party) the dozens arrive split
+    // by grade and the total is their sum. Everywhere else the three stay 0.
     const graded = isStitchingLine(line) && isGradedStage(incomingStage);
     const grades = Object.fromEntries(GRADE_FIELDS.map(([, col]) => [
       col, graded ? Number(req.body?.[col]) || 0 : 0,
     ]));
 
-    // Only for fabric bought in already stitched or already packed -- the
-    // stages where there are pieces to count.
-    const receivedDozens = graded ? gradeSum(grades)
-      : isStitchingLine(line) && countsDozens(incomingStage)
-        && req.body?.received_dozens != null && req.body.received_dozens !== ''
-        ? Number(req.body.received_dozens) : null;
+    // Only for goods bought in already stitched or later -- the stages where
+    // there are pieces to count. A UM in dozens (or pieces, on Readymade)
+    // already settles the figure: validation held the grades to it.
+    const settledDozens = dozensFromQty(type, kind, incomingStage)
+      ? derivedDozens(receivedQty, kind, type) : null;
+    const receivedDozens = settledDozens != null ? settledDozens
+      : graded ? gradeSum(grades)
+        : isStitchingLine(line) && countsDozens(incomingStage)
+          && req.body?.received_dozens != null && req.body.received_dozens !== ''
+          ? Number(req.body.received_dozens) : null;
     const note = req.body?.note != null ? (String(req.body.note).trim() || null) : null;
 
     // Against what was still due when this delivery was entered, not against the
@@ -1357,13 +1497,15 @@ async function createReceipt(req, res, next) {
     try {
       const { rows: inserted } = await tx.execute({
         sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, checked_by, incoming_no,
-                process_rate, after_rate, incoming_prefix_id, unit_metric, qty_in_metres, received_dozens,
+                process_rate, after_rate, incoming_prefix_id, direct_stage, outbound_bill_no,
+                unit_metric, qty_in_metres, received_dozens,
                 fresh_dozens, second_dozens, third_dozens, note,
                 qty_diff_action, qty_diff_reason, closed_at, closed_by, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ${closesOnSave ? "datetime('now')" : 'NULL'}, ?, ?, ?) RETURNING id`,
         args: [lineId, receivedQty, receivedRate, billNo, checkedBy, incomingNo,
-          processRate, afterRate, prefixId, unitMetric, qtyInMetres, receivedDozens,
+          processRate, afterRate, prefixId, directStage, outboundBillNo,
+          unitMetric, qtyInMetres, receivedDozens,
           grades.fresh_dozens, grades.second_dozens, grades.third_dozens, note,
           diffAction, diffReason, closesOnSave ? req.user.id : null, req.user.id, req.user.id],
       });
@@ -1394,7 +1536,8 @@ async function createReceipt(req, res, next) {
         userId: req.user.id,
         actionType: 'OUTBOUND_PO_LINE_RECEIPT_CREATE',
         description: `Added receipt of ${receivedQty} on line "${line.category} - ${line.item_name}${line.variant ? ` - ${line.variant}` : ''}"${billNo ? `, bill #${billNo}` : ''} @ ${receivedRate}${incomingNo != null ? `, incoming #${incomingNo}` : ''} (PO ${padOrderNo(id)})`
-          + (closesOnSave ? `, received straight into ${STOCK_STAGE} and closed` : ''),
+          + (closesOnSave ? `, received straight into ${STOCK_STAGE} and closed` : '')
+          + (thirdParty ? `, sold straight on to a third party against outbound bill #${outboundBillNo}` : ''),
         entityType: 'outbound_po_line',
         entityId: Number(lineId),
       });
@@ -1418,12 +1561,10 @@ async function updateReceipt(req, res, next) {
                    r.process_rate, r.after_rate, r.incoming_prefix_id, r.qty_in_metres,
                    r.received_dozens, r.unit_metric, r.closed_at,
                    r.fresh_dozens, r.second_dozens, r.third_dozens, r.note,
-                   r.stage_party_name, r.stage_rate,
-                   sp.stage AS incoming_stage,
+                   r.stage_party_name, r.stage_rate, r.direct_stage, r.outbound_bill_no,
+                   COALESCE(sp.stage, r.direct_stage) AS incoming_stage,
                    l.category, l.item_name, l.variant, l.unit_metric AS line_unit_metric,
-                   COALESCE((SELECT op.goes_to_stitching FROM outbound_products op
-                              WHERE op.category = l.category AND op.item_name = l.item_name
-                                AND op.unit_metric = l.unit_metric), 0) AS goes_to_stitching
+                   ${STITCHING_TYPE_SQL} AS stitching_type
             FROM outbound_po_line_receipts r
             JOIN outbound_po_lines l ON l.id = r.line_id
             LEFT JOIN stitching_prefixes sp ON sp.id = r.incoming_prefix_id
@@ -1432,14 +1573,25 @@ async function updateReceipt(req, res, next) {
     });
     if (!receiptRows.length) return res.status(404).json({ message: 'Receipt not found' });
     const receipt = receiptRows[0];
+    const type = lineType(receipt);
 
     const has = (k) => Object.prototype.hasOwnProperty.call(req.body || {}, k);
+
+    // The unit this delivery will be counted in once the edit lands -- the same
+    // fallback the UM resolution below applies -- as a kind (umKind).
+    const kind = umKind(has('unit_metric')
+      ? (nonBlank(req.body.unit_metric) ?? receipt.line_unit_metric)
+      : (receipt.unit_metric ?? receipt.line_unit_metric));
+
+    const stageError = receiptStageError(req.body, { requireAll: false, line: receipt, kind });
+    if (stageError) return res.status(400).json({ message: stageError });
+
     let nextQty = receipt.received_qty;
     if (has('received_qty')) {
       nextQty = Number(req.body.received_qty);
       if (!Number.isFinite(nextQty) || nextQty <= 0) return res.status(400).json({ message: 'Received Qty must be a number > 0' });
     }
-    const validationError = await validateReceiptFields(req.body, { requireAll: false, line: receipt });
+    const validationError = await validateReceiptFields(req.body, { requireAll: false, line: receipt, kind });
     if (validationError) return res.status(400).json({ message: validationError });
 
     const nextRate = has('received_rate') ? Number(req.body.received_rate) : receipt.received_rate;
@@ -1453,33 +1605,33 @@ async function updateReceipt(req, res, next) {
       nextIncomingNo = req.body.incoming_no != null
         ? (String(req.body.incoming_no).trim() || null) : null;
     }
+    // Nothing arrives at Third Party, so a receipt there carries no number.
+    if (isStitchingLine(receipt) && (has('incoming_stage') ? nonBlank(req.body.incoming_stage) : receipt.incoming_stage) === EXIT_STAGE) {
+      nextIncomingNo = null;
+    }
     let nextProcessRate = receipt.process_rate;
     if (has('process_rate')) {
       nextProcessRate = req.body.process_rate != null && req.body.process_rate !== ''
         ? Number(req.body.process_rate) : null;
     }
-    // A stage in, a prefix out -- the client never names a prefix.
+    // A stage in, a prefix out -- the client never names a prefix. Third Party
+    // has none: its stage is held on the receipt (direct_stage, 091).
     let nextPrefixId = receipt.incoming_prefix_id;
+    let nextDirectStage = receipt.direct_stage ?? null;
     if (has('incoming_stage')) {
-      if (req.body.incoming_stage == null || req.body.incoming_stage === '') {
+      const stage = nonBlank(req.body.incoming_stage);
+      if (!stage) {
         nextPrefixId = null;
+        nextDirectStage = null;
+      } else if (stage === EXIT_STAGE && isStitchingLine(receipt)) {
+        nextPrefixId = null;
+        nextDirectStage = EXIT_STAGE;
       } else {
-        const [resolved, stageError] = await prefixIdForStage(req.body.incoming_stage);
-        if (stageError) return res.status(400).json({ message: stageError });
+        const [resolved, prefixError] = await prefixIdForStage(stage);
+        if (prefixError) return res.status(400).json({ message: prefixError });
         nextPrefixId = resolved;
+        nextDirectStage = null;
       }
-    }
-
-    let nextQtyInMetres = receipt.qty_in_metres;
-    if (has('qty_in_metres')) {
-      nextQtyInMetres = req.body.qty_in_metres != null && req.body.qty_in_metres !== ''
-        ? Number(req.body.qty_in_metres) : null;
-    }
-
-    let nextReceivedDozens = receipt.received_dozens;
-    if (has('received_dozens')) {
-      nextReceivedDozens = req.body.received_dozens != null && req.body.received_dozens !== ''
-        ? Number(req.body.received_dozens) : null;
     }
 
     // The stage the receipt will be at once this edit lands.
@@ -1487,6 +1639,35 @@ async function updateReceipt(req, res, next) {
       ? (String(req.body.incoming_stage ?? '').trim() || null)
       : receipt.incoming_stage;
     const stageMoved = (nextStage || null) !== (receipt.incoming_stage || null);
+    const nextThirdParty = isStitchingLine(receipt) && nextStage === EXIT_STAGE;
+
+    // Metres: a unit that IS metres copies Received Qty across, and goods with no
+    // metres (Readymade, or bought in dozens) carry none -- whatever is stored.
+    let nextQtyInMetres = receipt.qty_in_metres;
+    if (has('qty_in_metres')) {
+      nextQtyInMetres = req.body.qty_in_metres != null && req.body.qty_in_metres !== ''
+        ? Number(req.body.qty_in_metres) : null;
+    }
+    const metresFromQty = isStitchingLine(receipt) && receiptHasMetres(kind, type) && kind === 'metre';
+    if (metresFromQty) nextQtyInMetres = nextQty;
+    else if (isStitchingLine(receipt) && !receiptHasMetres(kind, type)) nextQtyInMetres = null;
+
+    let nextReceivedDozens = receipt.received_dozens;
+    if (has('received_dozens')) {
+      nextReceivedDozens = req.body.received_dozens != null && req.body.received_dozens !== ''
+        ? Number(req.body.received_dozens) : null;
+    }
+    // Dozens a UM in dozens (or pieces, on Readymade) already settles follow the
+    // quantity on every edit, so a corrected Received Qty corrects the lot.
+    const settledDozens = dozensFromQty(type, kind, nextStage) ? derivedDozens(nextQty, kind, type) : null;
+    if (settledDozens != null) nextReceivedDozens = settledDozens;
+
+    // Our outbound bill belongs to a sale, and only to a sale: it goes when the
+    // receipt leaves Third Party. The incoming number goes the other way --
+    // nothing arrives at Third Party, so a receipt moved there keeps none.
+    let nextOutboundBillNo = receipt.outbound_bill_no ?? null;
+    if (has('outbound_bill_no')) nextOutboundBillNo = nonBlank(req.body.outbound_bill_no);
+    if (!nextThirdParty) nextOutboundBillNo = null;
 
     // Grades exist only at a graded stage. Sent ones replace the stored three and
     // make Dozens Received their sum. A receipt moved OFF a graded stage drops
@@ -1497,7 +1678,15 @@ async function updateReceipt(req, res, next) {
       col,
       !nextGraded ? 0 : gradesSent ? Number(req.body[col]) || 0 : Number(receipt[col]) || 0,
     ]));
-    if (nextGraded && gradesSent) nextReceivedDozens = gradeSum(nextGrades);
+    if (nextGraded && gradesSent && settledDozens == null) nextReceivedDozens = gradeSum(nextGrades);
+    // Grades split a UM-settled figure rather than define it, so an edit that
+    // moves that figure -- a new quantity, unit or stage -- has to leave the
+    // grades adding up to it. Sent grades were held to it by validation.
+    if (nextGraded && settledDozens != null && !gradesSent
+        && (has('received_qty') || has('unit_metric') || stageMoved)
+        && Math.abs(gradeSum(nextGrades) - settledDozens) > EPSILON) {
+      return res.status(400).json({ message: `Fresh + Second + Third must add up to ${settledDozens} dozen` });
+    }
 
     let nextNote = receipt.note;
     if (has('note')) nextNote = req.body.note != null ? (String(req.body.note).trim() || null) : null;
@@ -1544,27 +1733,32 @@ async function updateReceipt(req, res, next) {
     // Guards against re-cutting the ground under lots already forwarded on the
     // Stitching page. Both are only reachable once something has been forwarded,
     // so an ordinary receipt edit never sees them.
-    if (has('incoming_stage') && nextPrefixId !== receipt.incoming_prefix_id) {
+    //
+    // Keyed on the STAGE moving, not the prefix: swapping to another prefix for
+    // the same stage is harmless -- the lot stays on the tab it is on, and its
+    // children stay valid -- and a Third Party receipt has no prefix at all.
+    if (has('incoming_stage') && stageMoved) {
       const { count } = await forwardedFromReceipt(receiptId);
       if (count > 0) {
-        const { rows: stageRows } = await db.execute({
-          sql: 'SELECT stage FROM stitching_prefixes WHERE id = ?',
-          args: [nextPrefixId],
+        return res.status(400).json({
+          message: `Cannot change the receipt's stage — ${count} lot(s) have already been forwarded from it on the Stitching page. `
+            + 'Remove those first.',
         });
-        // Swapping to another prefix for the SAME stage is harmless — the lot
-        // stays on the tab it is on, and its children stay valid.
-        if (stageRows[0]?.stage !== receipt.incoming_stage) {
-          return res.status(400).json({
-            message: `Cannot change the receipt's stage — ${count} lot(s) have already been forwarded from it on the Stitching page. `
-              + 'Remove those first.',
-          });
-        }
       }
+    }
+    // Moved INTO Third Party: the sale's two hand-over fields have to be there,
+    // from this edit or already stored -- the same rule a new receipt meets.
+    if (nextThirdParty && stageMoved) {
+      const billErr = thirdPartyBillError(nextOutboundBillNo);
+      if (billErr) return res.status(400).json({ message: billErr });
+      const checkErr = await thirdPartyCheckerError(nextCheckedBy);
+      if (checkErr) return res.status(400).json({ message: checkErr });
     }
     // What the Stitching page counts is the METRES for fabric, so that is what
     // cannot be cut below the lots already sent out of it. received_qty is taga
-    // and keeps its own guard for the legacy rows that predate the split.
-    if (has('qty_in_metres') && isStitchingLine(receipt)) {
+    // and keeps its own guard for the legacy rows that predate the split. A
+    // unit in metres moves the metres with the quantity, so it is guarded too.
+    if ((has('qty_in_metres') || (metresFromQty && has('received_qty'))) && isStitchingLine(receipt)) {
       const { sent } = await forwardedFromReceipt(receiptId);
       if (sent - Number(nextQtyInMetres || 0) > EPSILON) {
         return res.status(400).json({
@@ -1574,7 +1768,8 @@ async function updateReceipt(req, res, next) {
     }
     // A receipt bought in at a dozen stage is drawn on in dozens, so that is
     // what cannot be cut below what its challans already took.
-    if ((has('received_dozens') || (gradesSent && nextGraded))
+    if ((has('received_dozens') || (gradesSent && nextGraded)
+        || (settledDozens != null && (has('received_qty') || has('unit_metric'))))
         && isStitchingLine(receipt) && countsDozens(receipt.incoming_stage)) {
       const { sentDozens } = await forwardedFromReceipt(receiptId);
       if (sentDozens - Number(nextReceivedDozens || 0) > EPSILON) {
@@ -1606,7 +1801,7 @@ async function updateReceipt(req, res, next) {
     const RECEIPT_FIELDS = ['received_qty', 'received_rate', 'bill_no', 'checked_by', 'incoming_no',
       'process_rate', 'after_rate', 'incoming_prefix_id', 'unit_metric', 'qty_in_metres',
       'received_dozens', 'fresh_dozens', 'second_dozens', 'third_dozens', 'note',
-      'stage_party_name', 'stage_rate'];
+      'stage_party_name', 'stage_rate', 'direct_stage', 'outbound_bill_no'];
     const changes = diffFields(receipt, {
       received_qty: nextQty, received_rate: nextRate, bill_no: nextBillNo,
       checked_by: nextCheckedBy, incoming_no: nextIncomingNo,
@@ -1617,6 +1812,7 @@ async function updateReceipt(req, res, next) {
       ...nextGrades,
       note: nextNote,
       stage_party_name: nextStageParty, stage_rate: nextStageRate,
+      direct_stage: nextDirectStage, outbound_bill_no: nextOutboundBillNo,
     }, RECEIPT_FIELDS);
 
     // Moving a receipt INTO Panchal closes it, the same as saving one there does.
@@ -1625,7 +1821,7 @@ async function updateReceipt(req, res, next) {
     // receipt that stays at Panchal keeps whatever close state it has, so a
     // deliberate reopen on the Stitching page is not undone by an unrelated edit.
     let closeChange = null;
-    if (has('incoming_stage') && nextPrefixId !== receipt.incoming_prefix_id && isStitchingLine(receipt)) {
+    if (has('incoming_stage') && (stageMoved || nextPrefixId !== receipt.incoming_prefix_id) && isStitchingLine(receipt)) {
       const wasPanchal = receipt.incoming_stage === STOCK_STAGE;
       const isPanchal = nextStage === STOCK_STAGE;
       if (isPanchal && !wasPanchal) closeChange = 'close';
@@ -1658,13 +1854,13 @@ async function updateReceipt(req, res, next) {
                   checked_by = ?, incoming_no = ?, process_rate = ?, after_rate = ?,
                   incoming_prefix_id = ?, unit_metric = ?, qty_in_metres = ?, received_dozens = ?,
                   fresh_dozens = ?, second_dozens = ?, third_dozens = ?, note = ?,
-                  stage_party_name = ?, stage_rate = ?,
+                  stage_party_name = ?, stage_rate = ?, direct_stage = ?, outbound_bill_no = ?,
                   updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
           args: [nextQty, nextRate, nextBillNo, nextCheckedBy, nextIncomingNo,
             nextProcessRate, nextAfterRate, nextPrefixId, nextUnitMetric,
             nextQtyInMetres, nextReceivedDozens,
             nextGrades.fresh_dozens, nextGrades.second_dozens, nextGrades.third_dozens, nextNote,
-            nextStageParty, nextStageRate,
+            nextStageParty, nextStageRate, nextDirectStage, nextOutboundBillNo,
             req.user.id, receiptId],
         });
         await logAction({

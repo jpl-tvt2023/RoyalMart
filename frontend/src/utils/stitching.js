@@ -32,6 +32,58 @@ export const DESTINATION_HINTS = {
   'Third Party': 'sold out, needs a bill no',
 };
 
+// The two sections of the Stitching page (migration 091). Twin of
+// STITCHING_TYPES on the server. An article's type is set on the Outbound
+// Product List; Readymade arrives already made up and skips Processing, which is
+// the only difference -- one stage graph, one prefix series, one party master.
+export const STITCHING_TYPES = ['Fabric', 'Readymade'];
+export const FABRIC = 'Fabric';
+export const READYMADE = 'Readymade';
+
+// Twin of READYMADE_STAGES / stagesForType on the server.
+export const READYMADE_STAGES = STAGES.filter(s => s !== 'Processing');
+export const stagesForType = (type) => (type === READYMADE ? READYMADE_STAGES : STAGES);
+
+// What a unit metric means, read off its name. Twin of umKind on the server --
+// keep the lists identical, or the form asks for a figure the server fills in
+// (or the reverse). dozen: Received Qty is the dozens. metre: Received Qty is
+// the metres. piece: on Readymade, Received Qty / 12 is the dozens.
+export const DOZEN_UMS = ['dozen', 'dozens', 'dzn', 'dz', 'doz'];
+export const METRE_UMS = ['metre', 'metres', 'meter', 'meters', 'mtr', 'mtrs', 'm'];
+export const PIECE_UMS = ['pcs', 'pc', 'piece', 'pieces'];
+export const PIECES_PER_DOZEN = 12;
+
+export const umKind = (um) => {
+  const key = String(um ?? '').toLowerCase().replace(/[\s.]/g, '');
+  if (!key) return null;
+  if (DOZEN_UMS.includes(key)) return 'dozen';
+  if (METRE_UMS.includes(key)) return 'metre';
+  if (PIECE_UMS.includes(key)) return 'piece';
+  return null;
+};
+
+// Twin of derivedDozens on the server: the dozens a UM already settles, or null.
+export const derivedDozens = (receivedQty, kind, type) => {
+  if (receivedQty == null || receivedQty === '') return null;
+  const n = Number(receivedQty);
+  if (!Number.isFinite(n)) return null;
+  if (kind === 'dozen') return Math.round(n * 100) / 100;
+  if (kind === 'piece' && type === READYMADE) return Math.round((n / PIECES_PER_DOZEN) * 100) / 100;
+  return null;
+};
+
+// Twin of receiptHasMetres on the server.
+export const receiptHasMetres = (kind, type) => type === FABRIC && kind !== 'dozen';
+
+// Twin of receiptStageBlockReason on the server, message text included -- the
+// form shows it beside the disabled Processing option.
+export const receiptStageBlockReason = (stage, { type, kind } = {}) => {
+  if (stage !== 'Processing') return null;
+  if (type === READYMADE) return 'Readymade goods skip Processing — pick Stitching, Packing, Panchal or Third Party';
+  if (kind === 'dozen') return 'Processing counts metres — goods bought in dozens cannot be received there';
+  return null;
+};
+
 // "All" is a VIEW, not a stage, so it is deliberately kept out of STAGES — the
 // DB CHECK constraints mirror that list, so a member here that is not a real
 // stage would corrupt the chain rather than add a tab. It sits last: the stage
@@ -80,7 +132,7 @@ export const CHALLAN_TYPES = ['Fresh', 'Second', 'Third'];
 // Twin of GRADED_STAGES on the server (migration 089): the stages goods arrive
 // at as ONE lot per challan, its dozens split into Fresh, Second and Third side
 // by side. The split is what arrived -- balance and status still run on the
-// total. A PO receipt booked into Packing or Panchal records the same three.
+// total. A PO receipt booked into any of the three records the same split.
 export const GRADED_STAGES = ['Packing', 'Panchal', 'Third Party'];
 
 export const isGradedStage = (stage) => GRADED_STAGES.includes(stage);

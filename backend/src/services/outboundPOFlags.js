@@ -46,8 +46,12 @@ const FLAGS = {
     color: 'yellow',
     // incoming_no is free text and stored trimmed-or-NULL, so IS NULL alone
     // would miss a whitespace-only value that predates that normalisation.
-    sql: "r.incoming_no IS NULL OR TRIM(r.incoming_no) = ''",
-    js: (r) => r.incoming_no == null || String(r.incoming_no).trim() === '',
+    //
+    // A receipt booked straight into Third Party (direct_stage, 091) has no
+    // incoming number by design -- nothing arrives anywhere, exactly as a
+    // challan into Third Party gets none -- so it is not missing one.
+    sql: "(r.incoming_no IS NULL OR TRIM(r.incoming_no) = '') AND r.direct_stage IS NULL",
+    js: (r) => (r.incoming_no == null || String(r.incoming_no).trim() === '') && r.direct_stage == null,
   },
   missing_incoming_stage: {
     label: 'Missing Incoming Stage',
@@ -62,17 +66,19 @@ const FLAGS = {
     // all already raise missing_incoming_no and are excluded here so a single
     // omission does not light up two flags.
     //
-    // FABRIC ONLY. Only articles flagged goes_to_stitching travel the stage
+    // STITCHING ARTICLES ONLY -- Fabric or Readymade (stitching_type, 091; it
+    // was the goes_to_stitching tick before). Only those travel the stage
     // chain, so a stage is meaningless on a receipt of corrugated boxes -- and
     // without this every packaging receipt ever recorded would raise it. The
     // flag resolves the article through the (category, item_name, unit_metric)
     // triple the line carries, since a line holds no product id.
     sql: `r.incoming_no IS NOT NULL AND TRIM(r.incoming_no) <> '' AND r.incoming_prefix_id IS NULL
+          AND r.direct_stage IS NULL
           AND EXISTS (SELECT 1 FROM outbound_products op
                        WHERE op.category = l.category AND op.item_name = l.item_name
-                         AND op.unit_metric = l.unit_metric AND op.goes_to_stitching = 1)`,
+                         AND op.unit_metric = l.unit_metric AND op.stitching_type IS NOT NULL)`,
     js: (r, l) => r.incoming_no != null && String(r.incoming_no).trim() !== ''
-      && r.incoming_prefix_id == null && Number(l?.goes_to_stitching) === 1,
+      && r.incoming_prefix_id == null && r.direct_stage == null && l?.stitching_type != null,
   },
   not_approved: {
     label: 'Not Approved',

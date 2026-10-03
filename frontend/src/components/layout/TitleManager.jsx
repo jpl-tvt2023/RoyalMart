@@ -21,6 +21,7 @@ const TITLES = [
   ['/order-summary', 'Order Summary'],
   ['/builty', 'Builty'],
   ['/grn', 'GRN'],
+  ['/rtv', 'RTV'],
   ['/lead-time-report', 'Lead Time Report'],
   ['/configurations', 'Configurations'],
   ['/outbound/purchase-orders/new', 'New Outbound PO'],

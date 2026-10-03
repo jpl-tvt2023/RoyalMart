@@ -316,3 +316,81 @@ describe('Packaging products validate against the Outbound Product List', () => 
     await cleanup(created.body.category);
   });
 });
+
+// Migration 091: the "Goes through Stitching" tick became a choice -- none,
+// Fabric or Readymade -- which decides the section of the Stitching page an
+// article's lots show in. Changing it is locked while lots exist.
+describe('Stitching type', () => {
+  test('creates with a type, and keeps goes_to_stitching in step', async () => {
+    const res = await createProduct({ stitching_type: 'Readymade' });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ stitching_type: 'Readymade', goes_to_stitching: 1 });
+    await cleanup(res.body.category);
+  });
+
+  test('no type is the default, and an unknown one is refused', async () => {
+    const plain = await createProduct();
+    expect(plain.body).toMatchObject({ stitching_type: null, goes_to_stitching: 0 });
+    await cleanup(plain.body.category);
+
+    const bad = await createProduct({ stitching_type: 'Knitted' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.message).toMatch(/stitching_type must be one of Fabric, Readymade/);
+  });
+
+  test('the old tick still means Fabric to a caller that sends it', async () => {
+    const res = await createProduct({ goes_to_stitching: true });
+    expect(res.body.stitching_type).toBe('Fabric');
+    const cleared = await authed(request(app).patch(`/api/configurations/outbound-products/${res.body.id}`))
+      .send({ goes_to_stitching: false });
+    expect(cleared.body).toMatchObject({ stitching_type: null, goes_to_stitching: 0 });
+    await cleanup(res.body.category);
+  });
+
+  // A lot on the Stitching page: a fresh Fabric article bought in dozens,
+  // received straight in at Stitching.
+  async function articleWithLot(type) {
+    const created = await createProduct({ unit_metric: 'dz', stitching_type: type });
+    const { category, item_name } = created.body;
+    await createPackagingProduct({ category, item_name, unit_metric: 'dz' });
+    const vendor = await authed(request(app).post('/api/outbound-vendors'))
+      .send({ name: `Type Vendor ${uid()}`, articles: [{ category, item_name }] });
+    const po = await authed(request(app).post('/api/outbound-pos')).send({
+      vendor_id: vendor.body.id,
+      lines: [{ category, item_name, qty: 100, rate: 10 }],
+    });
+    const detail = await authed(request(app).get(`/api/outbound-pos/${po.body.id}`));
+    const lineId = detail.body.lines[0].id;
+    const receipt = await authed(request(app).post(`/api/outbound-pos/${po.body.id}/lines/${lineId}/receipts`)).send({
+      received_qty: 10, received_rate: 10, bill_no: `B-${uid()}`,
+      incoming_no: `IN-${uid()}`, incoming_stage: 'Stitching',
+    });
+    expect(receipt.status).toBe(201);
+    return created.body;
+  }
+
+  test('the type cannot change while the article has lots on the Stitching page', async () => {
+    const product = await articleWithLot('Fabric');
+    const patch = (body) => authed(request(app).patch(`/api/configurations/outbound-products/${product.id}`)).send(body);
+
+    const toReadymade = await patch({ stitching_type: 'Readymade' });
+    expect(toReadymade.status).toBe(409);
+    expect(toReadymade.body.message).toBe(`${product.item_name} has 1 lot on the Stitching page — its type can't change`);
+
+    const cleared = await patch({ stitching_type: '' });
+    expect(cleared.status).toBe(409);
+
+    // Saving the same type, or anything else, is untouched by the lock.
+    const same = await patch({ stitching_type: 'Fabric', is_active: true });
+    expect(same.status).toBe(200);
+  });
+
+  test('setting a type on an article that had none is always allowed', async () => {
+    const created = await createProduct({ unit_metric: 'pcs' });
+    const res = await authed(request(app).patch(`/api/configurations/outbound-products/${created.body.id}`))
+      .send({ stitching_type: 'Readymade' });
+    expect(res.status).toBe(200);
+    expect(res.body.stitching_type).toBe('Readymade');
+    await cleanup(created.body.category);
+  });
+});

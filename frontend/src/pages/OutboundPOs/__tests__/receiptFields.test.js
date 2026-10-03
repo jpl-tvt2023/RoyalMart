@@ -1,13 +1,16 @@
 import { describe, test, expect } from 'vitest';
 import {
-  isFabricLine, RECEIPT_STAGES, outstandingOf, qtyDifference, offeredQtyDiffAction,
-  receiptFieldError, stageOptionsFor,
+  isStitchingLine, lineType, RECEIPT_STAGES, outstandingOf, qtyDifference, offeredQtyDiffAction,
+  receiptFieldError, stageOptionsFor, defaultReceiptStage,
   emptyLine, toLineState, EMPTY_RECEIPT, NOTE_MAX, receiptIsGraded, receiptGradeTotal,
+  receiptSettledDozens, receiptTakesMetres,
 } from '../receiptFields';
-import { STAGES } from '../../../utils/stitching';
+import { STAGES, umKind } from '../../../utils/stitching';
 
-const fabric = { qty: 100, received: 0, short: 0, goes_to_stitching: 1 };
+const fabric = { qty: 100, received: 0, short: 0, stitching_type: 'Fabric', unit_metric: 'taga' };
 const packaging = { qty: 100, received: 0, short: 0 };
+// Migration 091: readymade goods, bought by the piece or by the dozen.
+const readymade = { qty: 1000, received: 0, short: 0, stitching_type: 'Readymade', unit_metric: 'pcs' };
 
 // The minimum a receipt needs before the fabric rules are the thing failing.
 const valid = {
@@ -15,22 +18,66 @@ const valid = {
   incoming_no: 'IN-1', incoming_stage: 'Processing', qty_in_metres: 400,
 };
 
-describe('isFabricLine', () => {
-  test('is the flag off the product master, and nothing else', () => {
-    expect(isFabricLine(fabric)).toBe(true);
-    expect(isFabricLine(packaging)).toBe(false);
-    expect(isFabricLine(null)).toBe(false);
+describe('isStitchingLine', () => {
+  test('is the type off the product master, and nothing else', () => {
+    expect(isStitchingLine(fabric)).toBe(true);
+    expect(isStitchingLine(readymade)).toBe(true);
+    expect(isStitchingLine(packaging)).toBe(false);
+    expect(isStitchingLine(null)).toBe(false);
+  });
+
+  // A row shaped before 091 carries only the old tick, which meant Fabric.
+  test('the old tick still reads as Fabric', () => {
+    expect(lineType({ goes_to_stitching: 1 })).toBe('Fabric');
+    expect(lineType({ goes_to_stitching: 0 })).toBeNull();
   });
 });
 
 describe('RECEIPT_STAGES', () => {
-  // Third Party is where material LEAVES us. Nothing is ever bought into it.
-  test('is every stage except Third Party', () => {
-    expect(RECEIPT_STAGES).not.toContain('Third Party');
-    for (const s of STAGES) {
-      if (s !== 'Third Party') expect(RECEIPT_STAGES).toContain(s);
-    }
+  // 091: goods can be bought straight into Third Party and sold on.
+  test('is every stage, Third Party included', () => {
+    expect(RECEIPT_STAGES).toEqual(STAGES);
     expect(stageOptionsFor().map(o => o.value)).toEqual(RECEIPT_STAGES);
+  });
+
+  test('Processing is offered but disabled for goods that have no metres', () => {
+    const processing = (line, kind) => stageOptionsFor(line, kind).find(o => o.value === 'Processing');
+    expect(processing(fabric, umKind('taga')).disabled).toBe(false);
+    expect(processing(readymade, umKind('pcs'))).toMatchObject({
+      disabled: true, reason: 'Readymade goods skip Processing — pick Stitching, Packing, Panchal or Third Party',
+    });
+    expect(processing(fabric, umKind('Dzn')).disabled).toBe(true);
+    // Fabric bought by the piece still has its metres asked, so it may.
+    expect(processing(fabric, umKind('pcs')).disabled).toBe(false);
+    expect(defaultReceiptStage(fabric, umKind('taga'))).toBe('Processing');
+    expect(defaultReceiptStage(readymade, umKind('pcs'))).toBe('Stitching');
+  });
+});
+
+describe('what a UM settles', () => {
+  test('the names are read case- and space-insensitively', () => {
+    expect(umKind(' Dzn ')).toBe('dozen');
+    expect(umKind('Dz.')).toBe('dozen');
+    expect(umKind('Mtr')).toBe('metre');
+    expect(umKind('PCS')).toBe('piece');
+    expect(umKind('taga')).toBeNull();
+    expect(umKind('')).toBeNull();
+  });
+
+  test('a dozen UM is the count, and Readymade pieces are twelve to the dozen', () => {
+    expect(receiptSettledDozens({ received_qty: 30, unit_metric: 'dz', incoming_stage: 'Stitching' }, fabric, 'dozen')).toBe(30);
+    expect(receiptSettledDozens({ received_qty: 120, unit_metric: 'pcs', incoming_stage: 'Stitching' }, readymade, 'piece')).toBe(10);
+    // Fabric by the piece is not a dozen of anything until Stitching says so.
+    expect(receiptSettledDozens({ received_qty: 120, unit_metric: 'pcs', incoming_stage: 'Stitching' }, fabric, 'piece')).toBeNull();
+    // And nothing is counted in dozens at Processing.
+    expect(receiptSettledDozens({ received_qty: 30, incoming_stage: 'Processing' }, fabric, 'dozen')).toBeNull();
+  });
+
+  test('only Fabric has metres, and not when bought in dozens', () => {
+    expect(receiptTakesMetres(fabric, null)).toBe(true);
+    expect(receiptTakesMetres(fabric, 'dozen')).toBe(false);
+    expect(receiptTakesMetres(readymade, 'piece')).toBe(false);
+    expect(receiptTakesMetres(packaging, null)).toBe(false);
   });
 });
 
@@ -147,6 +194,43 @@ describe('receiptFieldError', () => {
     expect(receiptIsGraded(packaging, 'Panchal')).toBe(false);
   });
 
+  // The stage heads the form, and the server checks it first too, so it is
+  // the first error a body with several omissions reports.
+  test('the stage is checked first', () => {
+    expect(receiptFieldError({ ...valid, incoming_stage: '', received_qty: '' }, { line: fabric }))
+      .toBe('Stage is required');
+    const rm = { ...valid, unit_metric: 'pcs', qty_in_metres: '', incoming_stage: 'Processing', received_qty: '' };
+    expect(receiptFieldError(rm, { line: readymade }))
+      .toBe('Readymade goods skip Processing — pick Stitching, Packing, Panchal or Third Party');
+  });
+
+  test('Readymade asks neither metres nor a dozen count when the UM settles it', () => {
+    const rm = { ...valid, unit_metric: 'pcs', qty_in_metres: '', received_qty: 120, incoming_stage: 'Stitching' };
+    expect(receiptFieldError(rm, { line: readymade })).toBeNull();
+    // Graded: the grades must split the settled figure.
+    const graded = { ...rm, incoming_stage: 'Packing', fresh_dozens: '8', second_dozens: '0', third_dozens: '0' };
+    expect(receiptFieldError(graded, { line: readymade })).toBe('Fresh + Second + Third must add up to 10 dozen');
+    expect(receiptFieldError({ ...graded, second_dozens: '2' }, { line: readymade })).toBeNull();
+  });
+
+  test('a UM in metres needs no metres typed', () => {
+    expect(receiptFieldError({ ...valid, unit_metric: 'mtr', qty_in_metres: '' }, { line: fabric })).toBeNull();
+  });
+
+  test('a sale takes no incoming number, and needs our bill and a checker', () => {
+    const sale = {
+      ...valid, incoming_stage: 'Third Party', incoming_no: '', fresh_dozens: '5',
+      second_dozens: '0', third_dozens: '0', outbound_bill_no: '', checked_by: '',
+    };
+    expect(receiptFieldError({ ...sale, incoming_no: 'IN-1' }, { line: fabric }))
+      .toBe('Third Party takes no Incoming No — nothing arrives there');
+    expect(receiptFieldError(sale, { line: fabric }))
+      .toBe('Outbound Bill No is required when sending to a third party');
+    expect(receiptFieldError({ ...sale, outbound_bill_no: 'OB-1' }, { line: fabric }))
+      .toBe('Checked By is required');
+    expect(receiptFieldError({ ...sale, outbound_bill_no: 'OB-1', checked_by: '3' }, { line: fabric })).toBeNull();
+  });
+
   // Free text, last of all, in the slot the server gives it.
   test('the note is optional and capped', () => {
     expect(EMPTY_RECEIPT.note).toBe('');
@@ -172,7 +256,7 @@ describe('toLineState — the page/modal line contract', () => {
     id: 52, po_id: 19, line_no: 1,
     category: 'Raw Material', item_name: 'Handkerchief - Bundle Fabric', variant: null,
     qty: 250, rate: 25, short: 0, received: 50, unit_metric: 'taga',
-    goes_to_stitching: 1,
+    goes_to_stitching: 1, stitching_type: 'Fabric',
     flags: [], receipts: [],
     updated_by_name: 'admin', updated_at: '2026-09-13 10:00:00',
     deleted_at: null, deleted_by: null,
@@ -180,14 +264,15 @@ describe('toLineState — the page/modal line contract', () => {
 
   // THE regression. One assertion, and it is the whole bug.
   test('a fabric line is still fabric after the projection', () => {
-    expect(isFabricLine(serverRow)).toBe(true);
-    expect(isFabricLine(toLineState(serverRow))).toBe(true);
+    expect(isStitchingLine(serverRow)).toBe(true);
+    expect(lineType(toLineState(serverRow))).toBe('Fabric');
+    expect(lineType(toLineState({ ...serverRow, stitching_type: 'Readymade' }))).toBe('Readymade');
   });
 
   test('every field ReceiptModal reads survives', () => {
     const line = toLineState(serverRow);
     for (const key of ['category', 'item_name', 'variant', 'qty', 'rate',
-      'received', 'short', 'unit_metric', 'goes_to_stitching', 'id']) {
+      'received', 'short', 'unit_metric', 'goes_to_stitching', 'stitching_type', 'id']) {
       expect(line).toHaveProperty(key);
     }
     expect(line.goes_to_stitching).toBe(1);
@@ -195,16 +280,18 @@ describe('toLineState — the page/modal line contract', () => {
   });
 
   test('a non-fabric line reads as non-fabric rather than as missing', () => {
-    const line = toLineState({ ...serverRow, goes_to_stitching: 0 });
+    const line = toLineState({ ...serverRow, goes_to_stitching: 0, stitching_type: null });
     expect(line.goes_to_stitching).toBe(0);
-    expect(isFabricLine(line)).toBe(false);
+    expect(isStitchingLine(line)).toBe(false);
   });
 
   // A row written before the flag existed must read as non-fabric, not NaN.
   test('an absent flag defaults rather than propagating undefined', () => {
-    const { goes_to_stitching, ...withoutFlag } = serverRow;
+    const { goes_to_stitching, stitching_type, ...withoutFlag } = serverRow;
     expect(goes_to_stitching).toBe(1);
+    expect(stitching_type).toBe('Fabric');
     expect(toLineState(withoutFlag).goes_to_stitching).toBe(0);
+    expect(toLineState(withoutFlag).stitching_type).toBeNull();
   });
 
   // The two shapes feed the same grid and the same modal, so a field added to

@@ -6,6 +6,7 @@ import Button from '../../components/ui/Button';
 import { useRBAC } from '../../hooks/useRBAC';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { formatDateTime } from '../../utils/formatters';
+import { STITCHING_TYPES } from '../../utils/stitching';
 import {
   listOutboundProducts, createOutboundProduct, updateOutboundProduct, deleteOutboundProduct,
 } from '../../api/outboundProducts.api';
@@ -17,7 +18,15 @@ import {
 // here -- it is built around a
 // single `name` field -- so this mirrors its layout and behaviour instead.
 
-const EMPTY = { category: '', item_name: '', unit_metric: '', is_active: true, goes_to_stitching: false };
+const EMPTY = { category: '', item_name: '', unit_metric: '', is_active: true, stitching_type: '' };
+
+// What each choice means, shown under the select. The client asked for Fabric
+// vs Readymade in place of the old yes/no tick (migration 091).
+const TYPE_HINTS = {
+  '': 'Not a stitching item — packaging, barcodes. Receipts ask for no stage.',
+  Fabric: 'Bought by the taga or metre and processed. Its receipts ask for the stage and the metres, and its lots appear under Stitching → Fabric.',
+  Readymade: 'Arrives already made up, counted in pieces or dozens. Skips Processing, and its lots appear under Stitching → Readymade.',
+};
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f] disabled:bg-gray-50 disabled:text-gray-500';
 
@@ -61,7 +70,7 @@ export default function OutboundProductsTab() {
       item_name: r.item_name,
       unit_metric: r.unit_metric,
       is_active: !!r.is_active,
-      goes_to_stitching: !!r.goes_to_stitching,
+      stitching_type: r.stitching_type || '',
       products_using: r.products_using || 0,
     });
     setFormError('');
@@ -78,7 +87,7 @@ export default function OutboundProductsTab() {
       category: form.category.trim(),
       item_name: form.item_name.trim(),
       unit_metric: form.unit_metric.trim(),
-      goes_to_stitching: form.goes_to_stitching,
+      stitching_type: form.stitching_type || null,
     };
     if (!payload.category) { setFormError('Category is required'); return; }
     if (!payload.item_name) { setFormError('Item name is required'); return; }
@@ -151,11 +160,11 @@ export default function OutboundProductsTab() {
                   <td className="px-4 py-3 text-gray-700">{r.category}</td>
                   <td className="px-4 py-3 text-gray-900 font-medium">{r.item_name}</td>
                   <td className="px-4 py-3 text-gray-700">{r.unit_metric}</td>
-                  {/* Only these articles travel the Stitching stages, and only
-                      their receipts demand a stage and a metres figure. */}
+                  {/* Only these articles travel the Stitching stages, and the
+                      type decides which section of that page their lots show in. */}
                   <td className="px-4 py-3 text-gray-700">
-                    {r.goes_to_stitching
-                      ? <span className="text-[#003049] font-medium">Yes</span>
+                    {r.stitching_type
+                      ? <span className="text-[#003049] font-medium">{r.stitching_type}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
                   {/* Derived count, not a stored field — a native title is used
@@ -280,21 +289,21 @@ export default function OutboundProductsTab() {
 
           {formError && <p className="text-xs text-red-600">{formError}</p>}
 
-          <label className="flex items-start gap-2 text-sm text-gray-700">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={form.goes_to_stitching}
-              onChange={e => setForm(f => ({ ...f, goes_to_stitching: e.target.checked }))}
-            />
-            <span>
-              Goes through Stitching
-              <span className="block text-[11px] text-gray-400">
-                Fabric only. Its receipts ask for the stage the goods arrived at and their
-                quantity in metres, and its lots appear on the Stitching page.
-              </span>
-            </span>
-          </label>
+          {/* Fabric or Readymade decides which section of the Stitching page
+              this article's lots land in. Locked on the server while it has
+              lots there -- the 409 lands in formError above. */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Stitching</label>
+            <select
+              value={form.stitching_type}
+              onChange={e => { setForm(f => ({ ...f, stitching_type: e.target.value })); if (formError) setFormError(''); }}
+              className={inputCls}
+            >
+              <option value="">None</option>
+              {STITCHING_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <p className="mt-1 text-[11px] text-gray-400">{TYPE_HINTS[form.stitching_type || '']}</p>
+          </div>
 
           {modal !== 'add' && (
             <label className="flex items-center gap-2 text-sm text-gray-700">

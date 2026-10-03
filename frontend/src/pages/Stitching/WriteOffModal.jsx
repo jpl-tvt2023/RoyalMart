@@ -28,6 +28,9 @@ export default function WriteOffModal({ lot, onClose, onSaved }) {
   // the same unit its balance is kept in and the server writes it off in.
   const unit = lot?.balance_unit === 'dz' ? 'dz' : 'm';
   const serverUnit = unit === 'dz' ? ' dozen' : 'm';
+  // To the 2dp the quantity is typed in. A raw float balance (0.00999...) as the
+  // input's max made the browser refuse the 0.01 shown as available.
+  const maxQty = Math.round(Number(lot?.balance || 0) * 100) / 100;
 
   // Mirrors the server's rules AND their order.
   const fieldError = () => {
@@ -85,7 +88,7 @@ export default function WriteOffModal({ lot, onClose, onSaved }) {
           </label>
           <input
             autoFocus
-            type="number" min={0.01} step="0.01" max={lot.balance}
+            type="number" min={0.01} step="0.01" max={maxQty}
             value={qty}
             onChange={e => setQty(e.target.value)}
             className={inputCls}
