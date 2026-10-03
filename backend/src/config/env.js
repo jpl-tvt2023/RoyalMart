@@ -19,5 +19,4 @@ module.exports = {
   JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET,
   JWT_ACCESS_EXPIRY: process.env.JWT_ACCESS_EXPIRY || '15m',
   JWT_REFRESH_EXPIRY: process.env.JWT_REFRESH_EXPIRY || '7d',
-  REPORT_OUTPUT_DIR: process.env.REPORT_OUTPUT_DIR || './reports',
 };

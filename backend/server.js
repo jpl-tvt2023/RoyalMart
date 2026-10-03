@@ -2,7 +2,6 @@ const app = require('./app');
 const { PORT, NODE_ENV } = require('./src/config/env');
 
 if (NODE_ENV !== 'test') {
-  require('./src/jobs/dailyReport.cron');
   require('./src/jobs/auditRetention.cron');
 }
 

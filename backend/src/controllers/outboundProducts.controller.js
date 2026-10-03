@@ -8,19 +8,16 @@ const OUTBOUND_PRODUCT_FIELDS = ['category', 'item_name', 'unit_metric', 'is_act
 // The tick decides THAT it does; its unit metric decides HOW -- bought in
 // dozens or pieces it starts at Stitching, in taga or metres at Processing
 // (umKind in stitching.service.js). Migration 091 briefly made this a
-// None / Fabric / Readymade choice, which said the UM's job a second time; a
-// caller still sending stitching_type is read as a tick (any value) or an
-// untick (empty).
+// None / Fabric / Readymade choice, which said the UM's job a second time, and
+// 093 dropped its column. A browser tab still holding that form sends
+// stitching_type instead, so it is read as a tick (any value) or an untick
+// (empty) rather than letting the save silently change nothing.
 function resolveStitching(body, current = null) {
   const has = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
   if (has('goes_to_stitching')) return body.goes_to_stitching ? 1 : 0;
   if (has('stitching_type')) return String(body.stitching_type ?? '').trim() ? 1 : 0;
   return current ? (Number(current.goes_to_stitching) ? 1 : 0) : 0;
 }
-
-// stitching_type (091) is a dead column now, kept in step with the tick so the
-// 091 code could still be rolled back to. Nothing reads it.
-const legacyType = (stitching) => (stitching ? 'Fabric' : null);
 
 // Receipts of this exact (category, item_name, unit_metric) triple that are
 // lots on the Stitching page right now -- the same qualification LOTS_CTE
@@ -92,12 +89,12 @@ async function create(req, res, next) {
     const stitching = resolveStitching(req.body);
 
     const { rows } = await db.execute({
-      sql: `INSERT INTO outbound_products (category, item_name, unit_metric, goes_to_stitching, stitching_type,
+      sql: `INSERT INTO outbound_products (category, item_name, unit_metric, goes_to_stitching,
               updated_by, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
             RETURNING id, category, item_name, unit_metric, is_active, goes_to_stitching,
                       created_at, updated_at`,
-      args: [category, itemName, unitMetric, stitching, legacyType(stitching), req.user.id],
+      args: [category, itemName, unitMetric, stitching, req.user.id],
     });
     await logAction({
       userId: req.user.id,
@@ -194,11 +191,11 @@ async function update(req, res, next) {
       const { rows } = await tx.execute({
         sql: `UPDATE outbound_products
               SET category = ?, item_name = ?, unit_metric = ?, is_active = ?,
-                  goes_to_stitching = ?, stitching_type = ?, updated_by = ?, updated_at = datetime('now')
+                  goes_to_stitching = ?, updated_by = ?, updated_at = datetime('now')
               WHERE id = ?
               RETURNING id, category, item_name, unit_metric, is_active, goes_to_stitching,
                         created_at, updated_at`,
-        args: [nextCategory, nextItemName, nextUnitMetric, nextActive, nextStitching, legacyType(nextStitching), req.user.id, id],
+        args: [nextCategory, nextItemName, nextUnitMetric, nextActive, nextStitching, req.user.id, id],
       });
       updated = rows[0];
 

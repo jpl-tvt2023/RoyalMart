@@ -331,36 +331,36 @@ describe('Stitching prefixes master', () => {
   });
 });
 
+// 093 dropped the columns nothing read. Pinned so a later migration (or a
+// rebuild copying an old column list) cannot quietly bring one back.
+describe('Dropped columns (093)', () => {
+  test.each([
+    ['outbound_products', 'stitching_type'],
+    ['outbound_po_line_receipts', 'after_rate'],
+    ['stitching_entries', 'after_rate'],
+    ['stitching_entries', 'received_at'],
+    ['stitching_entries', 'received_by'],
+    ['stitching_entries', 'party_id'],
+    ['outbound_po_lines', 'received'],
+  ])('%s.%s is gone', async (table, column) => {
+    const { rows } = await db.execute(`PRAGMA table_info(${table})`);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.map(r => r.name)).not.toContain(column);
+  });
+});
+
 describe('Receipt rate fields', () => {
-  test('after_rate defaults to billed + process when omitted', async () => {
-    const { poId, lineId } = await setupLine();
-    const created = await postReceipt(poId, lineId, { received_rate: 50, process_rate: 5 });
-    const receipt = await getReceipt(poId, created.body.id);
-    expect(receipt.after_rate).toBe(55);
-  });
-
-  test('after_rate can be overridden and the override is what is stored', async () => {
-    const { poId, lineId } = await setupLine();
-    const created = await postReceipt(poId, lineId, { received_rate: 50, process_rate: 5, after_rate: 60 });
-    const receipt = await getReceipt(poId, created.body.id);
-    expect(receipt.after_rate).toBe(60);
-  });
-
   test('a process rate of 0 is accepted — a free job costs nothing, not an unknown amount', async () => {
     const { poId, lineId } = await setupLine();
     const created = await postReceipt(poId, lineId, { received_rate: 50, process_rate: 0 });
     expect(created.status).toBe(201);
     const receipt = await getReceipt(poId, created.body.id);
     expect(receipt.process_rate).toBe(0);
-    expect(receipt.after_rate).toBe(50);
   });
 
-  test.each([
-    ['process_rate', 1.005],
-    ['after_rate', 99.999],
-  ])('%s is rejected beyond 2 decimal places', async (field, value) => {
+  test('process_rate is rejected beyond 2 decimal places', async () => {
     const { poId, lineId } = await setupLine();
-    const res = await postReceipt(poId, lineId, { [field]: value });
+    const res = await postReceipt(poId, lineId, { process_rate: 1.005 });
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/at most 2 decimal places/);
   });
@@ -378,15 +378,15 @@ describe('Receipt rate fields', () => {
     expect(res.status).toBe(201);
   });
 
-  test('after_rate keeps following process_rate until the user pins it', async () => {
+  // After Rate was dropped in 093. A browser tab still holding the old form may
+  // send one: it is ignored, never refused, so the save still goes through.
+  test('an After Rate from an old form is ignored, not refused', async () => {
     const { poId, lineId } = await setupLine();
-    const created = await postReceipt(poId, lineId, { received_rate: 50, process_rate: 5 });
-    await patchReceipt(poId, lineId, created.body.id, { process_rate: 9 });
-    expect((await getReceipt(poId, created.body.id)).after_rate).toBe(59);
-
-    await patchReceipt(poId, lineId, created.body.id, { after_rate: 100 });
-    await patchReceipt(poId, lineId, created.body.id, { process_rate: 3 });
-    expect((await getReceipt(poId, created.body.id)).after_rate).toBe(100);
+    const created = await postReceipt(poId, lineId, { received_rate: 50, process_rate: 5, after_rate: 99.999 });
+    expect(created.status).toBe(201);
+    const patched = await patchReceipt(poId, lineId, created.body.id, { after_rate: 100 });
+    expect(patched.status).toBe(200);
+    expect(await getReceipt(poId, created.body.id)).not.toHaveProperty('after_rate');
   });
 
   test('a stage with no incoming number is refused', async () => {
@@ -555,7 +555,7 @@ describe('Forwarding through the stages', () => {
     expect(parent.balance).toBe(40);
   });
 
-  test('the child records what actually arrived, and inherits the rate chain', async () => {
+  test('the child records what actually arrived, and carries the PO rate down', async () => {
     const { receiptId } = await processingLot({ qty: 100, process_rate: 5 });
     const res = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'Dyeing House',
@@ -565,8 +565,9 @@ describe('Forwarding through the stages', () => {
     const child = findLot(processed.body.rows, 'entry', res.body.id);
     expect(child.received_qty).toBe(58);
     expect(child.sent_qty).toBe(60);
-    expect(child.rate).toBe(55);        // the Processing lot's after rate
-    expect(child.after_rate).toBe(62);  // 55 + 7
+    expect(child.po_rate).toBe(50);       // read off the origin receipt
+    expect(child.process_rate).toBe(7);   // this challan's own rate, nothing added
+    expect(child).not.toHaveProperty('after_rate');
     expect(child.item_name).toBe('Handkerchief - Bundle Fabric');
     expect(child.party_name).toBe('Dyeing House');
     // From Stitching on, the lot is counted in dozens -- 58 by the fixture's
@@ -616,7 +617,7 @@ describe('Forwarding through the stages', () => {
     expect(res.body.message).toMatch(/only 100m is left/);
   });
 
-  // WAS a rate column per stage, and before that a running after_rate. The page
+  // WAS a rate column per stage, and before that a running total. The page
   // now shows ONE figure -- the whole cost of a dozen -- with each stage's rate
   // spelled out beside it. A challan's rate belongs to the stage it LEFT, in
   // that stage's unit: the Processing rate is per metre, the Stitching and
@@ -917,8 +918,8 @@ describe('Integrity guards back on the receipt', () => {
     const { poId, lineId, receiptId, childId } = await forwardedProcessingLot();
     await patchReceipt(poId, lineId, receiptId, { received_rate: 80 });
     const processed = await api.listStage({ stage: 'Stitching' });
-    // 80 + the 5 process rate processingLot() sets = 85 carried in, not the old 55.
-    expect(findLot(processed.body.rows, 'entry', childId).rate).toBe(85);
+    // The child reads the PO rate off its origin receipt, so it follows at once.
+    expect(findLot(processed.body.rows, 'entry', childId).po_rate).toBe(80);
   });
 });
 
@@ -992,8 +993,8 @@ describe('Editing and deleting a stage lot', () => {
     expect(res.body.message).toMatch(/Dozens Received cannot be less than 50/);
   });
 
-  // after_rate is dead (the rate total replaced it), so editing a rate records
-  // the new figure in the unit the form now asks for, and nothing else.
+  // There is no running rate to keep in step (the rate total replaced it), so
+  // editing a rate records the new figure in the unit the form now asks for.
   test('editing the rate re-stamps it in the unit of the stage it leaves', async () => {
     const { midId, leafId } = await chain();
     // Out of Processing: per metre, whatever an older row held.
@@ -1441,10 +1442,13 @@ describe('Journey view', () => {
     expect(body.nodes.map(n => n.short)).toEqual([null, 2, null]);
   });
 
-  test('the rate builds up along the chain', async () => {
+  // What the journey shows: the one PO rate every hop shares, and each hop's
+  // own rate beside it. Nothing is summed into a running figure.
+  test('every hop shares the PO rate and keeps its own rate', async () => {
     const { receiptId } = await chain();
     const { body } = await api.journey('receipt', receiptId);
-    expect(body.nodes.map(n => n.after_rate)).toEqual([55, 62, 65]);
+    expect(body.nodes.map(n => n.po_rate)).toEqual([50, 50, 50]);
+    expect(body.nodes.map(n => n.process_rate)).toEqual([5, 7, 3]);
   });
 
   test('the anchor is marked, and only the anchor', async () => {
@@ -1532,8 +1536,7 @@ describe('Challans — a lot moves on only under one', () => {
     expect(row.sent_qty).toBe(40);
     expect(row.short).toBe(2);
     expect(row.challan_no).toBe(challan);
-    expect(row.rate).toBe(55);       // the Processing lot's after rate, carried in
-    expect(row.after_rate).toBe(62); // 55 + 7
+    expect(row.process_rate).toBe(7);
     // It holds material, so it can be sent on immediately -- no second step.
     expect(row.can_forward).toBe(true);
   });

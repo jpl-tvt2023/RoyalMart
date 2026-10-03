@@ -10,7 +10,7 @@ import { checkerOptionsFor } from '../../utils/checkers';
 import { fmtNum, STOCK_STAGE, EXIT_STAGE, umKind, receiptStageBlockReason } from '../../utils/stitching';
 import {
   EMPTY_RECEIPT, INCOMING_NO_MAX, NOTE_MAX,
-  receiptFieldError, withDerivedAfterRate, stageOptionsFor, defaultReceiptStage,
+  receiptFieldError, stageOptionsFor, defaultReceiptStage,
   isStitchingLine, receiptUmKind, receiptTakesMetres,
   receiptDozensDerivable, receiptSettledDozens, receiptIsSale,
   outstandingOf, qtyDifference, offeredQtyDiffAction,
@@ -196,7 +196,6 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
       bill_no: receipt.bill_no ?? '',
       incoming_no: receipt.incoming_no ?? '',
       process_rate: receipt.process_rate ?? '',
-      after_rate: receipt.after_rate ?? '',
       incoming_stage: receipt.incoming_stage ?? '',
       qty_in_metres: receipt.qty_in_metres ?? '',
       // Omitted here once, which made every dozen-stage receipt uneditable: the
@@ -233,7 +232,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
   }, [stitching]);
 
   const setField = (field, value) => setForm((f) => {
-    const next = withDerivedAfterRate(f, field, value);
+    const next = { ...f, [field]: value };
     // A unit that cannot take the stage already picked -- Processing, for a UM
     // in dozens -- moves the stage to the first one it can take.
     if (field === 'unit_metric' && stitching && next.incoming_stage
@@ -256,7 +255,6 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
         received_rate: Number(form.received_rate),
         incoming_no: String(form.incoming_no ?? '').trim() || null,
         process_rate: form.process_rate === '' ? null : Number(form.process_rate),
-        after_rate: form.after_rate === '' ? null : Number(form.after_rate),
         note: String(form.note ?? '').trim() || null,
       };
       if (stitching) {
@@ -505,15 +503,6 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
               type="number" min={0} step="0.01"
               value={form.process_rate}
               onChange={e => setField('process_rate', e.target.value)}
-              className={inputCls}
-            />
-          </Field>
-
-          <Field label="After Rate" hint="Defaults to Received + Process — type over it to pin a value">
-            <input
-              type="number" min={0} step="0.01"
-              value={form.after_rate}
-              onChange={e => setField('after_rate', e.target.value)}
               className={inputCls}
             />
           </Field>

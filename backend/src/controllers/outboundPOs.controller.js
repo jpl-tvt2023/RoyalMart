@@ -6,7 +6,7 @@ const {
 } = require('../services/outboundPOFlags');
 const { pairKey, unitMetricsByPair } = require('../services/outboundProducts.service');
 const {
-  effectiveAfterRate, moneyError, qtyError, EPSILON, isValidStage, STAGES, countsDozens, DOZEN_STAGES,
+  moneyError, qtyError, EPSILON, isValidStage, STAGES, countsDozens, DOZEN_STAGES,
   STOCK_STAGE, EXIT_STAGE, CHALLAN_TYPES, GRADE_COLUMNS, isGradedStage,
   umKind, countsInDozens, derivedDozens, receiptHasMetres, receiptStageBlockReason,
 } = require('../services/stitching.service');
@@ -455,10 +455,6 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
     const err = moneyError(body.process_rate, 'Process Rate');
     if (err) return err;
   }
-  if (present('after_rate')) {
-    const err = moneyError(body.after_rate, 'After Rate');
-    if (err) return err;
-  }
 
   // The stage itself was checked first, by receiptStageError. What follows from
   // it starts here.
@@ -718,7 +714,7 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
       sql: `SELECT r.id, r.line_id, r.received_qty, r.received_rate, r.bill_no,
                    r.checked_by, r.incoming_no, r.unit_metric, r.qty_in_metres, r.received_dozens,
                    r.qty_diff_action, r.qty_diff_reason,
-                   r.process_rate, r.after_rate, r.incoming_prefix_id,
+                   r.process_rate, r.incoming_prefix_id,
                    r.fresh_dozens, r.second_dozens, r.third_dozens, r.note,
                    r.stage_party_name, r.stage_rate,
                    -- A receipt booked straight into Third Party has no prefix,
@@ -1471,12 +1467,6 @@ async function createReceipt(req, res, next) {
 
     const processRate = req.body?.process_rate != null && req.body.process_rate !== ''
       ? Number(req.body.process_rate) : null;
-    // The client pre-fills After Rate as Billed + Process and lets the user
-    // overwrite it, so the value is stored rather than derived. Filling the same
-    // default here keeps a client that omits it in step with one that does not.
-    const afterRate = req.body?.after_rate != null && req.body.after_rate !== ''
-      ? Number(req.body.after_rate)
-      : effectiveAfterRate(receivedRate, processRate, null);
 
     // Panchal is the end of the chain. Goods bought straight into it have
     // nothing left to happen to them, so the receipt is closed as it is saved
@@ -1487,14 +1477,14 @@ async function createReceipt(req, res, next) {
     try {
       const { rows: inserted } = await tx.execute({
         sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, checked_by, incoming_no,
-                process_rate, after_rate, incoming_prefix_id, direct_stage, outbound_bill_no,
+                process_rate, incoming_prefix_id, direct_stage, outbound_bill_no,
                 unit_metric, qty_in_metres, received_dozens,
                 fresh_dozens, second_dozens, third_dozens, note,
                 qty_diff_action, qty_diff_reason, closed_at, closed_by, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ${closesOnSave ? "datetime('now')" : 'NULL'}, ?, ?, ?) RETURNING id`,
         args: [lineId, receivedQty, receivedRate, billNo, checkedBy, incomingNo,
-          processRate, afterRate, prefixId, directStage, outboundBillNo,
+          processRate, prefixId, directStage, outboundBillNo,
           unitMetric, qtyInMetres, receivedDozens,
           grades.fresh_dozens, grades.second_dozens, grades.third_dozens, note,
           diffAction, diffReason, closesOnSave ? req.user.id : null, req.user.id, req.user.id],
@@ -1548,7 +1538,7 @@ async function updateReceipt(req, res, next) {
 
     const { rows: receiptRows } = await db.execute({
       sql: `SELECT r.id, r.received_qty, r.received_rate, r.bill_no, r.checked_by, r.incoming_no,
-                   r.process_rate, r.after_rate, r.incoming_prefix_id, r.qty_in_metres,
+                   r.process_rate, r.incoming_prefix_id, r.qty_in_metres,
                    r.received_dozens, r.unit_metric, r.closed_at,
                    r.fresh_dozens, r.second_dozens, r.third_dozens, r.note,
                    r.stage_party_name, r.stage_rate, r.direct_stage, r.outbound_bill_no,
@@ -1687,21 +1677,6 @@ async function updateReceipt(req, res, next) {
     const nextStageParty = stageMoved ? null : receipt.stage_party_name;
     const nextStageRate = stageMoved ? null : receipt.stage_rate;
 
-    // After Rate follows Billed + Process whenever the user has not pinned it
-    // themselves. Without this, editing Process Rate on an existing receipt
-    // would leave a stale After Rate behind and quietly misprice everything
-    // downstream of it on the Stitching page.
-    let nextAfterRate = receipt.after_rate;
-    if (has('after_rate')) {
-      nextAfterRate = req.body.after_rate != null && req.body.after_rate !== ''
-        ? Number(req.body.after_rate) : null;
-    } else if (has('received_rate') || has('process_rate')) {
-      const wasDefault = receipt.after_rate == null
-        || Math.abs(receipt.after_rate - effectiveAfterRate(receipt.received_rate, receipt.process_rate, null)) <= EPSILON;
-      if (wasDefault) nextAfterRate = effectiveAfterRate(nextRate, nextProcessRate, null);
-    }
-    if (nextAfterRate == null) nextAfterRate = effectiveAfterRate(nextRate, nextProcessRate, null);
-
     const pairError = incomingPairError(nextIncomingNo, nextPrefixId);
     if (pairError) return res.status(400).json({ message: pairError });
 
@@ -1788,13 +1763,13 @@ async function updateReceipt(req, res, next) {
     // short already absorbed. Corrections go through the inline Short cell on
     // the line, which is what updateLineShort is for.
     const RECEIPT_FIELDS = ['received_qty', 'received_rate', 'bill_no', 'checked_by', 'incoming_no',
-      'process_rate', 'after_rate', 'incoming_prefix_id', 'unit_metric', 'qty_in_metres',
+      'process_rate', 'incoming_prefix_id', 'unit_metric', 'qty_in_metres',
       'received_dozens', 'fresh_dozens', 'second_dozens', 'third_dozens', 'note',
       'stage_party_name', 'stage_rate', 'direct_stage', 'outbound_bill_no'];
     const changes = diffFields(receipt, {
       received_qty: nextQty, received_rate: nextRate, bill_no: nextBillNo,
       checked_by: nextCheckedBy, incoming_no: nextIncomingNo,
-      process_rate: nextProcessRate, after_rate: nextAfterRate,
+      process_rate: nextProcessRate,
       incoming_prefix_id: nextPrefixId, unit_metric: nextUnitMetric,
       qty_in_metres: nextQtyInMetres,
       received_dozens: nextReceivedDozens,
@@ -1840,13 +1815,13 @@ async function updateReceipt(req, res, next) {
       if (changes.length) {
         await tx.execute({
           sql: `UPDATE outbound_po_line_receipts SET received_qty = ?, received_rate = ?, bill_no = ?,
-                  checked_by = ?, incoming_no = ?, process_rate = ?, after_rate = ?,
+                  checked_by = ?, incoming_no = ?, process_rate = ?,
                   incoming_prefix_id = ?, unit_metric = ?, qty_in_metres = ?, received_dozens = ?,
                   fresh_dozens = ?, second_dozens = ?, third_dozens = ?, note = ?,
                   stage_party_name = ?, stage_rate = ?, direct_stage = ?, outbound_bill_no = ?,
                   updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
           args: [nextQty, nextRate, nextBillNo, nextCheckedBy, nextIncomingNo,
-            nextProcessRate, nextAfterRate, nextPrefixId, nextUnitMetric,
+            nextProcessRate, nextPrefixId, nextUnitMetric,
             nextQtyInMetres, nextReceivedDozens,
             nextGrades.fresh_dozens, nextGrades.second_dozens, nextGrades.third_dozens, nextNote,
             nextStageParty, nextStageRate, nextDirectStage, nextOutboundBillNo,

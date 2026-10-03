@@ -9,7 +9,7 @@ const {
   GRADE_COLUMNS, isGradedStage, isRateStage,
   umKind,
   partyTag, rateTotal,
-  effectiveAfterRate, statusSql, moneyError, qtyError, challanError,
+  statusSql, moneyError, qtyError, challanError,
   revertReasonError, writeOffReasonError,
 } = require('../services/stitching.service');
 
@@ -44,7 +44,6 @@ const SORT_COLUMNS = {
   incoming_no: 'full_incoming_no',
   received_qty: 'received_qty',
   balance: 'balance',
-  after_rate: 'after_rate',
   status: 'status',
   updated_at: 'updated_at',
   // What the All tab asks for: one PO's lots together, in chain order.
@@ -131,7 +130,6 @@ WITH lots AS (
     NULL AS sent_dozens,
     NULL AS challan_line_no,
     NULL AS parent_stage,
-    r.received_rate AS rate,
     -- THE PO RATE: what the fabric was billed at on the purchase order. It is
     -- the one rate every lot in a chain shares, and downstream lots read it off
     -- this same origin receipt rather than carrying a copy.
@@ -142,8 +140,8 @@ WITH lots AS (
     r.received_rate AS po_rate,
     -- THIS STAGE'S OWN RATE, and only this stage's. On a receipt that is the
     -- cost of the processing already done when we bought it -- a lot bought in
-    -- at Processing was billed for processing. Rates no longer accumulate into a
-    -- running after_rate: each stage keeps its own figure and the ladder is
+    -- at Processing was billed for processing. Rates do not accumulate into a
+    -- running total: each stage keeps its own figure and the ladder is
     -- assembled by withLineage at read time.
     -- ladder_rate, not stage_rate: stage_rate is the lot's own Rate (above).
     r.process_rate AS ladder_rate,
@@ -152,10 +150,9 @@ WITH lots AS (
     -- it -- or per dozen on a receipt that has no metres at all (bought in
     -- dozens or pieces, 091), where there is no metre to quote against.
     CASE WHEN r.qty_in_metres IS NULL THEN 'dozen' ELSE 'metre' END AS rate_unit,
-    COALESCE(r.after_rate, r.received_rate + COALESCE(r.process_rate, 0)) AS after_rate,
     -- Our outbound bill, on a receipt booked straight into Third Party (091) --
     -- goods bought and sold on without entering our stock. NULL on every other.
-    r.outbound_bill_no AS outbound_bill_no, NULL AS party_id,
+    r.outbound_bill_no AS outbound_bill_no,
     -- The warehouse's own number, set only on a challan sent to Panchal. An
     -- origin receipt was never sent anywhere, so it has none.
     NULL AS panchal_incoming_no,
@@ -221,18 +218,13 @@ WITH lots AS (
     e.challan_line_no AS challan_line_no,
     -- The stage this challan LEFT. A challan's rate belongs to it.
     COALESCE(pe.stage, psp.stage) AS parent_stage,
-    COALESCE(
-      CASE WHEN e.parent_receipt_id IS NOT NULL
-           THEN COALESCE(pr.after_rate, pr.received_rate + COALESCE(pr.process_rate, 0))
-           ELSE pe.after_rate END, 0) AS rate,
     -- Read off the origin receipt the row already joins, so correcting the PO
     -- rate upstream flows down the whole chain without a stored copy anywhere.
     orr.received_rate AS po_rate,
     e.process_rate AS ladder_rate,
     e.process_rate AS process_rate,
     e.rate_unit AS rate_unit,
-    COALESCE(e.after_rate, 0) AS after_rate,
-    e.outbound_bill_no AS outbound_bill_no, e.party_id AS party_id,
+    e.outbound_bill_no AS outbound_bill_no,
     e.panchal_incoming_no AS panchal_incoming_no,
     e.checked_by AS checked_by, kb.name AS checked_by_name,
     e.closed_at AS closed_at, e.closed_by AS closed_by, clb.name AS closed_by_name,
@@ -891,11 +883,6 @@ async function validateEntryFields(body, {
     const err = moneyError(body.process_rate, sourceStage ? `${sourceStage} rate` : 'Rate');
     if (err) return err;
   }
-  if (present('after_rate')) {
-    const err = moneyError(body.after_rate, 'After Rate');
-    if (err) return err;
-  }
-
   // Checked By is asked at two destinations and stamped everywhere else.
   //
   // It used to be a required dropdown on every hand-over, which made each one
@@ -1201,10 +1188,6 @@ async function create(req, res, next) {
     const rateSent = Object.prototype.hasOwnProperty.call(req.body || {}, 'process_rate');
     const processRate = rateSent ? numOrNull(req.body.process_rate) : (parent.stage_rate ?? null);
     const rateUnit = processRate == null ? null : stageRateUnit(parent.stage);
-    // Still written for the rows that read it, though nothing on the page does.
-    const afterRate = req.body.after_rate != null && req.body.after_rate !== ''
-      ? Number(req.body.after_rate)
-      : effectiveAfterRate(parent.after_rate, processRate, null);
 
     // The party and rate on this challan are the source lot's Stage Party and
     // Rate. Whatever the form sent becomes the lot's, and every earlier challan
@@ -1222,19 +1205,14 @@ async function create(req, res, next) {
       for (let i = 0; i < rows.length; i += 1) {
         const r = rows[i];
         const { rows: inserted } = await tx.execute({
-          // received_at and received_by are still written even though nothing reads
-          // them to decide a status any more: sending and receiving are the same
-          // moment now, so the value is true rather than vestigial.
           sql: `INSERT INTO stitching_entries
                   (stage, origin_receipt_id, parent_receipt_id, parent_entry_id, party_name,
                    challan_no, challan_line_no, challan_type, outbound_bill_no, panchal_incoming_no,
                    incoming_prefix_id, incoming_no,
                    sent_qty, received_qty, sent_dozens, received_dozens,
                    fresh_dozens, second_dozens, third_dozens,
-                   process_rate, rate_unit, after_rate, checked_by,
-                   received_at, received_by, created_by, updated_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        datetime('now'), ?, ?, ?)
+                   process_rate, rate_unit, checked_by, created_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id`,
           args: [
             targetStage, originReceiptId,
@@ -1244,8 +1222,8 @@ async function create(req, res, next) {
             numbering.prefixId, numbering.incomingNo,
             r.sentQty, r.receivedQty, r.sentDozens, r.receivedDozens,
             r.cols.fresh_dozens, r.cols.second_dozens, r.cols.third_dozens,
-            processRate, rateUnit, afterRate, checkedBy,
-            req.user.id, req.user.id, req.user.id,
+            processRate, rateUnit, checkedBy,
+            req.user.id, req.user.id,
           ],
         });
         ids.push(inserted[0].id);
@@ -1537,8 +1515,8 @@ async function writeOff(req, res, next) {
         sql: `INSERT INTO stitching_entries
                 (stage, origin_receipt_id, parent_receipt_id, parent_entry_id, party_name,
                  sent_qty, received_qty, sent_dozens, received_dozens, write_off_reason,
-                 received_at, received_by, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?) RETURNING id`,
+                 created_by, updated_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
         args: [
           parent.stage, originReceiptId,
           parentSrc === 'receipt' ? parent.id : null,
@@ -1547,7 +1525,7 @@ async function writeOff(req, res, next) {
           parentDozen ? null : qty, parentDozen ? null : 0,
           parentDozen ? qty : null, parentDozen ? 0 : null,
           reason,
-          req.user.id, req.user.id, req.user.id,
+          req.user.id, req.user.id,
         ],
       });
       await logAction({
@@ -2204,7 +2182,7 @@ async function journey(req, res, next) {
         // buyer before it has been counted.
         stock_dozens: Math.round(inStock.reduce((s, n) => s + Number(n.received_dozens || 0), 0) * 100) / 100,
         sold_dozens: Math.round(soldOut.reduce((s, n) => s + Number(n.received_dozens || 0), 0) * 100) / 100,
-        // No final_rate any more. It was the highest after_rate among the packed
+        // No final_rate any more. It was the highest running rate among the packed
         // leaves -- a running total that rolled every stage into one figure. Each
         // stage keeps its own rate now, so the ladder on each node IS the answer
         // and collapsing it back into a single number would throw away exactly

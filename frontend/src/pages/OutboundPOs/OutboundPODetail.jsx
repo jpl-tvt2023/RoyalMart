@@ -479,7 +479,6 @@ export default function OutboundPODetail() {
                         <th className={`${thCls} w-16`}>Dozens</th>
                         <th className={`${thCls} w-16`}>Rate <span className="text-red-500">*</span></th>
                         <th className={`${thCls} w-16`}>Process</th>
-                        <th className={`${thCls} w-16`}>After</th>
                         <th className={`${thCls} w-24`}>Bill No <span className="text-red-500">*</span></th>
                         <th className={`${thCls} w-28`}>Incoming No</th>
                         <th className={`${thCls} w-24`}>Checked By</th>
@@ -654,7 +653,6 @@ export default function OutboundPODetail() {
                                       {num(receipt.received_rate)}
                                     </td>
                                     <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{num(receipt.process_rate)}</td>
-                                    <td className={`${tdCls} font-medium text-[#003049] ${receipt.deleted_at ? 'opacity-50' : ''}`}>{num(receipt.after_rate)}</td>
                                     <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{receipt.bill_no || '—'}</td>
                                     {/* Prefix and number read as one value: the prefix records
                                         which stage the goods arrived at, and is what puts the lot
@@ -779,8 +777,8 @@ const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2 whitespace-nowrap';
 
 // Receipt-side column count, for the colSpan on the "Add receipt" and
 // "No receipts yet" rows. Keep in step with the receipt <th> block above:
-// Recd Qty, UM, Qty in metres, Dozens, Rate, Process, After, Bill No,
-// Incoming No, Checked By, Note, Updated, Actions. The Updated column is hidden
+// Recd Qty, UM, Qty in metres, Dozens, Rate, Process, Bill No, Incoming No,
+// Checked By, Note, Updated, Actions. The Updated column is hidden
 // below 1600px but still occupies a slot in the colSpan, which is correct — a
 // spanned cell counts hidden columns.
 //
@@ -788,7 +786,7 @@ const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2 whitespace-nowrap';
 // Stitching page, which is where material is dispatched to a processor and so
 // where a challan is actually raised — Bill No already covers what a PO receipt
 // needs to record.
-const RECEIPT_COLSPAN = 13;
+const RECEIPT_COLSPAN = 12;
 
 // Cell chrome WITHOUT a width. cellCls keeps w-full for the single-control
 // cells; a cell packing two controls composes from cellBase and sizes them
