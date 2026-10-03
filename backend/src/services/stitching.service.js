@@ -258,15 +258,6 @@ const revertReasonError = (value) => {
   return null;
 };
 
-// The landed rate at a stage. after_rate is stored because the user may
-// overwrite the default (to absorb wastage or rounding), so this is only the
-// fallback for a row that has none -- which is what the server writes when the
-// client omits it, keeping the stored value and the UI's pre-fill in step.
-const effectiveAfterRate = (rate, processRate, afterRate) => {
-  if (afterRate != null && afterRate !== '') return Number(afterRate);
-  return Number(rate || 0) + Number(processRate || 0);
-};
-
 // How much of a lot has not yet been sent onward, IN THE LOT'S OWN UNIT --
 // metres at Processing, dozens from Stitching on (see balanceUnitFor).
 // `forwarded` is the sum of live children's sent_qty or sent_dozens to match --
@@ -454,6 +445,6 @@ module.exports = {
   countsDozens, balanceUnitFor, metresPerDozen,
   partyShort, partyTag, rateTotal,
   nextStage, destinationsFor, canSendTo,
-  effectiveAfterRate, balanceOf, computeStatus, statusSql,
+  balanceOf, computeStatus, statusSql,
   moneyError, qtyError, revertReasonError, writeOffReasonError, challanError,
 };

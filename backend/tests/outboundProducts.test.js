@@ -321,12 +321,10 @@ describe('Packaging products validate against the Outbound Product List', () => 
 // Stitching page; its unit metric decides how (dozens or pieces skip
 // Processing). Unticking is refused while the article has lots there.
 describe('Goes through Stitching', () => {
-  test('creates ticked or not, and keeps the dead stitching_type column in step', async () => {
+  test('creates ticked or not', async () => {
     const ticked = await createProduct({ goes_to_stitching: true });
     expect(ticked.status).toBe(201);
     expect(ticked.body.goes_to_stitching).toBe(1);
-    const { rows } = await db.execute({ sql: 'SELECT stitching_type FROM outbound_products WHERE id = ?', args: [ticked.body.id] });
-    expect(rows[0].stitching_type).toBe('Fabric');
     await cleanup(ticked.body.category);
 
     const plain = await createProduct();
@@ -334,7 +332,8 @@ describe('Goes through Stitching', () => {
     await cleanup(plain.body.category);
   });
 
-  // A browser still holding the 091 form sends stitching_type instead.
+  // A browser still holding the 091 form sends stitching_type instead. The
+  // column went in 093, but the field is still read as the tick.
   test('a stale stitching_type still reads as the tick', async () => {
     const res = await createProduct({ stitching_type: 'Readymade' });
     expect(res.body.goes_to_stitching).toBe(1);

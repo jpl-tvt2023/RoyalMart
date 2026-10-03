@@ -288,13 +288,6 @@ export const writeOffReasonError = (value) => {
   return null;
 };
 
-// After Rate defaults to carried-in rate plus this stage's process rate, and
-// stays on that default until the user types over it.
-export const defaultAfterRate = (rate, processRate) => {
-  const n = Number(rate || 0) + Number(processRate || 0);
-  return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : '';
-};
-
 // Trailing zeros are noise in a table; 62.5 reads better than 62.50.
 export const fmtNum = (v) => (v == null || v === '' ? '—' : String(Math.round(Number(v) * 100) / 100));
 

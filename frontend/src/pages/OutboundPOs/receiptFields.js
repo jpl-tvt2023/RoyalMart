@@ -6,7 +6,7 @@
 // receiptFieldError, whose whole point is to reproduce the server's answer.
 
 import {
-  moneyError, qtyError, defaultAfterRate, STAGES, EPSILON, countsDozens, metresPerDozen,
+  moneyError, qtyError, STAGES, EPSILON, countsDozens, metresPerDozen,
   isGradedStage, CHALLAN_TYPES, GRADE_COLUMNS, EXIT_STAGE,
   umKind, countsInDozens, derivedDozens, receiptHasMetres, receiptStageBlockReason,
 } from '../../utils/stitching';
@@ -24,7 +24,7 @@ export const NOTE_MAX = 1000;
 // outbound_bill_no and checked_by are asked only at Third Party.
 export const EMPTY_RECEIPT = {
   received_qty: '', unit_metric: '', received_rate: '', bill_no: '', incoming_no: '',
-  process_rate: '', after_rate: '', incoming_stage: '',
+  process_rate: '', incoming_stage: '',
   qty_in_metres: '', received_dozens: '', qty_diff_action: '', qty_diff_reason: '',
   fresh_dozens: '0', second_dozens: '0', third_dozens: '0', note: '',
   outbound_bill_no: '', checked_by: '',
@@ -198,8 +198,6 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
   // Appended after the existing rules, matching the server's ordering.
   const procErr = moneyError(v.process_rate, 'Process Rate');
   if (procErr) return procErr;
-  const afterErr = moneyError(v.after_rate, 'After Rate');
-  if (afterErr) return afterErr;
 
   if (stitching) {
     const sale = stage === EXIT_STAGE;
@@ -271,19 +269,6 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
   if (String(v.note ?? '').trim().length > NOTE_MAX) return `Note must be ${NOTE_MAX} characters or less`;
 
   return null;
-}
-
-// After Rate tracks Received Rate + Process Rate until the user types over it,
-// exactly as the server stores it. Editing either input re-derives it unless the
-// value currently shown is already an override.
-export function withDerivedAfterRate(draft, field, value) {
-  const next = { ...draft, [field]: value };
-  if (field === 'after_rate') return next;
-  if (field !== 'received_rate' && field !== 'process_rate') return next;
-  const wasDefault = draft.after_rate === '' || draft.after_rate == null
-    || Number(draft.after_rate) === Number(draft.received_rate || 0) + Number(draft.process_rate || 0);
-  if (wasDefault) next.after_rate = defaultAfterRate(next.received_rate, next.process_rate);
-  return next;
 }
 
 // Stage options, in process order rather than alphabetically, so the list reads
