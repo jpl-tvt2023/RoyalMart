@@ -7,7 +7,7 @@ import {
   challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX, fmtQty,
   writeOffReasonError, WRITE_OFF_REASON_MAX, STATUSES, OPEN_STATUSES, statusesFor,
   GRADED_STAGES, isGradedStage, GRADE_COLUMNS, gradesOf, RATE_STAGES, isRateStage,
-  STITCHING_TYPES, READYMADE_STAGES, stagesForType, umKind, derivedDozens, receiptHasMetres,
+  umKind, countsInDozens, derivedDozens, receiptHasMetres, receiptStageBlockReason,
   DOZEN_UMS, METRE_UMS, PIECE_UMS,
 } from '../stitching';
 
@@ -279,29 +279,33 @@ describe('statusesFor', () => {
   });
 });
 
-// Migration 091. Twins of the server's constants, held to the same values the
-// backend suite asserts, so the two sides cannot drift apart unnoticed.
-describe('Fabric and Readymade', () => {
-  test('two sections, and Readymade has no Processing', () => {
-    expect(STITCHING_TYPES).toEqual(['Fabric', 'Readymade']);
-    expect(READYMADE_STAGES).toEqual(['Stitching', 'Packing', 'Panchal', 'Third Party']);
-    expect(stagesForType('Readymade')).toEqual(READYMADE_STAGES);
-    expect(stagesForType('Fabric')).toEqual(STAGES);
-  });
-
+// The UM decides how goods travel the chain. Twins of the server's helpers,
+// held to the same values the backend suite asserts ("the mirrored
+// constants"), so the two sides cannot drift apart unnoticed.
+describe('what a UM means', () => {
   test('the UM name lists', () => {
     expect(DOZEN_UMS).toEqual(['dozen', 'dozens', 'dzn', 'dz', 'doz']);
     expect(METRE_UMS).toEqual(['metre', 'metres', 'meter', 'meters', 'mtr', 'mtrs', 'm']);
     expect(PIECE_UMS).toEqual(['pcs', 'pc', 'piece', 'pieces']);
   });
 
+  test('dozens and pieces are made-up goods', () => {
+    expect(countsInDozens(umKind('Dzn'))).toBe(true);
+    expect(countsInDozens(umKind('pcs'))).toBe(true);
+    expect(countsInDozens(umKind('mtr'))).toBe(false);
+    expect(countsInDozens(umKind('taga'))).toBe(false);
+  });
+
   test('what a UM settles', () => {
-    expect(derivedDozens(30, umKind('Dzn'), 'Fabric')).toBe(30);
-    expect(derivedDozens(100, umKind('pcs'), 'Readymade')).toBe(8.33);
-    expect(derivedDozens(100, umKind('pcs'), 'Fabric')).toBeNull();
-    expect(derivedDozens(100, umKind('taga'), 'Readymade')).toBeNull();
-    expect(receiptHasMetres(umKind('taga'), 'Fabric')).toBe(true);
-    expect(receiptHasMetres(umKind('dozen'), 'Fabric')).toBe(false);
-    expect(receiptHasMetres(umKind('pcs'), 'Readymade')).toBe(false);
+    expect(derivedDozens(30, umKind('Dzn'))).toBe(30);
+    expect(derivedDozens(100, umKind('pcs'))).toBe(8.33);
+    expect(derivedDozens(100, umKind('taga'))).toBeNull();
+    expect(receiptHasMetres(umKind('taga'))).toBe(true);
+    expect(receiptHasMetres(umKind('dozen'))).toBe(false);
+    expect(receiptHasMetres(umKind('pcs'))).toBe(false);
+    expect(receiptStageBlockReason('Processing', umKind('pcs')))
+      .toBe('Processing counts metres — goods bought in dozens or pieces cannot be received there');
+    expect(receiptStageBlockReason('Processing', umKind('mtr'))).toBeNull();
+    expect(receiptStageBlockReason('Stitching', umKind('pcs'))).toBeNull();
   });
 });

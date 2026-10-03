@@ -174,38 +174,19 @@ const metresPerDozen = (receivedQty, receivedDozens) => {
 
 const isValidStage = (s) => STAGES.includes(s);
 
-// THE TWO SECTIONS of the Stitching page (migration 091). An article's type
-// lives on the Outbound Product List -- none, Fabric or Readymade -- and is read
-// back through the triple a PO line carries, exactly as goes_to_stitching was.
-//
-// Fabric is bought by the taga, processed, and becomes pieces at Stitching.
-// Readymade arrives already made up -- socks, caps -- so it skips Processing and
-// is counted in dozens from the moment it is booked in. That is the only
-// difference: one stage graph, one prefix series, one party master. The
-// section decides which list a lot shows in, nothing else.
-const STITCHING_TYPES = ['Fabric', 'Readymade'];
-const FABRIC = 'Fabric';
-const READYMADE = 'Readymade';
-
-const isValidStitchingType = (t) => STITCHING_TYPES.includes(t);
-
-// Readymade never sees Processing: it is the metre stage, and readymade goods
-// have no metres. DESTINATIONS never names Processing as a target, so a
-// Readymade lot cannot be sent there either -- this list is only what the
-// section's tabs and a receipt's stage options are built from.
-const READYMADE_STAGES = STAGES.filter(s => s !== 'Processing');
-
-const stagesForType = (type) => (type === READYMADE ? READYMADE_STAGES : STAGES);
-
 // WHAT A UNIT METRIC MEANS, so a receipt asks only for what it does not already
-// know. A PO line's UM is a dropdown of what the Outbound Product List publishes,
-// but the names on that list are typed by an admin -- so the meaning is read off
-// the name, case- and space-insensitively, against these fixed lists:
+// know -- and so the UM, not a setting, decides whether goods skip Processing.
+// A PO line's UM is a dropdown of what the Outbound Product List publishes, but
+// the names on that list are typed by an admin, so the meaning is read off the
+// name, case- and space-insensitively, against these fixed lists:
 //
-//   dozen -- Received Qty IS the dozens. No metres asked, no dozen count asked.
+//   dozen -- Received Qty IS the dozens.
+//   piece -- Received Qty / 12 is the dozens.
 //   metre -- Received Qty IS the metres. Qty in metres is filled from it.
-//   piece -- on READYMADE only, Received Qty / 12 is the dozens.
 //
+// Goods bought in dozens or pieces are already made up: they have no metres,
+// and they SKIP PROCESSING -- the one stage that works in metres. That replaced
+// 091's Fabric / Readymade type, which said the same thing a second time.
 // Anything else (taga, kg) means nothing in particular, and the receipt asks for
 // the metres and the dozens as it always has. Twin in frontend/src/utils/stitching.js.
 const DOZEN_UMS = ['dozen', 'dozens', 'dzn', 'dz', 'doz'];
@@ -222,31 +203,30 @@ const umKind = (um) => {
   return null;
 };
 
+// Bought in dozens or pieces: made-up goods, counted in dozens from the moment
+// they are booked in.
+const countsInDozens = (kind) => kind === 'dozen' || kind === 'piece';
+
 // The dozens a receipt's UM already settles, or null when they have to be
-// counted and typed. Pieces convert on Readymade only -- a fabric bought "by the
-// piece" is not a dozen of anything until Stitching says so.
-const derivedDozens = (receivedQty, kind, type) => {
+// counted and typed.
+const derivedDozens = (receivedQty, kind) => {
   if (receivedQty == null || receivedQty === '') return null;
   const n = Number(receivedQty);
   if (!Number.isFinite(n)) return null;
   if (kind === 'dozen') return Math.round(n * 100) / 100;
-  if (kind === 'piece' && type === READYMADE) return Math.round((n / PIECES_PER_DOZEN) * 100) / 100;
+  if (kind === 'piece') return Math.round((n / PIECES_PER_DOZEN) * 100) / 100;
   return null;
 };
 
-// Whether a receipt can carry metres at all. Readymade never does, and neither
-// does anything bought in dozens or (on Readymade) pieces.
-const receiptHasMetres = (kind, type) => type === FABRIC && kind !== 'dozen';
+// Whether a receipt can carry metres at all: not when bought in dozens or pieces.
+const receiptHasMetres = (kind) => !countsInDozens(kind);
 
 // Why a receipt may not land at this stage, or null. Processing counts metres,
-// so goods that have none -- every Readymade article, and fabric bought in
-// dozens -- cannot be booked into it. Fabric in pieces still has metres asked
-// for, so it may. The form shows Processing disabled with this as its reason.
-// Twin in frontend/src/utils/stitching.js.
-const receiptStageBlockReason = (stage, { type, kind } = {}) => {
+// so goods that have none cannot be booked into it. The form shows Processing
+// disabled with this as its reason. Twin in frontend/src/utils/stitching.js.
+const receiptStageBlockReason = (stage, kind) => {
   if (stage !== 'Processing') return null;
-  if (type === READYMADE) return 'Readymade goods skip Processing — pick Stitching, Packing, Panchal or Third Party';
-  if (kind === 'dozen') return 'Processing counts metres — goods bought in dozens cannot be received there';
+  if (countsInDozens(kind)) return 'Processing counts metres — goods bought in dozens or pieces cannot be received there';
   return null;
 };
 
@@ -429,12 +409,12 @@ const partyTag = (stage, name, shortName) => `${stage} - ${partyShort(name, shor
 // THE PER-DOZEN RATE TOTAL. components are the lot's rates as they were
 // entered, each with its unit: [{ label, rate, unit: 'metre'|'dozen'|'piece' }].
 // A per-metre rate costs (rate x metres-per-dozen) per dozen. A per-dozen rate
-// is already there. A per-piece rate -- a Readymade article bought by the piece
-// (091) -- costs twelve times itself per dozen, no yield needed.
+// is already there. A per-piece rate -- goods bought by the piece -- costs
+// twelve times itself per dozen, no yield needed.
 //
 // The total is per dozen once the lot has a yield, or once it counts dozens
-// with no metres anywhere in its chain (`dozenLot` -- Readymade, or fabric
-// bought in dozens), where a per-metre rung simply cannot be priced. A lot
+// with no metres anywhere in its chain (`dozenLot` -- goods bought in dozens
+// or pieces), where a per-metre rung simply cannot be priced. A lot
 // still at Processing has neither, so every component is per metre and the
 // total is returned per metre instead, and says so in `unit`.
 //
@@ -468,9 +448,8 @@ module.exports = {
   DESTINATIONS, EXIT_STAGE, STOCK_STAGE, DOZEN_STAGES, stageRateUnit,
   PARTY_USE_STAGES, CHALLAN_TYPES, GRADED_STAGES, GRADE_COLUMNS, RATE_STAGES,
   REVERT_REASON_MAX, WRITE_OFF_REASON_MAX, CHALLAN_MAX,
-  STITCHING_TYPES, FABRIC, READYMADE, READYMADE_STAGES, isValidStitchingType, stagesForType,
-  DOZEN_UMS, METRE_UMS, PIECE_UMS, PIECES_PER_DOZEN, umKind, derivedDozens, receiptHasMetres,
-  receiptStageBlockReason,
+  DOZEN_UMS, METRE_UMS, PIECE_UMS, PIECES_PER_DOZEN, umKind, countsInDozens, derivedDozens,
+  receiptHasMetres, receiptStageBlockReason,
   isValidStage, isValidPartyUse, isValidChallanType, isGradedStage, isRateStage,
   countsDozens, balanceUnitFor, metresPerDozen,
   partyShort, partyTag, rateTotal,

@@ -7,11 +7,11 @@ import { listUsersLite } from '../../api/users.api';
 import { ROLES } from '../../utils/roles';
 import { sortByText } from '../../utils/sort';
 import { checkerOptionsFor } from '../../utils/checkers';
-import { fmtNum, STOCK_STAGE, EXIT_STAGE, READYMADE, umKind, receiptStageBlockReason } from '../../utils/stitching';
+import { fmtNum, STOCK_STAGE, EXIT_STAGE, umKind, receiptStageBlockReason } from '../../utils/stitching';
 import {
   EMPTY_RECEIPT, INCOMING_NO_MAX, NOTE_MAX,
   receiptFieldError, withDerivedAfterRate, stageOptionsFor, defaultReceiptStage,
-  isStitchingLine, lineType, receiptUmKind, receiptTakesMetres,
+  isStitchingLine, receiptUmKind, receiptTakesMetres,
   receiptDozensDerivable, receiptSettledDozens, receiptIsSale,
   outstandingOf, qtyDifference, offeredQtyDiffAction,
   receiptCountsDozens, metresPerDozen,
@@ -150,16 +150,15 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
   // Warehouse POCs, for the one stage that asks who checked the goods over.
   const [checkers, setCheckers] = useState([]);
 
-  // Only Fabric and Readymade travel the Stitching stages, so only they have a
-  // stage. Everything else on an outbound PO is received and done with.
+  // Only articles that go through Stitching have a stage. Everything else on an
+  // outbound PO is received and done with.
   const stitching = isStitchingLine(line);
-  const type = lineType(line);
   // What the delivery's unit means (umKind): a UM in dozens IS the dozen count,
-  // one in metres IS the metres, and Readymade by the piece is twelve to the
-  // dozen -- so the form asks only for what the UM does not already say.
+  // one in metres IS the metres, and one in pieces is twelve to the dozen --
+  // so the form asks only for what the UM does not already say.
   const kind = receiptUmKind(form, line);
   const stage = form.incoming_stage;
-  const stageOptions = stageOptionsFor(line, kind);
+  const stageOptions = stageOptionsFor(kind);
   // Pieces to count from Stitching on; graded from Packing on; a sale at Third
   // Party. The stage is the form's first field, so all of this follows it.
   const dozens = receiptCountsDozens(line, stage);
@@ -174,7 +173,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
   const dozenCount = graded ? (gradeTotal || '') : dozensDerivable ? (settled ?? '') : form.received_dozens;
   const perDozen = takesMetres ? metresPerDozen(metres, dozenCount) : null;
   const umLabel = form.unit_metric || line.unit_metric || '';
-  const processingBlocked = stitching ? receiptStageBlockReason('Processing', { type, kind }) : null;
+  const processingBlocked = stitching ? receiptStageBlockReason('Processing', kind) : null;
 
   // A receipt that never had a bill number (migration 053 synthesized those from
   // the legacy flat `received` value) stays editable without inventing one —
@@ -186,8 +185,8 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
       ...EMPTY_RECEIPT,
       unit_metric: line.unit_metric || '',
       // The first stage this delivery may take: Processing for fabric that has
-      // metres, Stitching for Readymade and anything bought in dozens.
-      incoming_stage: stitching ? defaultReceiptStage(line, umKind(line.unit_metric)) : '',
+      // metres, Stitching for anything bought in dozens or pieces.
+      incoming_stage: stitching ? defaultReceiptStage(umKind(line.unit_metric)) : '',
     } : {
       received_qty: receipt.received_qty ?? '',
       // A receipt taken before migration 084 has none of its own, so it shows
@@ -222,8 +221,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
     });
   // Primitives, not the line object: the page may hand over a fresh object on
   // any render, and resetting on identity would wipe what the user is typing.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [receipt, isAdd, line.unit_metric, type]);
+  }, [receipt, isAdd, line.unit_metric, stitching]);
 
   // The Checked By list is only needed for a sale, but it is small and the
   // stage can change under the user, so it is fetched once with the form.
@@ -239,8 +237,8 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
     // A unit that cannot take the stage already picked -- Processing, for a UM
     // in dozens -- moves the stage to the first one it can take.
     if (field === 'unit_metric' && stitching && next.incoming_stage
-        && receiptStageBlockReason(next.incoming_stage, { type, kind: umKind(value || line.unit_metric) })) {
-      next.incoming_stage = defaultReceiptStage(line, umKind(value || line.unit_metric));
+        && receiptStageBlockReason(next.incoming_stage, umKind(value || line.unit_metric))) {
+      next.incoming_stage = defaultReceiptStage(umKind(value || line.unit_metric));
     }
     return next;
   });
@@ -264,7 +262,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
       if (stitching) {
         payload.incoming_stage = form.incoming_stage || null;
         // Sent only when typed: a UM in metres is copied across by the server,
-        // and Readymade or goods bought in dozens carry none.
+        // and goods bought in dozens or pieces carry none.
         payload.qty_in_metres = takesMetres && !metresFromQty && form.qty_in_metres !== ''
           ? Number(form.qty_in_metres) : null;
         if (graded) {
@@ -323,14 +321,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
     <Modal isOpen onClose={onClose} title={isAdd ? 'Add Receipt' : 'Edit Receipt'} size="lg">
       <form onSubmit={submit} className="space-y-4">
         <div className="rounded-lg bg-gray-50 border border-gray-200 px-4 py-3 text-sm">
-          <div className="font-medium text-[#003049]">
-            {articleLabel}
-            {stitching && (
-              <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#003049]/10 text-[#003049] align-middle">
-                {type}
-              </span>
-            )}
-          </div>
+          <div className="font-medium text-[#003049]">{articleLabel}</div>
           <div className="text-gray-500 text-xs mt-0.5">
             Ordered {line.qty}{line.unit_metric ? ` ${line.unit_metric}` : ''} @ {line.rate}
           </div>
@@ -411,7 +402,7 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
 
           {/* Fabric is bought in taga and worked in metres, and no factor
               converts the two — the user counts and enters it. A UM that IS
-              metres says so itself, and Readymade (or anything bought in dozens)
+              metres says so itself, and anything bought in dozens or pieces
               has no metres at all. Next to Received Qty because they describe
               the same delivery. */}
           {takesMetres && (metresFromQty ? (
@@ -434,12 +425,12 @@ export default function ReceiptModal({ poId, line, receipt, metricOptions = [], 
           ))}
 
           {/* Goods bought in already stitched or later arrive as countable
-              pieces. A UM in dozens is that count already, and Readymade by the
+              pieces. A UM in dozens is that count already, and goods by the
               piece is twelve to the dozen -- shown, not asked. */}
           {dozens && !graded && (dozensDerivable ? (
             <Field
               label="Dozens Received"
-              hint={type === READYMADE && umKind(umLabel) === 'piece'
+              hint={umKind(umLabel) === 'piece'
                 ? `${fmtNum(form.received_qty || 0)} ${umLabel} ÷ 12 — worked out for you`
                 : `Same as Received Qty — the UM is ${umLabel}`}
             >

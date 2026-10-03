@@ -8,7 +8,7 @@ const { pairKey, unitMetricsByPair } = require('../services/outboundProducts.ser
 const {
   effectiveAfterRate, moneyError, qtyError, EPSILON, isValidStage, STAGES, countsDozens, DOZEN_STAGES,
   STOCK_STAGE, EXIT_STAGE, CHALLAN_TYPES, GRADE_COLUMNS, isGradedStage,
-  READYMADE, umKind, derivedDozens, receiptHasMetres, receiptStageBlockReason,
+  umKind, countsInDozens, derivedDozens, receiptHasMetres, receiptStageBlockReason,
 } = require('../services/stitching.service');
 const { userHasRole } = require('../services/userRoles.service');
 
@@ -258,20 +258,21 @@ async function catalogUnitMetrics() {
 // receipts migration 053 synthesized (bill_no NULL, no bill was ever recorded)
 // editable: the client omits bill_no entirely for those rather than sending an
 // explicit null, which would count as present and trip the rule.
-// Whether this line's article travels the Stitching page, and in which section:
-// its stitching_type, Fabric or Readymade (migration 091 -- the goes_to_stitching
-// tick before it). The answer decides what a receipt asks for: a stage, the
-// metres (Fabric only), the dozens, and whether missing_incoming_stage can fire.
-// Every line query resolves it through the (category, item_name, unit_metric)
-// triple, since a line carries no product id.
-const lineType = (line) => line?.stitching_type || null;
-const isStitchingLine = (line) => lineType(line) != null;
+// Whether this line's article travels the Stitching page -- the "Goes through
+// Stitching" tick on the Outbound Product List (076). The answer decides what a
+// receipt asks for: a stage, the metres, the dozens, and whether
+// missing_incoming_stage can fire. HOW it travels -- from Processing, or
+// straight from Stitching on -- is the receipt's unit metric (umKind): goods
+// bought in dozens or pieces are made up and skip Processing. Every line query
+// resolves the tick through the (category, item_name, unit_metric) triple,
+// since a line carries no product id.
+const isStitchingLine = (line) => Number(line?.goes_to_stitching) === 1;
 
-// The article's type, read off the master through the triple. A correlated
-// subquery so every line query spells it the same way.
-const STITCHING_TYPE_SQL = `(SELECT op.stitching_type FROM outbound_products op
+// The tick, read off the master through the triple. A correlated subquery so
+// every line query spells it the same way.
+const STITCHING_SQL = `COALESCE((SELECT op.goes_to_stitching FROM outbound_products op
                               WHERE op.category = l.category AND op.item_name = l.item_name
-                                AND op.unit_metric = l.unit_metric)`;
+                                AND op.unit_metric = l.unit_metric), 0)`;
 
 const nonBlank = (v) => (v != null && String(v).trim() !== '' ? String(v).trim() : null);
 
@@ -298,7 +299,7 @@ async function prefixIdForStage(stage) {
 // sold straight on, without entering our stock -- like a challan into Third
 // Party it takes no incoming number, carries our outbound bill number and a
 // Warehouse POC who checked it over. Processing is refused per receipt rather
-// than here, for goods that have no metres (receiptStageBlockReason).
+// than here, for goods bought in dozens or pieces (receiptStageBlockReason).
 const RECEIPT_STAGES = [...STAGES];
 
 // The receipt stages whose goods arrive GRADED -- Packing, Panchal and Third
@@ -308,10 +309,9 @@ const RECEIPT_STAGES = [...STAGES];
 const RECEIPT_GRADED_STAGES = RECEIPT_STAGES.filter(isGradedStage);
 
 // Whether the dozens on a receipt at this stage are already settled by its UM --
-// a Received Qty in dozens, or in pieces on Readymade (umKind, derivedDozens).
-// Then nothing is asked for: the server writes received_dozens itself.
-const dozensFromQty = (type, kind, stage) => type != null && countsDozens(stage)
-  && derivedDozens(1, kind, type) != null;
+// a Received Qty in dozens, or in pieces (umKind, derivedDozens). Then nothing
+// is asked for: the server writes received_dozens itself.
+const dozensFromQty = (stitching, kind, stage) => !!stitching && countsDozens(stage) && countsInDozens(kind);
 
 // THE STAGE, checked FIRST: it sits at the top of the receipt form because
 // everything below it -- metres, dozens, grades, the Third Party hand-over --
@@ -324,23 +324,23 @@ const dozensFromQty = (type, kind, stage) => type != null && countsDozens(stage)
 // from it. Only stitching articles have a stage at all, and for them it is
 // mandatory: material that cannot be placed on the chain cannot be tracked.
 //
-// `kind` is umKind of the unit this delivery is counted in. Goods with no
-// metres (Readymade, or anything bought in dozens) cannot land at Processing.
+// `kind` is umKind of the unit this delivery is counted in. Goods bought in
+// dozens or pieces have no metres, so they cannot land at Processing.
 function receiptStageError(body, { requireAll, line, kind }) {
   const present = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
-  const type = lineType(line);
+  const stitching = isStitchingLine(line);
   const stage = present('incoming_stage') ? nonBlank(body.incoming_stage) : null;
   if (stage) {
-    if (!type) return 'Only Fabric and Readymade articles travel the Stitching stages';
+    if (!stitching) return 'Only articles that go through Stitching travel the Stitching stages';
     if (!RECEIPT_STAGES.includes(stage)) return `Stage must be one of ${RECEIPT_STAGES.join(', ')}`;
-    const blocked = receiptStageBlockReason(stage, { type, kind });
+    const blocked = receiptStageBlockReason(stage, kind);
     if (blocked) return blocked;
-  } else if (type && requireAll) {
+  } else if (stitching && requireAll) {
     return 'Stage is required';
-  } else if (type && !present('incoming_stage') && present('unit_metric') && line?.incoming_stage) {
+  } else if (stitching && !present('incoming_stage') && present('unit_metric') && line?.incoming_stage) {
     // An edit that changes only the unit: the stage the receipt already sits at
     // has to be able to take goods counted that way.
-    const blocked = receiptStageBlockReason(line.incoming_stage, { type, kind });
+    const blocked = receiptStageBlockReason(line.incoming_stage, kind);
     if (blocked) return blocked;
   }
   return null;
@@ -462,8 +462,7 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
 
   // The stage itself was checked first, by receiptStageError. What follows from
   // it starts here.
-  const type = lineType(line);
-  const fabric = type != null;
+  const fabric = isStitchingLine(line);
   const bodyStage = String(body?.incoming_stage ?? '').trim();
   // The stage the receipt will sit at: the one sent, or on an edit that does not
   // restate it, the one it has -- `line` is the stored receipt on an update.
@@ -483,18 +482,14 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
 
   // Fabric is bought in taga and worked in metres, and no factor converts the
   // two -- the user counts and enters it. A unit that IS metres says so itself,
-  // and the server copies Received Qty across (umKind). Readymade, and anything
-  // bought in dozens, has no metres at all. Absent on anything else, where there
+  // and the server copies Received Qty across (umKind). Anything bought in
+  // dozens or pieces has no metres at all. Absent on anything else, where there
   // is nothing downstream to measure.
-  const metresApply = fabric && receiptHasMetres(kind, type);
+  const metresApply = fabric && receiptHasMetres(kind);
   const metresFromQty = metresApply && kind === 'metre';
   if (present('qty_in_metres') && !blank(body?.qty_in_metres)) {
     if (!fabric) return 'Qty in metres applies to fabric articles only';
-    if (!metresApply) {
-      return type === READYMADE
-        ? 'Readymade goods carry no metres — they are counted in dozens'
-        : 'Goods bought in dozens carry no metres';
-    }
+    if (!metresApply) return 'Goods bought in dozens or pieces carry no metres';
     if (!metresFromQty) {
       const err = qtyError(body.qty_in_metres, 'Qty in metres');
       if (err) return err;
@@ -518,12 +513,12 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
   // An edit that sends grades without restating the stage is judged against the
   // stage the receipt already has -- `line` is the stored receipt on an update.
   const gradedStage = fabric && isGradedStage(effStage);
-  // A Received Qty in dozens IS the dozen count, and on Readymade one in pieces
-  // is twelve to the dozen -- the server writes received_dozens itself, so it
-  // is neither asked for nor checked. On an update the quantity is the one
-  // sent, or the one stored.
-  const settled = dozensFromQty(type, kind, effStage)
-    ? derivedDozens(present('received_qty') ? body.received_qty : line?.received_qty, kind, type)
+  // A Received Qty in dozens IS the dozen count, and one in pieces is twelve to
+  // the dozen -- the server writes received_dozens itself, so it is neither
+  // asked for nor checked. On an update the quantity is the one sent, or the
+  // one stored.
+  const settled = dozensFromQty(fabric, kind, effStage)
+    ? derivedDozens(present('received_qty') ? body.received_qty : line?.received_qty, kind)
     : null;
   if (present('received_dozens') && !blank(body?.received_dozens)) {
     if (!dozenStage) return `Dozens are only counted on fabric received at ${DOZEN_STAGES.join(', ')}`;
@@ -702,12 +697,11 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
                  ub.name AS updated_by_name,
                  COALESCE((SELECT SUM(r.received_qty) FROM outbound_po_line_receipts r
                            WHERE r.line_id = l.id AND r.deleted_at IS NULL), 0) AS received,
-                 -- Whether this article travels the Stitching page, and in which
-                 -- section. Resolved by the (category, item_name, unit_metric)
-                 -- triple because a line carries those denormalised and no
-                 -- product id -- the same lookup migration 057 used to backfill
-                 -- unit_metric. goes_to_stitching is derived from it below.
-                 ${STITCHING_TYPE_SQL} AS stitching_type,
+                 -- Whether this article travels the Stitching page. Resolved by
+                 -- the (category, item_name, unit_metric) triple because a line
+                 -- carries those denormalised and no product id -- the same
+                 -- lookup migration 057 used to backfill unit_metric.
+                 ${STITCHING_SQL} AS goes_to_stitching,
                  ${flagSelect(lineFlagExists, RECEIPT_FLAG_KEYS)}
           FROM outbound_po_lines l
           LEFT JOIN users ub ON ub.id = l.updated_by
@@ -762,9 +756,6 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
 
   const byPo = new Map();
   for (const l of rows) {
-    // Kept on the payload for callers that still read the old tick -- one
-    // value with stitching_type, never a second source of truth.
-    l.goes_to_stitching = l.stitching_type ? 1 : 0;
     l.flags = pickFlags(l);
     if (!byPo.has(l.po_id)) byPo.set(l.po_id, []);
     byPo.get(l.po_id).push(l);
@@ -1376,14 +1367,13 @@ async function createReceipt(req, res, next) {
       sql: `SELECT l.id, l.category, l.item_name, l.variant, l.qty, l.short, l.rate, l.unit_metric,
                    COALESCE((SELECT SUM(r.received_qty) FROM outbound_po_line_receipts r
                              WHERE r.line_id = l.id AND r.deleted_at IS NULL), 0) AS received,
-                   ${STITCHING_TYPE_SQL} AS stitching_type
+                   ${STITCHING_SQL} AS goes_to_stitching
             FROM outbound_po_lines l
             WHERE l.id = ? AND l.po_id = ? AND l.deleted_at IS NULL`,
       args: [lineId, id],
     });
     if (!lineRows.length) return res.status(404).json({ message: 'Line not found' });
     const line = lineRows[0];
-    const type = lineType(line);
 
     // A fully accounted-for line takes no further receipts. If a vendor really
     // over-delivers, raise the line's qty on the detail page first.
@@ -1444,9 +1434,9 @@ async function createReceipt(req, res, next) {
     }
 
     // Fabric only, and the number a Processing lot counts in. A UM that IS
-    // metres says so itself, so Received Qty is copied across. Readymade, and
-    // anything bought in dozens, has none.
-    const metresApply = isStitchingLine(line) && receiptHasMetres(kind, type);
+    // metres says so itself, so Received Qty is copied across. Anything bought
+    // in dozens or pieces has none.
+    const metresApply = isStitchingLine(line) && receiptHasMetres(kind);
     const qtyInMetres = !metresApply ? null
       : kind === 'metre' ? receivedQty
         : req.body?.qty_in_metres != null && req.body.qty_in_metres !== ''
@@ -1460,10 +1450,10 @@ async function createReceipt(req, res, next) {
     ]));
 
     // Only for goods bought in already stitched or later -- the stages where
-    // there are pieces to count. A UM in dozens (or pieces, on Readymade)
-    // already settles the figure: validation held the grades to it.
-    const settledDozens = dozensFromQty(type, kind, incomingStage)
-      ? derivedDozens(receivedQty, kind, type) : null;
+    // there are pieces to count. A UM in dozens or pieces already settles the
+    // figure: validation held the grades to it.
+    const settledDozens = dozensFromQty(isStitchingLine(line), kind, incomingStage)
+      ? derivedDozens(receivedQty, kind) : null;
     const receivedDozens = settledDozens != null ? settledDozens
       : graded ? gradeSum(grades)
         : isStitchingLine(line) && countsDozens(incomingStage)
@@ -1564,7 +1554,7 @@ async function updateReceipt(req, res, next) {
                    r.stage_party_name, r.stage_rate, r.direct_stage, r.outbound_bill_no,
                    COALESCE(sp.stage, r.direct_stage) AS incoming_stage,
                    l.category, l.item_name, l.variant, l.unit_metric AS line_unit_metric,
-                   ${STITCHING_TYPE_SQL} AS stitching_type
+                   ${STITCHING_SQL} AS goes_to_stitching
             FROM outbound_po_line_receipts r
             JOIN outbound_po_lines l ON l.id = r.line_id
             LEFT JOIN stitching_prefixes sp ON sp.id = r.incoming_prefix_id
@@ -1573,7 +1563,6 @@ async function updateReceipt(req, res, next) {
     });
     if (!receiptRows.length) return res.status(404).json({ message: 'Receipt not found' });
     const receipt = receiptRows[0];
-    const type = lineType(receipt);
 
     const has = (k) => Object.prototype.hasOwnProperty.call(req.body || {}, k);
 
@@ -1641,25 +1630,25 @@ async function updateReceipt(req, res, next) {
     const stageMoved = (nextStage || null) !== (receipt.incoming_stage || null);
     const nextThirdParty = isStitchingLine(receipt) && nextStage === EXIT_STAGE;
 
-    // Metres: a unit that IS metres copies Received Qty across, and goods with no
-    // metres (Readymade, or bought in dozens) carry none -- whatever is stored.
+    // Metres: a unit that IS metres copies Received Qty across, and goods bought
+    // in dozens or pieces carry none -- whatever is stored.
     let nextQtyInMetres = receipt.qty_in_metres;
     if (has('qty_in_metres')) {
       nextQtyInMetres = req.body.qty_in_metres != null && req.body.qty_in_metres !== ''
         ? Number(req.body.qty_in_metres) : null;
     }
-    const metresFromQty = isStitchingLine(receipt) && receiptHasMetres(kind, type) && kind === 'metre';
+    const metresFromQty = isStitchingLine(receipt) && receiptHasMetres(kind) && kind === 'metre';
     if (metresFromQty) nextQtyInMetres = nextQty;
-    else if (isStitchingLine(receipt) && !receiptHasMetres(kind, type)) nextQtyInMetres = null;
+    else if (isStitchingLine(receipt) && !receiptHasMetres(kind)) nextQtyInMetres = null;
 
     let nextReceivedDozens = receipt.received_dozens;
     if (has('received_dozens')) {
       nextReceivedDozens = req.body.received_dozens != null && req.body.received_dozens !== ''
         ? Number(req.body.received_dozens) : null;
     }
-    // Dozens a UM in dozens (or pieces, on Readymade) already settles follow the
-    // quantity on every edit, so a corrected Received Qty corrects the lot.
-    const settledDozens = dozensFromQty(type, kind, nextStage) ? derivedDozens(nextQty, kind, type) : null;
+    // Dozens a UM in dozens or pieces already settles follow the quantity on
+    // every edit, so a corrected Received Qty corrects the lot.
+    const settledDozens = dozensFromQty(isStitchingLine(receipt), kind, nextStage) ? derivedDozens(nextQty, kind) : null;
     if (settledDozens != null) nextReceivedDozens = settledDozens;
 
     // Our outbound bill belongs to a sale, and only to a sale: it goes when the

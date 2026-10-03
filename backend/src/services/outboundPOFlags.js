@@ -66,9 +66,8 @@ const FLAGS = {
     // all already raise missing_incoming_no and are excluded here so a single
     // omission does not light up two flags.
     //
-    // STITCHING ARTICLES ONLY -- Fabric or Readymade (stitching_type, 091; it
-    // was the goes_to_stitching tick before). Only those travel the stage
-    // chain, so a stage is meaningless on a receipt of corrugated boxes -- and
+    // STITCHING ARTICLES ONLY -- the goes_to_stitching tick. Only those travel
+    // the stage chain, so a stage is meaningless on a receipt of corrugated boxes -- and
     // without this every packaging receipt ever recorded would raise it. The
     // flag resolves the article through the (category, item_name, unit_metric)
     // triple the line carries, since a line holds no product id.
@@ -76,9 +75,9 @@ const FLAGS = {
           AND r.direct_stage IS NULL
           AND EXISTS (SELECT 1 FROM outbound_products op
                        WHERE op.category = l.category AND op.item_name = l.item_name
-                         AND op.unit_metric = l.unit_metric AND op.stitching_type IS NOT NULL)`,
+                         AND op.unit_metric = l.unit_metric AND op.goes_to_stitching = 1)`,
     js: (r, l) => r.incoming_no != null && String(r.incoming_no).trim() !== ''
-      && r.incoming_prefix_id == null && r.direct_stage == null && l?.stitching_type != null,
+      && r.incoming_prefix_id == null && r.direct_stage == null && Number(l?.goes_to_stitching) === 1,
   },
   not_approved: {
     label: 'Not Approved',

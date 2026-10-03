@@ -109,7 +109,7 @@ export const NAV = [
         label: 'Stitching',
         path: '/outbound/stitching',
         icon: Scissors,
-        description: 'Fabric and readymade, stage by stage to Panchal',
+        description: 'Stage-wise tracking, Processing through Panchal',
         roles: ALL_ROLES,
       },
     ],
