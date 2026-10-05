@@ -4,6 +4,7 @@ const { userHasRole } = require('../services/userRoles.service');
 const { isValidDateString } = require('../utils/dateValidation');
 const { ensureRtvRow } = require('./rtv.controller');
 const { QUALIFIES_SQL: RTV_QUALIFIES_SQL, rtvQualifies } = require('../services/rtv.service');
+const { billNoError, billNoConflicts, isBillNoUniqueViolation } = require('../services/billNo');
 
 const ORDER_SUMMARY_FIELDS = [
   'office_poc', 'warehouse_poc', 'status', 'dispatch_date', 'courier_id', 'tracking_id', 'box',
@@ -350,14 +351,10 @@ async function updateOne(req, res, next) {
     if (has('bill_no')) {
       const b = req.body.bill_no;
       nextBillNo = (b == null || String(b).trim() === '') ? null : String(b).trim();
-      if (nextBillNo && !/^[A-Za-z0-9-]+$/.test(nextBillNo)) {
-        return res.status(400).json({ message: 'Bill no must be alphanumeric (dashes allowed)' });
-      }
+      const formatError = nextBillNo && billNoError(nextBillNo);
+      if (formatError) return res.status(400).json({ message: formatError });
       if (nextBillNo && nextBillNo !== current.bill_no) {
-        const { rows: dup } = await db.execute({
-          sql: "SELECT po_id, vendor, vendor_po_id FROM marketplace_pos WHERE bill_no = ? AND po_id != ? AND status <> 'Deleted'",
-          args: [nextBillNo, poId],
-        });
+        const dup = await billNoConflicts(db, nextBillNo, poId);
         if (dup.length) {
           return res.status(409).json({
             error: 'bill_no_duplicate',
@@ -595,11 +592,8 @@ async function updateOne(req, res, next) {
       // Safety net for races: the pre-check above can miss a bill_no grabbed by a
       // concurrent save, in which case the UNIQUE index rejects the UPDATE. Surface
       // it as the same 409 the pre-check returns instead of a 500.
-      if (e.message && e.message.includes('UNIQUE constraint failed: marketplace_pos.bill_no')) {
-        const { rows: dup } = await db.execute({
-          sql: "SELECT po_id, vendor, vendor_po_id FROM marketplace_pos WHERE bill_no = ? AND po_id != ? AND status <> 'Deleted'",
-          args: [nextBillNo, poId],
-        });
+      if (isBillNoUniqueViolation(e)) {
+        const dup = await billNoConflicts(db, nextBillNo, poId);
         return res.status(409).json({
           error: 'bill_no_duplicate',
           message: `Bill no "${nextBillNo}" is already used on PO ${dup[0]?.po_id || 'another PO'}`,

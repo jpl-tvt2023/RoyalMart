@@ -4,6 +4,7 @@ const { authenticator } = require('otplib');
 const db = require('../config/db');
 const { logAction } = require('../services/auditLog.service');
 const { validatePassword } = require('../services/passwordPolicy');
+const { isSystemUser } = require('../services/systemUser.service');
 
 const MFA_ISSUER = 'Royal Mart ROMS';
 const {
@@ -45,6 +46,14 @@ async function login(req, res, next) {
     if (!user) {
       await logAction({ actionType: 'LOGIN_FAILED', description: `Failed login for unknown user ID ${username}`, entityType: 'user' });
       return res.status(401).json({ message: 'No account found with that user ID' });
+    }
+
+    // A system user (tally-sync) is a machine identity: refused before any
+    // password is compared, so even an Admin password reset cannot make it a
+    // working login.
+    if (isSystemUser(user)) {
+      await logAction({ userId: user.id, actionType: 'LOGIN_FAILED', description: `Refused login for system user ${user.username}`, entityType: 'user', entityId: user.id });
+      return res.status(401).json({ message: 'This account cannot sign in' });
     }
 
     const valid = await bcrypt.compare(password, user.password_hash);

@@ -16,13 +16,13 @@ export default function Login() {
     setLoading(true);
     try {
       const user = await login(form.username.trim().toLowerCase(), form.password);
-      if (user.is_first_login) {
+      if (user?.is_first_login) {
         navigate('/force-reset');
       } else {
         navigate('/dashboard');
       }
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Login failed');
+      toast.error(err.response?.data?.message || err.message || 'Login failed');
     } finally {
       setLoading(false);
     }

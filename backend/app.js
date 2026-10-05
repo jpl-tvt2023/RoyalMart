@@ -48,6 +48,7 @@ app.use('/api/outbound-pos', require('./src/routes/outboundPOs.routes'));
 app.use('/api/stitching', require('./src/routes/stitching.routes'));
 app.use('/api/packaging-raw-materials', require('./src/routes/packagingRawMaterials.routes'));
 app.use('/api/audit-logs',   require('./src/routes/audit.routes'));
+app.use('/api/integration',  require('./src/routes/integration.routes'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 

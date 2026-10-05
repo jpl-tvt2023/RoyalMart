@@ -313,4 +313,4 @@ async function update(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { list, countsByVendor, update, ensureRtvRow, NONE_SELECTED };
+module.exports = { list, countsByVendor, update, ensureRtvRow, textRef, NONE_SELECTED };
