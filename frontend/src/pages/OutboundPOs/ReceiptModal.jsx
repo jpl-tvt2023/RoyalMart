@@ -164,12 +164,20 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
   const dozens = receiptCountsDozens(line, stage);
   const graded = receiptIsGraded(line, stage);
   const sale = receiptIsSale(line, stage);
-  // A Warehouse POC checks the goods over at Panchal and Third Party.
+  // A Warehouse POC checks the goods over: on every receipt that never reaches
+  // the Stitching page, and at Panchal and Third Party on one that does.
   const takesChecker = receiptTakesChecker(line, stage);
-  // The checker already on this receipt -- only a real one, from a stage that
-  // asked for it. Elsewhere the stored value is whoever typed the receipt.
+  // The checker already on this receipt, from a stage that asked for it. An
+  // older stitching receipt at an earlier stage may hold whoever typed it,
+  // which is no checker.
   const storedChecker = !isAdd && receiptTakesChecker(line, receipt.incoming_stage)
     ? receipt.checked_by : null;
+  // Normalised: a receipt off the Stitching page has a null stage, and the
+  // form holds it as ''.
+  const stageChanged = !isAdd && (stage || null) !== (receipt.incoming_stage || null);
+  // A receipt with no checker stored (053's synthesized rows) stays editable
+  // without inventing one, as with Bill No -- unless it is changing stage.
+  const requireChecker = isAdd || stageChanged || storedChecker != null;
   const takesMetres = receiptTakesMetres(line, kind);
   const metresFromQty = takesMetres && kind === 'metre';
   const dozensDerivable = receiptDozensDerivable(line, kind, stage);
@@ -218,32 +226,30 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
       second_dozens: String(receipt.second_dozens ?? 0),
       third_dozens: String(receipt.third_dozens ?? 0),
       note: receipt.note ?? '',
-      // The hand-over. Checked By is only a question at Panchal and Third Party
-      // -- elsewhere an older receipt may hold whoever entered it, which is no
-      // checker -- so it is only carried into the form for a receipt already
-      // at one of the two.
+      // The hand-over. Checked By is carried into the form only where it is a
+      // question (receiptTakesChecker) -- an older stitching receipt at an
+      // earlier stage may hold whoever entered it, which is no checker.
       outbound_bill_no: receipt.outbound_bill_no ?? '',
-      checked_by: stitching && isCheckerStage(receipt.incoming_stage) ? (receipt.checked_by ?? '') : '',
+      checked_by: !stitching || isCheckerStage(receipt.incoming_stage) ? (receipt.checked_by ?? '') : '',
     });
   // Primitives, not the line object: the page may hand over a fresh object on
   // any render, and resetting on identity would wipe what the user is typing.
   }, [receipt, isAdd, line.unit_metric, stitching]);
 
-  // The Checked By list is only needed at Panchal or Third Party, but it is
-  // small and the stage can change under the user, so it is fetched once with
-  // the form.
+  // The Checked By list. Every receipt off the Stitching page asks, and on a
+  // stitching line the stage can change under the user, so it is fetched once
+  // with the form.
   useEffect(() => {
-    if (!stitching) return;
     listUsersLite({ role: ROLES.WAREHOUSE_POC })
       .then(users => setCheckers(sortByText(users || [], u => u.name)))
       .catch(() => setCheckers([]));
-  }, [stitching]);
+  }, []);
 
   const setField = (field, value) => setForm((f) => ({ ...f, [field]: value }));
 
   const submit = async (e) => {
     e.preventDefault();
-    const err = receiptFieldError(form, { requireBillNo: isAdd || hadBillNo, line });
+    const err = receiptFieldError(form, { requireBillNo: isAdd || hadBillNo, requireChecker, line });
     if (err) { toast.error(err); return; }
     setSaving(true);
     try {
@@ -273,14 +279,14 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
           payload.incoming_no = null;
           payload.outbound_bill_no = String(form.outbound_bill_no ?? '').trim();
         }
-        // Sent on an add, and on an edit only when it is new to this receipt:
-        // the stage moved, or a different checker was picked. An older Panchal
-        // receipt whose stored name is not a Warehouse POC then still saves an
-        // unrelated edit -- the server judges whatever is sent.
-        if (takesChecker && (isAdd || stage !== receipt.incoming_stage
-            || String(form.checked_by) !== String(receipt.checked_by ?? ''))) {
-          payload.checked_by = Number(form.checked_by);
-        }
+      }
+      // Sent on an add, and on an edit only when it is new to this receipt: the
+      // stage moved, or a different checker was picked. An older receipt whose
+      // stored name is not a Warehouse POC then still saves an unrelated edit
+      // -- the server judges whatever is sent.
+      if (takesChecker && (isAdd || stageChanged
+          || String(form.checked_by ?? '') !== String(receipt.checked_by ?? ''))) {
+        payload.checked_by = Number(form.checked_by);
       }
       // Only ever decided on the delivery that raised the difference.
       if (isAdd && form.qty_diff_action) {
@@ -529,15 +535,17 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
             </Field>
           )}
 
-          {/* Who checked the goods over, at the two stages a challan asks it
-              too: into our warehouse, and out to a buyer. A Warehouse POC. An
-              older receipt's stored name stays selectable even if it is not
-              one, so an unrelated edit does not blank it. */}
+          {/* Who checked the goods over, a Warehouse POC: on every receipt that
+              never reaches the Stitching page, and at the two stages a challan
+              asks it too -- into our warehouse, and out to a buyer. An older
+              receipt's stored name stays selectable even if it is not one, so
+              an unrelated edit does not blank it. */}
           {takesChecker && (
             <Field
               label="Checked By"
-              required
-              hint={sale ? 'Who checked the goods out' : `Who received the goods at ${STOCK_STAGE}`}
+              required={requireChecker}
+              hint={!stitching ? 'A Warehouse POC who checked the goods in'
+                : sale ? 'Who checked the goods out' : `Who received the goods at ${STOCK_STAGE}`}
             >
               <select
                 value={form.checked_by === '' || form.checked_by == null ? '' : String(form.checked_by)}

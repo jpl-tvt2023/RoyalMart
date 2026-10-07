@@ -21,6 +21,7 @@ import { FLAG_META } from '../../utils/outboundPOFlags';
 import { isValidDateString } from '../../utils/dateValidation';
 import { formatDateTime } from '../../utils/formatters';
 import { gradesOf, fmtRate } from '../../utils/stitching';
+import { NOT_POC_SUFFIX } from '../../utils/checkers';
 import ReceiptModal from './ReceiptModal';
 // The line-shape contract lives with the receipt rules, not here, so one test
 // can hold this page and ReceiptModal to the same set of fields. Dropping one
@@ -673,11 +674,19 @@ export default function OutboundPODetail() {
                                           flagged state also carries a glyph. */}
                                       {(receipt.flags || []).includes('missing_incoming_stage') && <span className="ml-1">⚠</span>}
                                     </td>
-                                    {/* A checker only where one is asked -- Panchal
-                                        and Third Party. An older receipt elsewhere
-                                        holds whoever typed it, which is no checker. */}
+                                    {/* A checker only where one is asked: every receipt
+                                        off the Stitching page, and Panchal / Third
+                                        Party on one that reaches it. A stored name
+                                        that is not a Warehouse POC -- often the
+                                        typist, on receipts from the weeks none was
+                                        asked -- is flagged rather than passed off. */}
                                     <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>
-                                      {receiptTakesChecker(l, receipt.incoming_stage) ? (receipt.checked_by_name || '—') : '—'}
+                                      {receiptTakesChecker(l, receipt.incoming_stage) && receipt.checked_by_name ? (
+                                        <>
+                                          {receipt.checked_by_name}
+                                          {!receipt.checked_by_is_poc && <span className="text-gray-400">{NOT_POC_SUFFIX}</span>}
+                                        </>
+                                      ) : '—'}
                                     </td>
                                     <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>
                                       {receipt.note ? (

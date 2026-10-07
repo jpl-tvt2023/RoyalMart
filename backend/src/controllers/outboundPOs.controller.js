@@ -371,14 +371,22 @@ function receiptStageError(body, { requireAll, line, kind }) {
   return null;
 }
 
-// Whether a receipt at this stage is checked over by a Warehouse POC: a
-// stitching line received straight into Panchal or sold on at Third Party --
-// the challan's CHECKER_STAGES. Nowhere else does a receipt carry a checker.
-const receiptTakesChecker = (line, stage) => isStitchingLine(line) && isCheckerStage(stage);
+// Whether a receipt is checked over by a Warehouse POC, as it is received.
+//
+// Goods that never reach the Stitching page -- packaging, barcodes, anything
+// without the "Goes through Stitching" tick -- are checked here or never: no
+// challan follows them. So every one of those receipts asks.
+//
+// A stitching line asks only where the goods land in our warehouse (Panchal)
+// or leave the business (Third Party) -- the challan's CHECKER_STAGES. Bought in
+// at Processing, Stitching or Packing, the goods are checked later, on the
+// challan that takes them into Panchal, so the receipt carries no checker.
+// Twin of receiptTakesChecker in frontend/src/pages/OutboundPOs/receiptFields.js.
+const receiptTakesChecker = (line, stage) => !isStitchingLine(line) || isCheckerStage(stage);
 
-// The hand-over fields on a receipt at Panchal or Third Party, in the slot the
-// client checks them. Message strings are the stitching challan's, verbatim, so
-// both modules reject in identical wording.
+// Checked By on a receipt that takes one, in the slot the client checks it.
+// Message strings are the stitching challan's, verbatim, so both modules
+// reject in identical wording.
 async function checkerError(checkedBy) {
   if (checkedBy == null || String(checkedBy).trim() === '') return 'Checked By is required';
   const { rows } = await db.execute({ sql: 'SELECT id FROM users WHERE id = ?', args: [checkedBy] });
@@ -440,17 +448,17 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
     if (tooManyRateDecimals(rate)) return `Billed Rate can have at most ${RATE_DECIMALS} decimal places`;
   }
 
-  // Checked By is asked only where the goods are genuinely checked over: a
-  // receipt booked straight into Panchal or sold on at Third Party -- the
-  // challan's CHECKER_STAGES -- and validated below, after the stage's other
-  // fields.
+  // Checked By is asked where the goods are genuinely checked over
+  // (receiptTakesChecker): on every receipt that never reaches the Stitching
+  // page, and on a stitching line received straight into Panchal or sold on at
+  // Third Party. Validated below, after the stage's other fields.
   //
-  // It used to be a required dropdown on every single goods receipt, which made
-  // each one wait on a name the person filling the form already knew: their
-  // own. For a while every other receipt then recorded WHO ENTERED IT instead,
-  // which read on the detail page as a checker nobody had named. Off those two
-  // stages a receipt now carries no checker at all -- the Updated column
-  // already says who entered it.
+  // For a while (from 21 Sep 2026) no receipt asked, and each recorded WHO
+  // ENTERED IT instead -- which read on the detail page as a checker nobody had
+  // named. Those rows are left as they are and show flagged when the name is
+  // not a Warehouse POC (checked_by_is_poc). A stitching receipt at Processing,
+  // Stitching or Packing now carries no checker at all: its goods are checked
+  // on the challan into Panchal, and the Updated column says who entered it.
 
   // Several tests assert on the FIRST error a body with multiple omissions
   // produces, and that ordering is the contract -- so Bill No keeps the slot it
@@ -592,7 +600,9 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
   } else if (present('outbound_bill_no') && !blankText(body?.outbound_bill_no)) {
     return 'Outbound Bill No applies only to goods sold to a third party';
   }
-  // Off those two stages a checker is not stored, so one sent is not judged.
+  // The checker, on any receipt that takes one -- the same slot for a
+  // stitching line and for goods that never reach the Stitching page. Where a
+  // receipt takes none it is not stored, so one sent is not judged.
   if (receiptTakesChecker(line, effStage) && (requireAll || present('checked_by'))) {
     const err = await checkerError(body?.checked_by);
     if (err) return err;
@@ -739,6 +749,11 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
                    r.direct_stage, r.outbound_bill_no,
                    r.created_by, r.created_at, r.updated_by, r.updated_at, r.deleted_by, r.deleted_at,
                    cb.name AS created_by_name, ub.name AS updated_by_name, kb.name AS checked_by_name,
+                   -- Whether the stored checker is a Warehouse POC. Receipts
+                   -- entered from 21 Sep 2026 until Checked By was asked again
+                   -- hold whoever typed them, and the detail page flags those.
+                   EXISTS (SELECT 1 FROM user_roles ur
+                            WHERE ur.user_id = r.checked_by AND ur.role = 'Warehouse_POC') AS checked_by_is_poc,
                    -- Lots already forwarded onto the Stitching page. The detail
                    -- page uses it to explain why delete/edit is refused, rather
                    -- than only surfacing the error after a round trip.
@@ -1630,10 +1645,12 @@ async function updateReceipt(req, res, next) {
     const stageMoved = (nextStage || null) !== (receipt.incoming_stage || null);
     const nextThirdParty = isStitchingLine(receipt) && nextStage === EXIT_STAGE;
 
-    // The checker, at Panchal or Third Party only. One already stored carries
-    // over only from a stage that asked for it: a receipt moving in from
-    // Stitching may hold whoever typed it, and that is not a checker. Moving OUT
-    // of those stages clears it. Any other edit leaves what is stored alone.
+    // The checker, on a receipt that takes one (receiptTakesChecker) -- a
+    // non-stitching line's stage never moves, so it simply keeps what it has
+    // unless one is sent. One already stored carries over only from a stage that
+    // asked for it: a receipt moving in from Stitching may hold whoever typed
+    // it, and that is not a checker. Moving OUT of Panchal / Third Party clears
+    // it. Any other edit leaves what is stored alone.
     const nextTakesChecker = receiptTakesChecker(receipt, nextStage);
     const nextCheckedBy = nextTakesChecker
       ? (has('checked_by') ? Number(req.body.checked_by)

@@ -143,11 +143,26 @@ describe('receiptFieldError', () => {
     expect(receiptFieldError(valid, { line: fabric })).toBeNull();
   });
 
-  test('a packaging receipt needs none of them', () => {
+  // ...but it does name who checked it in: goods that never reach the
+  // Stitching page are checked as they are received or never.
+  test('a packaging receipt needs none of them, only a checker', () => {
     const bare = {
-      received_qty: 10, unit_metric: 'pcs', received_rate: 10, bill_no: 'B-1',
+      received_qty: 10, unit_metric: 'pcs', received_rate: 10, bill_no: 'B-1', checked_by: '3',
     };
     expect(receiptFieldError(bare, { line: packaging })).toBeNull();
+    expect(receiptFieldError({ ...bare, checked_by: '' }, { line: packaging })).toBe('Checked By is required');
+    // An older receipt with no checker stored keeps taking unrelated edits.
+    expect(receiptFieldError({ ...bare, checked_by: '' }, { line: packaging, requireChecker: false })).toBeNull();
+  });
+
+  // The checker's slot is after the fields before it and ahead of the qty
+  // difference, as on the server.
+  test('a packaging receipt reports Checked By in the server\'s slot', () => {
+    const bare = { received_qty: 10, unit_metric: 'pcs', received_rate: 10, bill_no: 'B-1', checked_by: '' };
+    expect(receiptFieldError({ ...bare, bill_no: '' }, { line: packaging })).toBe('Bill No is required');
+    expect(receiptFieldError({ ...bare, process_rate: '-1' }, { line: packaging })).toMatch(/Process Rate/);
+    expect(receiptFieldError({ ...bare, qty_diff_action: 'write_off' }, { line: packaging }))
+      .toBe('Checked By is required');
   });
 
   // Every receipt carries the unit it was counted in, fabric or not. The form
@@ -160,7 +175,7 @@ describe('receiptFieldError', () => {
   test('UM is required on every receipt, and reported last', () => {
     expect(receiptFieldError({ ...valid, unit_metric: '' }, { line: fabric }))
       .toMatch(/UM is required/);
-    expect(receiptFieldError({ ...valid, unit_metric: '   ' }, { line: packaging }))
+    expect(receiptFieldError({ ...valid, unit_metric: '   ', checked_by: '3' }, { line: packaging }))
       .toMatch(/UM is required/);
     // Qty in metres is checked before it, so that is what comes back.
     expect(receiptFieldError({ ...valid, unit_metric: '', qty_in_metres: '' }, { line: fabric }))
@@ -250,10 +265,12 @@ describe('receiptFieldError', () => {
       { line: fabric })).toBeNull();
   });
 
-  test('receiptTakesChecker is Panchal and Third Party on a stitching line only', () => {
+  test('receiptTakesChecker: always off the Stitching page, Panchal and Third Party on it', () => {
     for (const stage of STAGES) {
       expect(receiptTakesChecker(fabric, stage)).toBe(stage === 'Panchal' || stage === 'Third Party');
-      expect(receiptTakesChecker(packaging, stage)).toBe(false);
+    }
+    for (const stage of ['', null, ...STAGES]) {
+      expect(receiptTakesChecker(packaging, stage)).toBe(true);
     }
   });
 

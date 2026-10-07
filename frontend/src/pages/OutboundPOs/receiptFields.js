@@ -28,8 +28,9 @@ const tooManyRateDecimals = (n) =>
 
 // The three grades start at 0 -- the client's default -- and only mean anything
 // on goods received at Packing, Panchal or Third Party (receiptIsGraded).
-// outbound_bill_no is asked only at Third Party, checked_by at Panchal and
-// Third Party (receiptTakesChecker).
+// outbound_bill_no is asked only at Third Party. checked_by is asked on every
+// receipt that never reaches the Stitching page, and at Panchal and Third Party
+// on one that does (receiptTakesChecker).
 export const EMPTY_RECEIPT = {
   received_qty: '', unit_metric: '', received_rate: '', bill_no: '', incoming_no: '',
   process_rate: '', incoming_stage: '',
@@ -139,11 +140,13 @@ export const receiptIsGraded = (line, incomingStage) =>
 export const receiptIsSale = (line, incomingStage) =>
   isStitchingLine(line) && incomingStage === EXIT_STAGE;
 
-// Goods received straight into Panchal or sold on at Third Party are checked
-// over by a Warehouse POC -- the challan's CHECKER_STAGES. No other receipt
-// carries a checker. Twin of receiptTakesChecker on the server.
+// Whether a receipt is checked over by a Warehouse POC as it is received. Goods
+// that never reach the Stitching page are checked here or never, so every one
+// of those receipts asks. A stitching line asks only at Panchal and Third Party
+// -- the challan's CHECKER_STAGES; anywhere earlier its goods are checked on the
+// challan into Panchal. Twin of receiptTakesChecker on the server.
 export const receiptTakesChecker = (line, incomingStage) =>
-  isStitchingLine(line) && isCheckerStage(incomingStage);
+  !isStitchingLine(line) || isCheckerStage(incomingStage);
 
 // The grade inputs, in type order: [['Fresh', 'fresh_dozens'], ...].
 export const GRADE_FIELDS = CHALLAN_TYPES.map(t => [t, GRADE_COLUMNS[t]]);
@@ -187,7 +190,12 @@ export function offeredQtyDiffAction(difference) {
 // (migration 053 synthesized those from the legacy flat `received` value, with
 // no bill to record). Those stay editable for unrelated fixes rather than
 // demanding a bill number nobody has — matching what the server enforces.
-export function receiptFieldError(v, { requireBillNo = true, line = null } = {}) {
+//
+// requireChecker is false, likewise, only when editing a receipt that has no
+// checker stored and is not changing stage -- 053's synthesized rows, which
+// predate Checked By. The server judges a checker only when one is sent or the
+// stage moves.
+export function receiptFieldError(v, { requireBillNo = true, requireChecker = true, line = null } = {}) {
   const stitching = isStitchingLine(line);
   const kind = receiptUmKind(v, line);
   const stage = String(v.incoming_stage ?? '').trim();
@@ -249,17 +257,19 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
       }
     }
 
-    // The hand-over, in the slot the server checks it: a sale's outbound bill,
-    // then the checker at Panchal or Third Party. The Checked By list offers
-    // Warehouse POCs only, so the role half needs no twin here.
+    // A sale's outbound bill, in the slot the server checks it.
     if (sale) {
       const bill = String(v.outbound_bill_no ?? '').trim();
       if (!bill) return 'Outbound Bill No is required when sending to a third party';
       if (bill.length > INCOMING_NO_MAX) return `Outbound Bill No must be ${INCOMING_NO_MAX} characters or less`;
     }
-    if (receiptTakesChecker(line, stage) && (v.checked_by === '' || v.checked_by == null)) {
-      return 'Checked By is required';
-    }
+  }
+
+  // The checker, in the slot the server checks it -- the same one for a
+  // stitching line and for goods that never reach the Stitching page. The list
+  // offers Warehouse POCs only, so the role half needs no twin here.
+  if (requireChecker && receiptTakesChecker(line, stage) && (v.checked_by === '' || v.checked_by == null)) {
+    return 'Checked By is required';
   }
 
   // A ticked box has to say why, and has to match the difference it explains.

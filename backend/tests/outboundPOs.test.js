@@ -879,33 +879,72 @@ describe('Outbound POs API', () => {
       args: [receiptId],
     })).rows[0].checked_by;
 
-    // Checked By is asked only at Panchal and Third Party, where a Warehouse POC
-    // checks the goods over (see the stitching receipt tests below). Anywhere
-    // else a receipt carries no checker -- not even the session user, which
-    // read on the detail page as a checker nobody had named.
-    test('a receipt off the checker stages stores no checker', async () => {
+    const untaggedUser = async () => (await db.execute({
+      sql: `INSERT INTO users (name, username, email, password_hash, is_first_login)
+            VALUES (?, ?, ?, 'x', 0) RETURNING id`,
+      args: [`Untagged ${uid()}`, `untagged-${uid()}`, `untagged-${uid()}@x.com`],
+    })).rows[0].id;
+    const patchOne = (poId, lineId, receiptId, body) => request(app)
+      .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${receiptId}`)
+      .set('Authorization', `Bearer ${token}`).send(body);
+
+    // Goods that never reach the Stitching page are checked as they are received
+    // or never -- no challan follows them -- so every such receipt names a
+    // Warehouse POC, in the challan's words. (A stitching receipt asks only at
+    // Panchal and Third Party: see "Checked By at the checker stages" below.)
+    test('a receipt off the Stitching page needs a Warehouse POC', async () => {
       const { poId, lineId } = await setupLine();
-      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: 10, bill_no: 'B-NOCHK' });
-      expect(res.status).toBe(201);
-      expect(await checkedByOf(res.body.id)).toBeNull();
+      const body = { received_qty: 1, received_rate: 10, bill_no: `B-${uid()}` };
+
+      const missing = await rawPost(poId, lineId, body);
+      expect(missing.status).toBe(400);
+      expect(missing.body.message).toBe('Checked By is required');
+
+      const untagged = await rawPost(poId, lineId, { ...body, checked_by: await untaggedUser() });
+      expect(untagged.status).toBe(400);
+      expect(untagged.body.message).toBe('Checked By must be a user tagged Warehouse_POC');
+
+      const nobody = await rawPost(poId, lineId, { ...body, checked_by: 99999 });
+      expect(nobody.status).toBe(400);
+      expect(nobody.body.message).toBe('Checked By: user not found');
+
+      const ok = await rawPost(poId, lineId, { ...body, checked_by: warehousePocId });
+      expect(ok.status).toBe(201);
+      expect(Number(await checkedByOf(ok.body.id))).toBe(warehousePocId);
     });
 
-    // Nothing is stored there, so nothing sent is judged -- not the tag, and
-    // not whether the user exists.
-    test('a checked_by sent off the checker stages is neither judged nor stored', async () => {
+    // Rows from before Checked By was asked again hold no checker (053's
+    // synthesized ones) or whoever typed them. Neither is rewritten: an edit that
+    // does not touch the checker still saves, one that names a checker is held
+    // to the rule, and the detail page flags a stored name that is no POC.
+    test('an older receipt keeps taking unrelated edits, and is flagged when its checker is no POC', async () => {
       const { poId, lineId } = await setupLine();
-      const { rows } = await db.execute({
-        sql: `INSERT INTO users (name, username, email, password_hash, is_first_login)
-              VALUES (?, ?, ?, 'x', 0) RETURNING id`,
-        args: [`Untagged ${uid()}`, `untagged-${uid()}`, `untagged-${uid()}@x.com`],
-      });
-      for (const checkedBy of [rows[0].id, 99999]) {
-        const res = await rawPost(poId, lineId, {
-          received_qty: 1, received_rate: 10, bill_no: `B-${uid()}`, checked_by: checkedBy,
+      const created = await postReceipt(poId, lineId, { received_qty: 1 });
+      expect(created.status).toBe(201);
+      const getLine = async () => (await request(app).get(`/api/outbound-pos/${poId}`)
+        .set('Authorization', `Bearer ${token}`)).body.lines[0];
+      expect((await getLine()).receipts[0].checked_by_is_poc).toBe(1);
+
+      const typist = await untaggedUser();
+      for (const stored of [null, typist]) {
+        await db.execute({
+          sql: 'UPDATE outbound_po_line_receipts SET checked_by = ? WHERE id = ?',
+          args: [stored, created.body.id],
         });
-        expect(res.status).toBe(201);
-        expect(await checkedByOf(res.body.id)).toBeNull();
+        const edited = await patchOne(poId, lineId, created.body.id, { note: `Recounted ${uid()}` });
+        expect(edited.status).toBe(200);
+        const kept = await checkedByOf(created.body.id);
+        expect(kept == null ? null : Number(kept)).toBe(stored);
+        expect((await getLine()).receipts[0].checked_by_is_poc).toBe(0);
       }
+
+      const restated = await patchOne(poId, lineId, created.body.id, { checked_by: typist });
+      expect(restated.status).toBe(400);
+      expect(restated.body.message).toBe('Checked By must be a user tagged Warehouse_POC');
+
+      const fixed = await patchOne(poId, lineId, created.body.id, { checked_by: warehousePocId });
+      expect(fixed.status).toBe(200);
+      expect((await getLine()).receipts[0].checked_by_is_poc).toBe(1);
     });
 
     test('accepts a receipt with no incoming_no — it is optional by design', async () => {

@@ -130,8 +130,9 @@ const isRateStage = (stage) => RATE_STAGES.includes(stage);
 // warehouse, and the exit. The two hand-overs that are a genuine second pair of
 // eyes -- goods coming into our stock, and goods leaving the business -- rather
 // than one job worker passing to the next. A challan into either, and a PO
-// receipt booked straight into either, asks for Checked By there and nowhere
-// else.
+// receipt on a stitching line booked straight into either, asks for Checked By
+// there and nowhere else on the chain. (A receipt for goods that never reach
+// the Stitching page always asks -- see receiptTakesChecker.)
 const CHECKER_STAGES = [STOCK_STAGE, EXIT_STAGE];
 
 const isCheckerStage = (stage) => CHECKER_STAGES.includes(stage);
