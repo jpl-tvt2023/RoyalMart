@@ -25,7 +25,7 @@ import ReceiptModal from './ReceiptModal';
 // The line-shape contract lives with the receipt rules, not here, so one test
 // can hold this page and ReceiptModal to the same set of fields. Dropping one
 // silently suppressed the modal's fabric fields once already.
-import { emptyLine, mapKey, mapLabel, toLineState } from './receiptFields';
+import { emptyLine, mapKey, mapLabel, toLineState, receiptTakesChecker } from './receiptFields';
 
 const STATUS_COLORS = { Open: 'blue', 'Partially Received': 'yellow', Closed: 'green', Deleted: 'gray' };
 
@@ -673,7 +673,12 @@ export default function OutboundPODetail() {
                                           flagged state also carries a glyph. */}
                                       {(receipt.flags || []).includes('missing_incoming_stage') && <span className="ml-1">⚠</span>}
                                     </td>
-                                    <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>{receipt.checked_by_name || '—'}</td>
+                                    {/* A checker only where one is asked -- Panchal
+                                        and Third Party. An older receipt elsewhere
+                                        holds whoever typed it, which is no checker. */}
+                                    <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>
+                                      {receiptTakesChecker(l, receipt.incoming_stage) ? (receipt.checked_by_name || '—') : '—'}
+                                    </td>
                                     <td className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''}`}>
                                       {receipt.note ? (
                                         <div className="w-48 xl:w-56 whitespace-pre-line break-words leading-snug text-gray-700">

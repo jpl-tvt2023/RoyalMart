@@ -7,7 +7,7 @@
 
 import {
   moneyError, qtyError, STAGES, EPSILON, countsDozens, metresPerDozen,
-  isGradedStage, CHALLAN_TYPES, GRADE_COLUMNS, EXIT_STAGE,
+  isGradedStage, CHALLAN_TYPES, GRADE_COLUMNS, EXIT_STAGE, isCheckerStage,
   umKind, countsInDozens, derivedDozens, receiptHasMetres, receiptStageBlockReason,
 } from '../../utils/stitching';
 
@@ -28,7 +28,8 @@ const tooManyRateDecimals = (n) =>
 
 // The three grades start at 0 -- the client's default -- and only mean anything
 // on goods received at Packing, Panchal or Third Party (receiptIsGraded).
-// outbound_bill_no and checked_by are asked only at Third Party.
+// outbound_bill_no is asked only at Third Party, checked_by at Panchal and
+// Third Party (receiptTakesChecker).
 export const EMPTY_RECEIPT = {
   received_qty: '', unit_metric: '', received_rate: '', bill_no: '', incoming_no: '',
   process_rate: '', incoming_stage: '',
@@ -138,6 +139,12 @@ export const receiptIsGraded = (line, incomingStage) =>
 export const receiptIsSale = (line, incomingStage) =>
   isStitchingLine(line) && incomingStage === EXIT_STAGE;
 
+// Goods received straight into Panchal or sold on at Third Party are checked
+// over by a Warehouse POC -- the challan's CHECKER_STAGES. No other receipt
+// carries a checker. Twin of receiptTakesChecker on the server.
+export const receiptTakesChecker = (line, incomingStage) =>
+  isStitchingLine(line) && isCheckerStage(incomingStage);
+
 // The grade inputs, in type order: [['Fresh', 'fresh_dozens'], ...].
 export const GRADE_FIELDS = CHALLAN_TYPES.map(t => [t, GRADE_COLUMNS[t]]);
 
@@ -242,13 +249,16 @@ export function receiptFieldError(v, { requireBillNo = true, line = null } = {})
       }
     }
 
-    // A sale's hand-over, in the slot the server checks it. The Checked By list
-    // offers Warehouse POCs only, so the role half needs no twin here.
+    // The hand-over, in the slot the server checks it: a sale's outbound bill,
+    // then the checker at Panchal or Third Party. The Checked By list offers
+    // Warehouse POCs only, so the role half needs no twin here.
     if (sale) {
       const bill = String(v.outbound_bill_no ?? '').trim();
       if (!bill) return 'Outbound Bill No is required when sending to a third party';
       if (bill.length > INCOMING_NO_MAX) return `Outbound Bill No must be ${INCOMING_NO_MAX} characters or less`;
-      if (v.checked_by === '' || v.checked_by == null) return 'Checked By is required';
+    }
+    if (receiptTakesChecker(line, stage) && (v.checked_by === '' || v.checked_by == null)) {
+      return 'Checked By is required';
     }
   }
 

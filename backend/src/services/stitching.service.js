@@ -126,6 +126,16 @@ const RATE_STAGES = STAGES.filter(s => (DESTINATIONS[s] || []).length > 0);
 
 const isRateStage = (stage) => RATE_STAGES.includes(stage);
 
+// The stages goods arriving at are CHECKED OVER by a Warehouse POC: our own
+// warehouse, and the exit. The two hand-overs that are a genuine second pair of
+// eyes -- goods coming into our stock, and goods leaving the business -- rather
+// than one job worker passing to the next. A challan into either, and a PO
+// receipt booked straight into either, asks for Checked By there and nowhere
+// else.
+const CHECKER_STAGES = [STOCK_STAGE, EXIT_STAGE];
+
+const isCheckerStage = (stage) => CHECKER_STAGES.includes(stage);
+
 // The stages that count DOZENS, and count nothing else. Processing is the last
 // stage that deals in metres. A challan leaving it records the metres sent and
 // the dozens that came back -- that is where fabric becomes pieces -- and from
@@ -438,11 +448,11 @@ const rateTotal = (components, mPerDozen, { dozenLot = false } = {}) => {
 module.exports = {
   STAGES, STATUS, OPEN_STATUSES, EPSILON,
   DESTINATIONS, EXIT_STAGE, STOCK_STAGE, DOZEN_STAGES, stageRateUnit,
-  PARTY_USE_STAGES, CHALLAN_TYPES, GRADED_STAGES, GRADE_COLUMNS, RATE_STAGES,
+  PARTY_USE_STAGES, CHALLAN_TYPES, GRADED_STAGES, GRADE_COLUMNS, RATE_STAGES, CHECKER_STAGES,
   REVERT_REASON_MAX, WRITE_OFF_REASON_MAX, CHALLAN_MAX,
   DOZEN_UMS, METRE_UMS, PIECE_UMS, PIECES_PER_DOZEN, umKind, countsInDozens, derivedDozens,
   receiptHasMetres, receiptStageBlockReason,
-  isValidStage, isValidPartyUse, isValidChallanType, isGradedStage, isRateStage,
+  isValidStage, isValidPartyUse, isValidChallanType, isGradedStage, isRateStage, isCheckerStage,
   countsDozens, balanceUnitFor, metresPerDozen,
   partyShort, partyTag, rateTotal,
   nextStage, destinationsFor, canSendTo,

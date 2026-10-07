@@ -3,7 +3,7 @@ import {
   isStitchingLine, RECEIPT_STAGES, outstandingOf, qtyDifference, offeredQtyDiffAction,
   receiptFieldError, stageOptionsFor, defaultReceiptStage,
   emptyLine, toLineState, EMPTY_RECEIPT, NOTE_MAX, receiptIsGraded, receiptGradeTotal,
-  receiptSettledDozens, receiptTakesMetres,
+  receiptSettledDozens, receiptTakesMetres, receiptTakesChecker,
 } from '../receiptFields';
 import { STAGES, umKind } from '../../../utils/stitching';
 
@@ -235,6 +235,26 @@ describe('receiptFieldError', () => {
     expect(receiptFieldError({ ...sale, outbound_bill_no: 'OB-1' }, { line: fabric }))
       .toBe('Checked By is required');
     expect(receiptFieldError({ ...sale, outbound_bill_no: 'OB-1', checked_by: '3' }, { line: fabric })).toBeNull();
+  });
+
+  // Goods received straight into the warehouse are checked in by a Warehouse
+  // POC, as a challan into Panchal is. Nowhere else on the chain is it asked.
+  test('Panchal needs a checker, and no stage before it does', () => {
+    const panchal = {
+      ...valid, incoming_stage: 'Panchal', fresh_dozens: '5', second_dozens: '0', third_dozens: '0',
+      checked_by: '',
+    };
+    expect(receiptFieldError(panchal, { line: fabric })).toBe('Checked By is required');
+    expect(receiptFieldError({ ...panchal, checked_by: '3' }, { line: fabric })).toBeNull();
+    expect(receiptFieldError({ ...valid, incoming_stage: 'Stitching', received_dozens: '5', checked_by: '' },
+      { line: fabric })).toBeNull();
+  });
+
+  test('receiptTakesChecker is Panchal and Third Party on a stitching line only', () => {
+    for (const stage of STAGES) {
+      expect(receiptTakesChecker(fabric, stage)).toBe(stage === 'Panchal' || stage === 'Third Party');
+      expect(receiptTakesChecker(packaging, stage)).toBe(false);
+    }
   });
 
   // Free text, last of all, in the slot the server gives it.

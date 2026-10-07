@@ -7,7 +7,7 @@ const {
 const { pairKey, unitMetricsByPair } = require('../services/outboundProducts.service');
 const {
   moneyError, qtyError, EPSILON, isValidStage, STAGES, countsDozens, DOZEN_STAGES,
-  STOCK_STAGE, EXIT_STAGE, CHALLAN_TYPES, GRADE_COLUMNS, isGradedStage,
+  STOCK_STAGE, EXIT_STAGE, CHALLAN_TYPES, GRADE_COLUMNS, isGradedStage, isCheckerStage,
   umKind, countsInDozens, derivedDozens, receiptHasMetres, receiptStageBlockReason,
 } = require('../services/stitching.service');
 const { userHasRole } = require('../services/userRoles.service');
@@ -371,10 +371,15 @@ function receiptStageError(body, { requireAll, line, kind }) {
   return null;
 }
 
-// THIRD PARTY's two hand-over fields on a receipt, in the slot the client
-// checks them. Message strings are the stitching challan's, verbatim, so both
-// modules reject a sale in identical wording.
-async function thirdPartyCheckerError(checkedBy) {
+// Whether a receipt at this stage is checked over by a Warehouse POC: a
+// stitching line received straight into Panchal or sold on at Third Party --
+// the challan's CHECKER_STAGES. Nowhere else does a receipt carry a checker.
+const receiptTakesChecker = (line, stage) => isStitchingLine(line) && isCheckerStage(stage);
+
+// The hand-over fields on a receipt at Panchal or Third Party, in the slot the
+// client checks them. Message strings are the stitching challan's, verbatim, so
+// both modules reject in identical wording.
+async function checkerError(checkedBy) {
   if (checkedBy == null || String(checkedBy).trim() === '') return 'Checked By is required';
   const { rows } = await db.execute({ sql: 'SELECT id FROM users WHERE id = ?', args: [checkedBy] });
   if (!rows.length) return 'Checked By: user not found';
@@ -435,26 +440,17 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
     if (tooManyRateDecimals(rate)) return `Billed Rate can have at most ${RATE_DECIMALS} decimal places`;
   }
 
-  // Checked By is no longer asked for on a receipt, and no longer a
-  // qualification here.
+  // Checked By is asked only where the goods are genuinely checked over: a
+  // receipt booked straight into Panchal or sold on at Third Party -- the
+  // challan's CHECKER_STAGES -- and validated below, after the stage's other
+  // fields.
   //
-  // It used to be a required dropdown of Warehouse_POC users on every single
-  // goods receipt, which made each one wait on picking a name the person
-  // filling the form already knew: their own. It now records WHO ENTERED THE
-  // RECEIPT, taken from the session. The column and the detail page's Checked
-  // By column stay -- only the question goes.
-  //
-  // The real second-pair-of-eyes check moved to the two points in the stitching
-  // chain where the goods genuinely change hands: into Panchal, and out to a
-  // third party. stitching.controller.js enforces the Warehouse_POC rule there,
-  // reusing these message strings verbatim.
-  //
-  // Still validated when explicitly supplied, so an API caller cannot attach a
-  // receipt to a user id that does not exist.
-  if (present('checked_by') && !blank(body?.checked_by)) {
-    const [, err] = await resolveUserRef(body.checked_by, 'Checked By');
-    if (err) return err;
-  }
+  // It used to be a required dropdown on every single goods receipt, which made
+  // each one wait on a name the person filling the form already knew: their
+  // own. For a while every other receipt then recorded WHO ENTERED IT instead,
+  // which read on the detail page as a checker nobody had named. Off those two
+  // stages a receipt now carries no checker at all -- the Updated column
+  // already says who entered it.
 
   // Several tests assert on the FIRST error a body with multiple omissions
   // produces, and that ordering is the contract -- so Bill No keeps the slot it
@@ -583,21 +579,23 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
 
   // THIRD PARTY's hand-over (091), the same two questions a challan into Third
   // Party asks: OUR outbound bill number, the only handle on goods that have
-  // left, and the Warehouse POC who checked them over -- a real qualification
-  // here, as at the challan, not the session stamp every other receipt gets.
-  // An edit moving a receipt INTO Third Party is held to both by updateReceipt,
-  // which knows what is already stored.
+  // left, and the Warehouse POC who checked them over. PANCHAL asks the second
+  // of the two, as a challan into the warehouse does -- goods arriving in our
+  // stock. A real qualification at both, in the same slot.
+  // An edit moving a receipt INTO either stage is held to them by
+  // updateReceipt, which knows what is already stored.
   if (thirdParty) {
     if (requireAll || present('outbound_bill_no')) {
       const err = thirdPartyBillError(body?.outbound_bill_no);
       if (err) return err;
     }
-    if (requireAll || present('checked_by')) {
-      const err = await thirdPartyCheckerError(body?.checked_by);
-      if (err) return err;
-    }
   } else if (present('outbound_bill_no') && !blankText(body?.outbound_bill_no)) {
     return 'Outbound Bill No applies only to goods sold to a third party';
+  }
+  // Off those two stages a checker is not stored, so one sent is not judged.
+  if (receiptTakesChecker(line, effStage) && (requireAll || present('checked_by'))) {
+    const err = await checkerError(body?.checked_by);
+    if (err) return err;
   }
 
   // What to do about a delivery that does not match what was outstanding. The
@@ -1412,15 +1410,14 @@ async function createReceipt(req, res, next) {
     if (validationError) return res.status(400).json({ message: validationError });
     const receivedRate = Number(req.body.received_rate);
     const billNo = req.body?.bill_no != null ? (String(req.body.bill_no).trim() || null) : null;
-    // Whoever entered the receipt, unless a caller names someone else.
-    const checkedBy = req.body.checked_by == null || req.body.checked_by === ''
-      ? req.user.id
-      : Number(req.body.checked_by);
-
     // The client sends a stage, never a prefix. Resolving it here is what keeps
     // the prefix master a display concern rather than something a user picks.
     const incomingStage = req.body?.incoming_stage != null
       ? (String(req.body.incoming_stage).trim() || null) : null;
+    // The Warehouse POC who checked the goods over, at Panchal or Third Party
+    // only -- validation has already held it to the role there. Anywhere else a
+    // receipt carries no checker.
+    const checkedBy = receiptTakesChecker(line, incomingStage) ? Number(req.body.checked_by) : null;
     // Third Party has no prefix -- nothing arrives there to number -- so the
     // stage is held on the receipt itself, and there is no incoming number.
     const thirdParty = isStitchingLine(line) && incomingStage === EXIT_STAGE;
@@ -1592,7 +1589,6 @@ async function updateReceipt(req, res, next) {
     if (has('bill_no')) {
       nextBillNo = req.body.bill_no != null ? (String(req.body.bill_no).trim() || null) : null;
     }
-    const nextCheckedBy = has('checked_by') ? Number(req.body.checked_by) : receipt.checked_by;
     let nextIncomingNo = receipt.incoming_no;
     if (has('incoming_no')) {
       nextIncomingNo = req.body.incoming_no != null
@@ -1633,6 +1629,16 @@ async function updateReceipt(req, res, next) {
       : receipt.incoming_stage;
     const stageMoved = (nextStage || null) !== (receipt.incoming_stage || null);
     const nextThirdParty = isStitchingLine(receipt) && nextStage === EXIT_STAGE;
+
+    // The checker, at Panchal or Third Party only. One already stored carries
+    // over only from a stage that asked for it: a receipt moving in from
+    // Stitching may hold whoever typed it, and that is not a checker. Moving OUT
+    // of those stages clears it. Any other edit leaves what is stored alone.
+    const nextTakesChecker = receiptTakesChecker(receipt, nextStage);
+    const nextCheckedBy = nextTakesChecker
+      ? (has('checked_by') ? Number(req.body.checked_by)
+        : receiptTakesChecker(receipt, receipt.incoming_stage) ? receipt.checked_by : null)
+      : (stageMoved ? null : receipt.checked_by);
 
     // Metres: a unit that IS metres copies Received Qty across, and goods bought
     // in dozens or pieces carry none -- whatever is stored.
@@ -1720,12 +1726,14 @@ async function updateReceipt(req, res, next) {
         });
       }
     }
-    // Moved INTO Third Party: the sale's two hand-over fields have to be there,
+    // Moved INTO Third Party or Panchal: the hand-over fields have to be there,
     // from this edit or already stored -- the same rule a new receipt meets.
     if (nextThirdParty && stageMoved) {
       const billErr = thirdPartyBillError(nextOutboundBillNo);
       if (billErr) return res.status(400).json({ message: billErr });
-      const checkErr = await thirdPartyCheckerError(nextCheckedBy);
+    }
+    if (nextTakesChecker && stageMoved) {
+      const checkErr = await checkerError(nextCheckedBy);
       if (checkErr) return res.status(400).json({ message: checkErr });
     }
     // What the Stitching page counts is the METRES for fabric, so that is what
