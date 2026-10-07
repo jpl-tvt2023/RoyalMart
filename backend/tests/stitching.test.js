@@ -18,12 +18,10 @@ const uid = () => Math.random().toString(36).slice(2, 8);
 const challanNo = (tag = 'C') => `${tag}-${uid()}`;
 const A = (r) => r.set('Authorization', `Bearer ${token}`);
 
+// CHECKER_STAGES: the two destinations that ask who checked the goods over.
 const {
-  DESTINATIONS, DOZEN_STAGES, STOCK_STAGE, EXIT_STAGE,
+  DESTINATIONS, DOZEN_STAGES, STOCK_STAGE, EXIT_STAGE, CHECKER_STAGES,
 } = require('../src/services/stitching.service');
-
-// The two destinations that ask who checked the goods over.
-const CHECKER_STAGES = [STOCK_STAGE, EXIT_STAGE];
 
 // The stage a parent lot is at, which decides both where a forward lands by
 // default (its first destination, exactly what create() falls back to) and what
@@ -1213,7 +1211,10 @@ describe('Closing a Panchal lot', () => {
     };
     expect(await status()).toBe('Pending');
 
-    await patchReceipt(poId, lineId, receipt.body.id, { incoming_stage: 'Panchal' });
+    // Into the warehouse, a Warehouse POC checks the goods in -- as on a new
+    // receipt there.
+    const moved = await patchReceipt(poId, lineId, receipt.body.id, { incoming_stage: 'Panchal', checked_by: warehousePocId });
+    expect(moved.status).toBe(200);
     expect(await status()).toBe('Closed');
 
     await patchReceipt(poId, lineId, receipt.body.id, { incoming_stage: 'Packing' });
@@ -2782,6 +2783,10 @@ describe('Goods bought in dozens or pieces, and Third Party receipts', () => {
     expect(svc.receiptStageBlockReason('Processing', svc.umKind('pcs')))
       .toBe('Processing counts metres — goods bought in dozens or pieces cannot be received there');
     expect(svc.receiptStageBlockReason('Processing', svc.umKind('mtr'))).toBeNull();
+    // The two stages a challan or a PO receipt into asks Checked By.
+    expect(svc.CHECKER_STAGES).toEqual(['Panchal', 'Third Party']);
+    expect(svc.isCheckerStage('Panchal')).toBe(true);
+    expect(svc.isCheckerStage('Packing')).toBe(false);
   });
 
   // No yield exists anywhere in such a chain, so a per-piece PO rate is twelve

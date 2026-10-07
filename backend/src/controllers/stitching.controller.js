@@ -6,7 +6,7 @@ const {
   EXIT_STAGE, STOCK_STAGE, destinationsFor, canSendTo,
   countsDozens, balanceUnitFor, DOZEN_STAGES, stageRateUnit, metresPerDozen,
   PARTY_USE_STAGES, CHALLAN_TYPES, isValidPartyUse, isValidChallanType,
-  GRADE_COLUMNS, isGradedStage, isRateStage,
+  GRADE_COLUMNS, isGradedStage, isRateStage, isCheckerStage,
   umKind,
   partyTag, rateTotal,
   statusSql, moneyError, qtyError, challanError,
@@ -893,14 +893,14 @@ async function validateEntryFields(body, {
   //
   // The two exceptions are the hand-overs that are a genuine second pair of
   // eyes rather than the typist's own name: goods arriving in OUR warehouse,
-  // and goods leaving the business. There it is a real qualification again, and
-  // the same one the outbound receipt used to enforce -- a user tagged
-  // Warehouse_POC -- with the message strings reproduced verbatim so both
-  // modules reject in identical wording.
+  // and goods leaving the business (CHECKER_STAGES). There it is a real
+  // qualification -- a user tagged Warehouse_POC -- and the same one a PO
+  // receipt booked straight into either stage meets, with the message strings
+  // reproduced verbatim so both modules reject in identical wording.
   //
   // Outside those two it is still validated when explicitly supplied, so an API
   // caller cannot attach a challan to a user id that does not exist.
-  const checkerRequired = targetStage === STOCK_STAGE || targetStage === EXIT_STAGE;
+  const checkerRequired = isCheckerStage(targetStage);
   if (checkerRequired && (requireAll || present('checked_by'))) {
     if (body?.checked_by == null || String(body.checked_by).trim() === '') {
       return 'Checked By is required';

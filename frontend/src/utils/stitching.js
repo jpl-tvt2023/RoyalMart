@@ -197,6 +197,15 @@ export const RATE_STAGES = STAGES.filter(s => destinationsFor(s).length > 0);
 
 export const isRateStage = (stage) => RATE_STAGES.includes(stage);
 
+// Twin of CHECKER_STAGES on the server: the stages goods arriving at are checked
+// over by a Warehouse POC -- our warehouse and the exit. A challan into either,
+// and a PO receipt on a stitching line booked straight into either, asks for
+// Checked By there and nowhere else on the chain. (A receipt for goods that
+// never reach the Stitching page always asks -- see receiptTakesChecker.)
+export const CHECKER_STAGES = [STOCK_STAGE, EXIT_STAGE];
+
+export const isCheckerStage = (stage) => CHECKER_STAGES.includes(stage);
+
 export const canSendTo = (fromStage, toStage) => destinationsFor(fromStage).includes(toStage);
 
 // The first destination, which is what the chooser pre-selects. No longer "the

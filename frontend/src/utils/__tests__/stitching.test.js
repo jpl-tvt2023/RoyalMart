@@ -8,7 +8,7 @@ import {
   writeOffReasonError, WRITE_OFF_REASON_MAX, STATUSES, OPEN_STATUSES, statusesFor,
   GRADED_STAGES, isGradedStage, GRADE_COLUMNS, gradesOf, RATE_STAGES, isRateStage,
   umKind, countsInDozens, derivedDozens, receiptHasMetres, receiptStageBlockReason,
-  DOZEN_UMS, METRE_UMS, PIECE_UMS,
+  DOZEN_UMS, METRE_UMS, PIECE_UMS, CHECKER_STAGES, isCheckerStage,
 } from '../stitching';
 
 describe('STAGE_TABS', () => {
@@ -276,6 +276,21 @@ describe('statusesFor', () => {
     expect(statusesFor(ALL_TAB)).toEqual(STATUSES);
     const union = new Set(STAGES.flatMap(statusesFor));
     expect([...union].sort()).toEqual([...STATUSES].sort());
+  });
+});
+
+// Twin of the server's CHECKER_STAGES, held to the value the backend suite
+// asserts ("the mirrored constants"): the two stages a challan or a PO receipt
+// into asks Checked By.
+describe('CHECKER_STAGES', () => {
+  test('is our warehouse and the exit', () => {
+    expect(CHECKER_STAGES).toEqual(['Panchal', 'Third Party']);
+    expect(CHECKER_STAGES).toEqual([STOCK_STAGE, EXIT_STAGE]);
+    expect(isCheckerStage('Panchal')).toBe(true);
+    expect(isCheckerStage('Third Party')).toBe(true);
+    for (const stage of ['Processing', 'Stitching', 'Packing', '', null]) {
+      expect(isCheckerStage(stage)).toBe(false);
+    }
   });
 });
 

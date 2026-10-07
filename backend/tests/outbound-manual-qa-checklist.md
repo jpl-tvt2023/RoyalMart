@@ -121,9 +121,24 @@ New in this change — see migrations `084` and `085`.
       challan to Third Party asks for Checked By + Outbound Bill No, and
       neither field appears on a challan to Stitching or Packing. The Checked
       By list holds Warehouse_POC users only.
-- [ ] **Add Receipt no longer asks for Checked By.** Saving works without it,
-      and the receipts table on the PO detail page shows your own name in the
-      Checked By column (header no longer carries a `*`).
+- [ ] **Add / Edit Receipt asks for Checked By where the goods are checked
+      over**, listing Warehouse_POC users only, and refuses to save without
+      it:
+      - on **every** receipt for a line without "Goes through Stitching"
+        (packaging, barcodes);
+      - on a stitching line, only when the Stage is **Panchal** or **Third
+        Party** (the stages a challan asks it). Switch the Stage to
+        Processing / Stitching / Packing and the field goes.
+- [ ] On the PO detail page the Checked By column shows `—` for stitching
+      receipts at Processing / Stitching / Packing (e.g. PO 055). Everywhere
+      else it shows the stored name, and a name that is not a Warehouse POC
+      reads `Name (not Warehouse POC)` — packaging receipts entered from
+      21 Sep 2026 hold whoever typed them.
+- [ ] Edit such an older receipt: it opens showing `Name (not Warehouse
+      POC)`, an unrelated edit (Note) still saves, and picking a Warehouse POC
+      replaces it and clears the flag.
+- [ ] Edit a Stitching receipt and move it to Panchal: Checked By starts
+      empty and must be picked before it saves.
 - [ ] Editing a receipt that was taken at a dozen stage (incl. Panchal) opens
       with its Dozens Received filled in and saves without retyping it.
 - [ ] **Challan key**: raising the same challan number twice to the SAME party

@@ -39,9 +39,9 @@ function lineFor(article, overrides = {}) {
 }
 
 // Billed Rate and Bill No are mandatory on every receipt, so default them in
-// unless a test is specifically exercising their validation. Checked By is NOT
-// mandatory any more -- the server stamps the session user -- but it is still
-// supplied here so the rows these tests create carry a realistic checker.
+// unless a test is specifically exercising their validation. Checked By is
+// asked only at Panchal and Third Party, and ignored everywhere else -- it is
+// supplied here so a receipt at either of those stages meets the rule by default.
 function receiptBody(overrides = {}) {
   return { received_qty: 1, received_rate: 10, checked_by: warehousePocId, bill_no: 'B-DEF', ...overrides };
 }
@@ -874,43 +874,77 @@ describe('Outbound POs API', () => {
       expect(res.status).toBe(400);
     });
 
-    // The form no longer asks. A receipt records who ENTERED it, taken from the
-    // session, so omitting it is the ordinary case rather than an error -- and
-    // the Warehouse_POC qualification moved to the two stitching destinations
-    // where the hand-over is real (see stitching.test.js).
-    test('accepts a receipt with no checked_by, stamping the session user', async () => {
-      const { poId, lineId } = await setupLine();
-      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: 10, bill_no: 'B-NOCHK' });
-      expect(res.status).toBe(201);
+    const checkedByOf = async (receiptId) => (await db.execute({
+      sql: 'SELECT checked_by FROM outbound_po_line_receipts WHERE id = ?',
+      args: [receiptId],
+    })).rows[0].checked_by;
 
-      const { rows } = await db.execute({
-        sql: 'SELECT checked_by FROM outbound_po_line_receipts WHERE id = ?',
-        args: [res.body.id],
-      });
-      expect(Number(rows[0].checked_by)).toBe(adminUserId);
+    const untaggedUser = async () => (await db.execute({
+      sql: `INSERT INTO users (name, username, email, password_hash, is_first_login)
+            VALUES (?, ?, ?, 'x', 0) RETURNING id`,
+      args: [`Untagged ${uid()}`, `untagged-${uid()}`, `untagged-${uid()}@x.com`],
+    })).rows[0].id;
+    const patchOne = (poId, lineId, receiptId, body) => request(app)
+      .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${receiptId}`)
+      .set('Authorization', `Bearer ${token}`).send(body);
+
+    // Goods that never reach the Stitching page are checked as they are received
+    // or never -- no challan follows them -- so every such receipt names a
+    // Warehouse POC, in the challan's words. (A stitching receipt asks only at
+    // Panchal and Third Party: see "Checked By at the checker stages" below.)
+    test('a receipt off the Stitching page needs a Warehouse POC', async () => {
+      const { poId, lineId } = await setupLine();
+      const body = { received_qty: 1, received_rate: 10, bill_no: `B-${uid()}` };
+
+      const missing = await rawPost(poId, lineId, body);
+      expect(missing.status).toBe(400);
+      expect(missing.body.message).toBe('Checked By is required');
+
+      const untagged = await rawPost(poId, lineId, { ...body, checked_by: await untaggedUser() });
+      expect(untagged.status).toBe(400);
+      expect(untagged.body.message).toBe('Checked By must be a user tagged Warehouse_POC');
+
+      const nobody = await rawPost(poId, lineId, { ...body, checked_by: 99999 });
+      expect(nobody.status).toBe(400);
+      expect(nobody.body.message).toBe('Checked By: user not found');
+
+      const ok = await rawPost(poId, lineId, { ...body, checked_by: warehousePocId });
+      expect(ok.status).toBe(201);
+      expect(Number(await checkedByOf(ok.body.id))).toBe(warehousePocId);
     });
 
-    // No longer a qualification here: an untagged user is an ordinary answer
-    // now that the question records who typed the row.
-    test('accepts a checked_by that is a real user without the Warehouse_POC tag', async () => {
+    // Rows from before Checked By was asked again hold no checker (053's
+    // synthesized ones) or whoever typed them. Neither is rewritten: an edit that
+    // does not touch the checker still saves, one that names a checker is held
+    // to the rule, and the detail page flags a stored name that is no POC.
+    test('an older receipt keeps taking unrelated edits, and is flagged when its checker is no POC', async () => {
       const { poId, lineId } = await setupLine();
-      const { rows } = await db.execute({
-        sql: `INSERT INTO users (name, username, email, password_hash, is_first_login)
-              VALUES (?, ?, ?, 'x', 0) RETURNING id`,
-        args: [`Untagged ${uid()}`, `untagged-${uid()}`, `untagged-${uid()}@x.com`],
-      });
-      const res = await rawPost(poId, lineId, {
-        received_qty: 1, received_rate: 10, bill_no: 'B-UNTAGGED', checked_by: rows[0].id,
-      });
-      expect(res.status).toBe(201);
-    });
+      const created = await postReceipt(poId, lineId, { received_qty: 1 });
+      expect(created.status).toBe(201);
+      const getLine = async () => (await request(app).get(`/api/outbound-pos/${poId}`)
+        .set('Authorization', `Bearer ${token}`)).body.lines[0];
+      expect((await getLine()).receipts[0].checked_by_is_poc).toBe(1);
 
-    // Still validated when explicitly supplied, so an API caller cannot attach
-    // a receipt to a user id that does not exist.
-    test('rejects a checked_by that resolves to no user', async () => {
-      const { poId, lineId } = await setupLine();
-      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: 10, checked_by: 99999 });
-      expect(res.status).toBe(400);
+      const typist = await untaggedUser();
+      for (const stored of [null, typist]) {
+        await db.execute({
+          sql: 'UPDATE outbound_po_line_receipts SET checked_by = ? WHERE id = ?',
+          args: [stored, created.body.id],
+        });
+        const edited = await patchOne(poId, lineId, created.body.id, { note: `Recounted ${uid()}` });
+        expect(edited.status).toBe(200);
+        const kept = await checkedByOf(created.body.id);
+        expect(kept == null ? null : Number(kept)).toBe(stored);
+        expect((await getLine()).receipts[0].checked_by_is_poc).toBe(0);
+      }
+
+      const restated = await patchOne(poId, lineId, created.body.id, { checked_by: typist });
+      expect(restated.status).toBe(400);
+      expect(restated.body.message).toBe('Checked By must be a user tagged Warehouse_POC');
+
+      const fixed = await patchOne(poId, lineId, created.body.id, { checked_by: warehousePocId });
+      expect(fixed.status).toBe(200);
+      expect((await getLine()).receipts[0].checked_by_is_poc).toBe(1);
     });
 
     test('accepts a receipt with no incoming_no — it is optional by design', async () => {
@@ -1225,6 +1259,98 @@ describe('Outbound POs API', () => {
       .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${receiptId}`)
       .set('Authorization', `Bearer ${token}`)
       .send(body);
+
+    // Goods received straight into Panchal are checked in by a Warehouse POC,
+    // exactly as a challan into the warehouse is -- the second of the two
+    // checker stages, Third Party being the first (above).
+    describe('Checked By at the checker stages', () => {
+      const untaggedUser = async () => (await db.execute(`SELECT id FROM users
+        WHERE id NOT IN (SELECT user_id FROM user_roles WHERE role = 'Warehouse_POC') LIMIT 1`)).rows[0].id;
+      const panchalBody = (overrides = {}) => fabricBody({
+        incoming_stage: 'Panchal', received_dozens: 20, fresh_dozens: 20, ...overrides,
+      });
+      const storedChecker = async (receiptId) => (await db.execute({
+        sql: 'SELECT checked_by FROM outbound_po_line_receipts WHERE id = ?', args: [receiptId],
+      })).rows[0].checked_by;
+
+      test('a Panchal receipt needs a Warehouse POC, in the challan\'s words', async () => {
+        const { poId, lineId } = await fabricLine();
+
+        const missing = await postReceipt(poId, lineId, panchalBody({ checked_by: '' }));
+        expect(missing.status).toBe(400);
+        expect(missing.body.message).toBe('Checked By is required');
+
+        const untagged = await postReceipt(poId, lineId, panchalBody({ checked_by: await untaggedUser() }));
+        expect(untagged.status).toBe(400);
+        expect(untagged.body.message).toBe('Checked By must be a user tagged Warehouse_POC');
+
+        const ok = await postReceipt(poId, lineId, panchalBody());
+        expect(ok.status).toBe(201);
+        const receipt = (await lineOf(poId)).receipts[0];
+        expect(Number(receipt.checked_by)).toBe(warehousePocId);
+        expect(receipt.checked_by_name).toBeTruthy();
+      });
+
+      test('a receipt at Stitching takes no checker', async () => {
+        const { poId, lineId } = await fabricLine();
+        const res = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Stitching', received_dozens: 20 }));
+        expect(res.status).toBe(201);
+        expect(await storedChecker(res.body.id)).toBeNull();
+      });
+
+      // A receipt taken before this change holds whoever typed it. Moving it
+      // into Panchal must not let that name pass as the checker -- even when it
+      // happens to be a Warehouse POC.
+      test('moving into Panchal asks for a checker afresh, and moving out clears it', async () => {
+        const { poId, lineId } = await fabricLine();
+        const created = await postReceipt(poId, lineId, fabricBody({ incoming_stage: 'Stitching', received_dozens: 20 }));
+        expect(created.status).toBe(201);
+        await db.execute({
+          sql: 'UPDATE outbound_po_line_receipts SET checked_by = ? WHERE id = ?',
+          args: [warehousePocId, created.body.id],
+        });
+
+        const noChecker = await patchReceipt(poId, lineId, created.body.id, { incoming_stage: 'Panchal', fresh_dozens: 20 });
+        expect(noChecker.status).toBe(400);
+        expect(noChecker.body.message).toBe('Checked By is required');
+
+        const moved = await patchReceipt(poId, lineId, created.body.id, {
+          incoming_stage: 'Panchal', fresh_dozens: 20, checked_by: warehousePocId,
+        });
+        expect(moved.status).toBe(200);
+        expect(Number(await storedChecker(created.body.id))).toBe(warehousePocId);
+
+        const back = await patchReceipt(poId, lineId, created.body.id, { incoming_stage: 'Stitching', received_dozens: 20 });
+        expect(back.status).toBe(200);
+        expect(await storedChecker(created.body.id)).toBeNull();
+      });
+
+      // An older Panchal receipt may hold someone who is not a Warehouse POC.
+      // It is left alone: an edit that does not touch the checker still saves,
+      // and one that names a checker is held to the rule.
+      test('an older Panchal receipt with a non-POC checker still takes an unrelated edit', async () => {
+        const { poId, lineId } = await fabricLine();
+        const created = await postReceipt(poId, lineId, panchalBody());
+        expect(created.status).toBe(201);
+        const untagged = await untaggedUser();
+        await db.execute({
+          sql: 'UPDATE outbound_po_line_receipts SET checked_by = ? WHERE id = ?',
+          args: [untagged, created.body.id],
+        });
+
+        const note = await patchReceipt(poId, lineId, created.body.id, { note: 'Recounted' });
+        expect(note.status).toBe(200);
+        expect(Number(await storedChecker(created.body.id))).toBe(untagged);
+
+        const restated = await patchReceipt(poId, lineId, created.body.id, { checked_by: untagged });
+        expect(restated.status).toBe(400);
+        expect(restated.body.message).toBe('Checked By must be a user tagged Warehouse_POC');
+
+        const fixed = await patchReceipt(poId, lineId, created.body.id, { checked_by: warehousePocId });
+        expect(fixed.status).toBe(200);
+        expect(Number(await storedChecker(created.body.id))).toBe(warehousePocId);
+      });
+    });
 
     // Migration 089. Fabric bought in at Packing or Panchal arrives graded, the
     // same split a challan into those stages carries, and Dozens Received is
