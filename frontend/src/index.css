@@ -20,6 +20,19 @@
     width: 100%;
     min-height: 100vh;
   }
+  /* No spinner arrows on number boxes, anywhere in the app: nobody steps a
+     quantity with them, and they eat the width of the narrow grid cells.
+     Chromium and Safari draw them as pseudo-elements, Firefox through the
+     input's own appearance. Typing, arrow keys and step/min are unaffected. */
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
 }
 
 @layer utilities {

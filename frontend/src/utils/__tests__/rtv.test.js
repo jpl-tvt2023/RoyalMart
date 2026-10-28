@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { rtvQualifies, rtvRowError, RTV_STATUSES, BLANK_STATUS } from '../rtv';
+import { rtvQualifies, rtvRowError, RTV_STATUSES, BLANK_STATUS, NOTE_MAX } from '../rtv';
 
 // Twin of backend/src/services/rtv.service.js and the RTV controller's PATCH
 // rules (migration 092). The messages are the server's, verbatim -- the backend
@@ -35,6 +35,14 @@ describe('rtvRowError', () => {
 
   test('Disposed skips the rules for the columns it clears', () => {
     expect(rtvRowError({ status: 'DN - Disposed', delivered: 'Yes', cn_number: 'CN-1' })).toBeNull();
+  });
+
+  test('a note is only capped, and Disposed does not skip the cap', () => {
+    expect(NOTE_MAX).toBe(1000);
+    expect(rtvRowError({ note: 'Pickup promised for Friday, call first' })).toBeNull();
+    expect(rtvRowError({ note: 'x'.repeat(NOTE_MAX) })).toBeNull();
+    expect(rtvRowError({ note: 'x'.repeat(NOTE_MAX + 1) })).toBe('Note must be 1000 characters or less');
+    expect(rtvRowError({ status: 'DN - Disposed', note: 'x'.repeat(NOTE_MAX + 1) })).toBe('Note must be 1000 characters or less');
   });
 
   test('the status vocabulary', () => {

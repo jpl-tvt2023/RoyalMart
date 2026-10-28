@@ -23,8 +23,8 @@ import { formatDateTime } from '../../utils/formatters';
 import { isValidDateString } from '../../utils/dateValidation';
 import { checkerOptionsFor } from '../../utils/checkers';
 import {
-  RTV_STATUSES, DN_DISPOSED, BLANK_STATUS, DELIVERED_VALUES, STATUS_COLORS,
-  AFTER_STATUS, rtvRowError,
+  RTV_STATUSES, RTV_BOOKED, DN_YES, DN_DISPOSED, BLANK_STATUS, DELIVERED_VALUES, STATUS_COLORS,
+  AFTER_STATUS, NOTE_MAX, rtvRowError,
 } from '../../utils/rtv';
 
 // RTV — goods a marketplace sends back, tracked until they are back in the
@@ -41,13 +41,18 @@ const LEGEND = [{ swatch: DIRTY_ROW, label: 'Unsaved changes' }];
 
 // The Status filter: the three statuses plus "nobody has picked one yet".
 const STATUS_FILTER_OPTIONS = [...RTV_STATUSES, BLANK_STATUS];
+// It opens on the returns still being worked: 'DN - Disposed' is done with --
+// nothing is coming back -- so it is left out of the initial view (the client's
+// call). It stays in the list for anyone who wants to see those rows.
+const DEFAULT_STATUS_SELECTION = [RTV_BOOKED, DN_YES, BLANK_STATUS];
 const statusFilterLabel = (v) => (v === BLANK_STATUS ? 'Not set' : v);
 const NONE_SELECTED = '__none_selected__';
 
-// v1 of the filter shape. Bump the session key if it changes.
+// v2 of the filter shape: v1 opened with every status ticked. Bump the session
+// key if it changes.
 const defaultFilters = () => ({
   q: '',
-  status: [...STATUS_FILTER_OPTIONS],
+  status: [...DEFAULT_STATUS_SELECTION],
   city: '',
   inward_courier_id: '',
   cn_date_from: '',
@@ -75,6 +80,7 @@ const COLUMNS = [
   { key: 'cn_number', label: 'Credit Note Number' },
   { key: 'cn_date', label: 'CN Date', sort: 'cn_date' },
   { key: 'checked_by', label: 'Checked Warehouse POC', exportKey: 'checked_by_name' },
+  { key: 'note', label: 'Note' },
   { key: 'updated_at', label: 'Last Updated', sort: 'updated_at' },
 ];
 
@@ -92,7 +98,7 @@ export default function RTVList() {
 
   const [vendorTabs, setVendorTabs] = useState([]);
   const [vendorTab, setVendorTab] = useSessionState('rtv.vendorTab', 'Blinkit');
-  const [filters, setFilters] = useSessionState('rtv.filters', defaultFilters);
+  const [filters, setFilters] = useSessionState('rtv.filters.v2', defaultFilters);
   const [sort, setSort] = useSessionState('rtv.sort', { key: 'rtv_no', dir: 'desc' });
   const [page, setPage] = useSessionState('rtv.page', 1);
   const [pageSize, setPageSize] = useState(() => loadPersistedPageSize('rtv', 25));
@@ -207,7 +213,7 @@ export default function RTVList() {
     const base = {
       dn_number: r.dn_number, status: r.stored_status, inward_courier_id: r.inward_courier_id,
       inward_tracking_id: r.inward_tracking_id, delivered: r.delivered, delivery_date: r.delivery_date,
-      cn_number: r.cn_number, cn_date: r.cn_date, checked_by: r.checked_by,
+      cn_number: r.cn_number, cn_date: r.cn_date, checked_by: r.checked_by, note: r.note,
     };
     return { ...base, ...e };
   };
@@ -438,6 +444,24 @@ export default function RTVList() {
             ))}
           </select>
         );
+      case 'note': {
+        // Free text, clipped like the GRN page's Note. Disposed leaves the note
+        // alone, so it stays editable on a disposed row.
+        if (!canEdit) return <span className="text-gray-700 block max-w-[16rem] truncate" title={r.note || undefined}>{r.note || '—'}</span>;
+        const note = valueOf(r, 'note') ?? '';
+        return (
+          <input
+            type="text"
+            value={note}
+            onChange={e => setEdit(r.id, { note: e.target.value })}
+            onKeyDown={k}
+            maxLength={NOTE_MAX}
+            placeholder="Add a comment..."
+            title={note || undefined}
+            className={`${cellCls} min-w-[16rem] truncate`}
+          />
+        );
+      }
       case 'updated_at':
         return r.updated_at ? (
           <span className="whitespace-nowrap text-xs">

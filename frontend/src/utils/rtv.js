@@ -27,8 +27,12 @@ export const rtvQualifies = (po) => po != null && po.status !== 'Deleted'
   && (po.grn_status === RETURNED_TO_VENDOR || Number(po.discrepancy_qty || 0) > 0);
 
 // The columns after Status, which DN - Disposed clears. Twin of AFTER_STATUS.
+// All but the Note: the row's own remark, which Disposed leaves alone.
 export const AFTER_STATUS = ['inward_courier_id', 'inward_tracking_id', 'delivered', 'delivery_date',
   'cn_number', 'cn_date', 'checked_by'];
+
+// Twin of NOTE_MAX in rtv.controller.js -- the Note is prose, so only capped.
+export const NOTE_MAX = 1000;
 
 const ALNUM = /^[A-Za-z0-9-]+$/;
 const TEXT_MAX = 50;
@@ -51,6 +55,7 @@ export function rtvRowError(row) {
   if (trkErr) return trkErr;
   const cnErr = refError(row.cn_number, 'Credit Note Number');
   if (cnErr) return cnErr;
+  if (String(row.note ?? '').trim().length > NOTE_MAX) return `Note must be ${NOTE_MAX} characters or less`;
   if (row.status === DN_DISPOSED) return null;
   if (row.delivered === 'Yes' && blank(row.delivery_date)) return 'Delivery Date is required when Delivered is Yes';
   if (row.status === RTV_BOOKED && blank(row.cn_number)) return 'Credit Note Number is required when the status is RTV Booked';

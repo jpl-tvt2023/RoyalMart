@@ -116,8 +116,9 @@ const urlHasFilters = (params) => {
 };
 
 // Vendors whose appointment carries an extra reference next to the appointment
-// date: Zepto uses an ASN, Now/Blinkit use an Appointment ID. Whichever applies
-// is mandatory once an appointment date is set (enforced on save + in the API).
+// date: Zepto uses an ASN, Now/Blinkit use an Appointment ID. These lists only
+// decide which column shows -- the appointment date, and either reference, may
+// be set on its own at any stage (the client's call: no restrictions).
 const ASN_VENDORS = ['Zepto'];
 const APPOINTMENT_ID_VENDORS = ['Now', 'Blinkit'];
 const DELIVERY_CODE_VENDORS = ['Now'];
@@ -476,26 +477,12 @@ export default function GRNList() {
     const nextGrnNo     = 'grn_number' in e ? e.grn_number : po.grn_number;
     const nextDiscNo    = 'discrepancy_number' in e ? e.discrepancy_number : po.discrepancy_number;
     const nextAppt      = 'appointment_date' in e ? e.appointment_date : po.appointment_date;
-    const nextAsn       = 'asn' in e ? e.asn : po.asn;
-    const nextApptId    = 'appointment_id' in e ? e.appointment_id : po.appointment_id;
 
-    // Once an appointment date is set, the vendor's companion reference is required —
-    // but only enforce when this save actually touches an appointment field, so
-    // unrelated edits on legacy rows (appointment date but no companion) still save.
-    const touchesAppt = 'appointment_date' in e || 'asn' in e || 'appointment_id' in e;
     if ('appointment_date' in e && nextAppt && !isValidDateString(nextAppt)) {
       return toast.error('Appointment date has an invalid year');
     }
     if ('grn_date' in e && nextGrnDate && !isValidDateString(nextGrnDate)) {
       return toast.error('GRN date has an invalid year');
-    }
-    if (touchesAppt && String(nextAppt || '').trim()) {
-      if (ASN_VENDORS.includes(po.vendor) && !String(nextAsn || '').trim()) {
-        return toast.error('ASN is required once an appointment date is set');
-      }
-      if (APPOINTMENT_ID_VENDORS.includes(po.vendor) && !String(nextApptId || '').trim()) {
-        return toast.error('Appointment ID is required once an appointment date is set');
-      }
     }
 
     if (nextGrnStatus === 'Delivered - GRN Received') {
@@ -737,7 +724,8 @@ export default function GRNList() {
                         case 'appointment_date':
                           return (
                             <td key={col.key} className="px-3 py-2">
-                              {canEdit && (dispatched || po.vendor === 'Minutes') ? (
+                              {/* Any row, dispatched or not -- no restrictions. */}
+                              {canEdit ? (
                                 <input
                                   type="date"
                                   value={editAppt || ''}

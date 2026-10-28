@@ -20,6 +20,8 @@ const NONE_SELECTED = '__none_selected__';
 // page: letters, digits and dashes.
 const ALNUM = /^[A-Za-z0-9-]+$/;
 const TEXT_MAX = 50;
+// The Note is prose, so it is only capped -- at the receipt note's length (095).
+const NOTE_MAX = 1000;
 
 const padSerial = (n) => String(n).padStart(3, '0');
 const vendorLetter = (vendor) => String(vendor || '').charAt(0).toUpperCase();
@@ -138,7 +140,7 @@ const SELECT = `
          r.status AS stored_status, ${EFFECTIVE_STATUS_SQL} AS status,
          r.inward_courier_id, ic.name AS inward_courier_name, r.inward_tracking_id,
          r.delivered, r.delivery_date, r.cn_number, r.cn_date,
-         r.checked_by, kb.name AS checked_by_name,
+         r.checked_by, kb.name AS checked_by_name, r.note,
          r.created_at, r.updated_at, ub.name AS updated_by_name`;
 
 // GET /api/rtv?vendor=Blinkit&q=&status=&city=&inward_courier_id=&cn_date_from=…
@@ -176,11 +178,13 @@ async function countsByVendor(req, res, next) {
 }
 
 const RTV_FIELDS = ['dn_number', 'status', 'inward_courier_id', 'inward_tracking_id', 'delivered',
-  'delivery_date', 'cn_number', 'cn_date', 'checked_by'];
+  'delivery_date', 'cn_number', 'cn_date', 'checked_by', 'note'];
 
 // The fields after Status. 'DN - Disposed' means the marketplace disposed of the
 // goods: nothing is coming back and no credit note follows, so every one of
 // them is cleared (the page warns first, and the history keeps the old values).
+// All but the Note: that is the row's own remark, not the return's paperwork,
+// so Disposed leaves it alone -- it often explains the disposal.
 const AFTER_STATUS = ['inward_courier_id', 'inward_tracking_id', 'delivered', 'delivery_date',
   'cn_number', 'cn_date', 'checked_by'];
 
@@ -261,6 +265,11 @@ async function update(req, res, next) {
         }
         row.checked_by = uid;
       }
+      if (has('note')) {
+        const n = req.body.note == null ? '' : String(req.body.note).trim();
+        if (n.length > NOTE_MAX) throw bad(`Note must be ${NOTE_MAX} characters or less`);
+        row.note = n || null;
+      }
     } catch (e) {
       if (e.status === 400) return res.status(400).json({ message: e.message });
       throw e;
@@ -291,11 +300,11 @@ async function update(req, res, next) {
         sql: `UPDATE rtv_returns
                  SET dn_number = ?, status = ?, inward_courier_id = ?, inward_tracking_id = ?,
                      delivered = ?, delivery_date = ?, cn_number = ?, cn_date = ?, checked_by = ?,
-                     updated_by = ?, updated_at = datetime('now')
+                     note = ?, updated_by = ?, updated_at = datetime('now')
                WHERE id = ?`,
         args: [row.dn_number, row.status, row.inward_courier_id, row.inward_tracking_id,
           row.delivered, row.delivery_date, row.cn_number, row.cn_date, row.checked_by,
-          req.user.id, id],
+          row.note, req.user.id, id],
       });
       await logAction({
         client: tx,
