@@ -1,0 +1,23 @@
+-- RTV NOTE: a free-text remark on each RTV row, typed on the RTV page.
+--
+-- The client asked for somewhere to jot down what a return is waiting on -- a
+-- call with the marketplace, a promised pickup, why the goods were disposed.
+-- Like every other field the RTV page owns it lives here, on rtv_returns, and
+-- not on the PO.
+--
+-- It is the row's own remark, not part of the return's paperwork. So 'DN -
+-- Disposed', which clears every column after Status (nothing comes back, no
+-- credit note follows), leaves the note alone, and the note stays editable on a
+-- disposed row -- it is often the very thing that explains the disposal.
+--
+-- Bounded at NOTE_MAX (1000) in the controller, not here, the same as every
+-- other free-text cap in this schema (089's receipt note set the pattern). No
+-- alphanumeric rule: it is prose.
+--
+-- Additive and nullable. Old code never reads the column, and the new RTV list
+-- query selects it, so this file must be applied BEFORE the code that reads it
+-- is deployed -- the reverse of a column drop (093).
+--
+-- No semicolons may appear in these comments -- migrate.js splits on them.
+
+ALTER TABLE rtv_returns ADD COLUMN note TEXT

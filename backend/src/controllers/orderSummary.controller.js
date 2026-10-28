@@ -12,11 +12,6 @@ const ORDER_SUMMARY_FIELDS = [
   'discrepancy_qty', 'discrepancy_number', 'note', 'delivery_code', 'party_name',
 ];
 
-// Vendors whose appointment carries an extra reference alongside the appointment
-// date: Zepto uses an ASN, Now/Blinkit use an Appointment ID. Whichever applies
-// becomes mandatory once an appointment date is set.
-const ASN_VENDORS = ['Zepto'];
-const APPOINTMENT_ID_VENDORS = ['Now', 'Blinkit'];
 // Box is only tracked for the Now/Minutes quick-commerce vendors. Keep this
 // list in sync with BOX_VENDORS in frontend OrderSummaryList.jsx.
 const BOX_VENDORS = ['Now', 'Minutes'];
@@ -465,20 +460,10 @@ async function updateOne(req, res, next) {
       throw e;
     }
 
-    // Once an appointment date is set, the vendor's companion reference is
-    // mandatory: ASN for Zepto, Appointment ID for Now/Blinkit. Only enforce when
-    // this request actually touches an appointment field, so unrelated saves
-    // (other GRN fields, or Order Summary edits on the same endpoint) and legacy
-    // rows aren't rejected — mirrors the bill_no/bill_date rule below.
-    const touchesAppt = has('appointment_date') || has('asn') || has('appointment_id');
-    if (touchesAppt && nextAppointmentDate) {
-      if (ASN_VENDORS.includes(current.vendor) && !nextAsn) {
-        return res.status(400).json({ message: 'ASN is required once an appointment date is set' });
-      }
-      if (APPOINTMENT_ID_VENDORS.includes(current.vendor) && !nextAppointmentId) {
-        return res.status(400).json({ message: 'Appointment ID is required once an appointment date is set' });
-      }
-    }
+    // The appointment date, ASN and Appointment ID are each optional and may be
+    // set at any stage, dispatched or not -- the client dropped the rule that a
+    // date needs its companion reference (2026-10-28). Only their formats are
+    // checked, above.
 
     // Only enforce the bill rule when the request actually edits bill fields, so
     // saves from other pages (e.g. Order Summary) that never touch bill_no/bill_date

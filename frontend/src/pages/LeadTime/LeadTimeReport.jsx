@@ -65,7 +65,8 @@ const buildColumns = (vendorTab) => [
   // Vendor only earns a column on the All tab; on a vendor tab it's redundant.
   ...(vendorTab === ALL_TAB.key ? [{ key: 'vendor', label: 'Vendor' }] : []),
   { key: 'po_date',          label: 'PO Date' },
-  { key: 'po_id',            label: 'S. No' },
+  { key: 'po_id',            label: 'PO ID' },
+  { key: 'city',             label: 'City' },
   { key: 'total_qty',        label: 'Quantity' },
   { key: 'dispatch_date',    label: 'Dispatch Date' },
   { key: 'grn_flag',         label: 'GRN Received?' },

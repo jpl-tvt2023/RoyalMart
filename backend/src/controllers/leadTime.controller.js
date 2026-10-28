@@ -45,6 +45,7 @@ const GRN_FLAG_VALUES = ['Yes', 'RTV', 'No'];
 const SORT_COLUMNS = {
   vendor:           'p.vendor',
   po_id:            'p.po_id',
+  city:             'p.city',
   po_date:          'p.po_date',
   dispatch_date:    'p.dispatch_date',
   grn_date:         'p.grn_date',
@@ -119,6 +120,7 @@ async function list(req, res, next) {
     const baseSelect = `
       SELECT p.vendor,
              p.po_id,
+             p.city,
              p.po_date,
              p.dispatch_date,
              p.grn_date,

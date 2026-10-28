@@ -186,6 +186,28 @@ describe('Editing an RTV row', () => {
     expect(entry.changes.some(c => c.field === 'cn_number' && c.old === 'CN-9' && c.new == null)).toBe(true);
   });
 
+  test('a note is free text, capped, and survives DN - Disposed', async () => {
+    const row = await openRow();
+    const text = 'Marketplace confirmed disposal on call, no pickup';
+    expect((await patchRtv(row.id, { note: `  ${text}  ` })).status).toBe(200);
+    expect(await rtvFor(row.po_id)).toMatchObject({ note: text });
+
+    const long = await patchRtv(row.id, { note: 'x'.repeat(1001) });
+    expect(long.status).toBe(400);
+    expect(long.body.message).toBe('Note must be 1000 characters or less');
+
+    // Disposed clears the columns after Status -- but not the row's own remark.
+    await patchRtv(row.id, { inward_tracking_id: 'IN-N1' });
+    expect((await patchRtv(row.id, { status: 'DN - Disposed' })).status).toBe(200);
+    expect(await rtvFor(row.po_id)).toMatchObject({ status: 'DN - Disposed', inward_tracking_id: null, note: text });
+
+    // Still editable on a disposed row, and audited like any other field.
+    expect((await patchRtv(row.id, { note: '' })).status).toBe(200);
+    expect((await rtvFor(row.po_id)).note).toBeNull();
+    const audit = await A(request(app).get('/api/audit-logs')).query({ entity_type: 'rtv_return', entity_id: row.id });
+    expect(audit.body.some(e => (e.changes || []).some(c => c.field === 'note' && c.old === text && c.new == null))).toBe(true);
+  });
+
   test('the DN is typed here only when the GRN page has none', async () => {
     const returnedRow = await openRow();
     expect((await patchRtv(returnedRow.id, { dn_number: 'DN-R1' })).status).toBe(200);
