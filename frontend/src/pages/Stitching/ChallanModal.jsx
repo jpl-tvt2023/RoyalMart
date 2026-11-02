@@ -13,7 +13,7 @@ import {
   CHALLAN_MAX, CHALLAN_TYPES, challanError, qtyError, moneyError, fmtNum, EPSILON,
   destinationsFor, nextStage, EXIT_STAGE, STOCK_STAGE, DESTINATION_HINTS,
   countsDozens, metresPerDozen, stageRateLabel, isGradedStage, GRADE_COLUMNS, stageRateUnit,
-  destinationOptions, warehouseTabKey, warehouseIncLabel,
+  destinationOptions, warehouseTabKey, warehouseIncLabel, isCheckerStage,
 } from '../../utils/stitching';
 import { sortByText } from '../../utils/sort';
 
@@ -165,7 +165,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
   const unit = unitText(parentDozen);
   const isExit = target === EXIT_STAGE;
   const isStock = target === STOCK_STAGE;
-  const needsChecker = isStock || isExit;
+  const needsChecker = isCheckerStage(target);
   const graded = isGradedStage(target);
   const rateUnit = stageRateUnit(sourceStage);
   const rateLabel = `${stageRateLabel(sourceStage)} (per ${rateUnit})`;

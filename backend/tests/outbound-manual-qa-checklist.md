@@ -121,9 +121,25 @@ New in this change — see migrations `084` and `085`.
       challan to Third Party asks for Checked By + Outbound Bill No, and
       neither field appears on a challan to Stitching or Packing. The Checked
       By list holds Warehouse_POC users only.
-- [ ] **Add Receipt no longer asks for Checked By.** Saving works without it,
-      and the receipts table on the PO detail page shows your own name in the
-      Checked By column (header no longer carries a `*`).
+- [ ] **Add / Edit Receipt asks for Checked By where the goods are checked
+      over**, listing Warehouse_POC users only, and refuses to save without
+      it:
+      - on **every** receipt for a line without "Goes through Stitching"
+        (packaging, barcodes);
+      - on a stitching line, only when the Stage is **a warehouse** (Panchal,
+        or any other in the list) or **Third Party** (the stages a challan
+        asks it). Switch the Stage to Processing / Stitching / Packing and the
+        field goes.
+- [ ] On the PO detail page the Checked By column shows `—` for stitching
+      receipts at Processing / Stitching / Packing (e.g. PO 055). Everywhere
+      else it shows the stored name, and a name that is not a Warehouse POC
+      reads `Name (not Warehouse POC)` — packaging receipts entered from
+      21 Sep 2026 hold whoever typed them.
+- [ ] Edit such an older receipt: it opens showing `Name (not Warehouse
+      POC)`, an unrelated edit (Note) still saves, and picking a Warehouse POC
+      replaces it and clears the flag.
+- [ ] Edit a Stitching receipt and move it to Panchal: Checked By starts
+      empty and must be picked before it saves.
 - [ ] Editing a receipt that was taken at a dozen stage (incl. Panchal) opens
       with its Dozens Received filled in and saves without retyping it.
 - [ ] **Challan key**: raising the same challan number twice to the SAME party
@@ -149,8 +165,8 @@ first; it must report 0 Gray rows).
       name shows on hover.
 - [ ] Add Receipt on a fabric line opens with **Processing** pre-selected. The
       Stage list offers Processing, Stitching, Packing, Panchal — **no Gray**.
-- [ ] Picking Panchal shows the hint "… this receipt will be recorded as
-      Closed". After saving, the lot sits on the Panchal tab as **Closed**
+- [ ] Picking Panchal shows the hint "… checked in by a Warehouse POC, and
+      recorded as Closed". After saving, the lot sits on the Panchal tab as **Closed**
       (untick the status filter to see it) and can be reopened.
 
 **Stitching page**
@@ -294,9 +310,10 @@ still say "Panchal" — it is now the warehouse's name, not the stage's.
 - [ ] Send a challan to the new warehouse: the field reads "`<code>` Inc No",
       the lot lands on the new tab only (not Panchal's) numbered under the new
       prefix, and both tab badges count correctly.
-- [ ] Book a receipt straight into the new warehouse: it is Closed on save.
-      Edit it into Panchal: it stays Closed and moves tabs. Edit it into Packing:
-      it reopens.
+- [ ] Book a receipt straight into the new warehouse: it asks Checked By (hint
+      "Who received the goods at `<name>`") and is Closed on save. Edit it into
+      Panchal: it stays Closed, moves tabs and keeps its checker. Edit it into
+      Packing: it reopens and the checker goes.
 - [ ] Hovering the receipt's Incoming No on the PO detail page reads "In
       `<warehouse>`".
 
