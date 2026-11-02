@@ -8,6 +8,7 @@ const companies = require('../controllers/companies.controller');
 const outboundProducts = require('../controllers/outboundProducts.controller');
 const stitchingPrefixes = require('../controllers/stitchingPrefixes.controller');
 const stitchingParties = require('../controllers/stitchingParties.controller');
+const warehouses = require('../controllers/warehouses.controller');
 
 const canView  = allowRoles(...ALL_ROLES);
 // Master data is editable by any logged-in user; every change is audited.
@@ -53,6 +54,15 @@ router.get('/stitching-prefixes',        auth, canView,      stitchingPrefixes.l
 router.post('/stitching-prefixes',       auth, canAdminOnly, stitchingPrefixes.create);
 router.patch('/stitching-prefixes/:id',  auth, canAdminOnly, stitchingPrefixes.update);
 router.delete('/stitching-prefixes/:id', auth, canAdminOnly, stitchingPrefixes.remove);
+
+// Warehouses (096) — our own stock locations, each a tab on the Stitching page
+// and a place goods can be sent or booked into. Admin -> Purchase Config, so
+// writes are Admin/Owner only. The GET stays open: the Stitching page builds its
+// tabs from it, and the challan and receipt forms their warehouse choices.
+router.get('/warehouses',        auth, canView,      warehouses.list);
+router.post('/warehouses',       auth, canAdminOnly, warehouses.create);
+router.patch('/warehouses/:id',  auth, canAdminOnly, warehouses.update);
+router.delete('/warehouses/:id', auth, canAdminOnly, warehouses.remove);
 
 // Stitching parties — the processing houses material is sent to, and the buyers
 // finished goods are sold to. Each carries the destinations it may serve, which

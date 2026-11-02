@@ -7,15 +7,20 @@ import Modal from '../../components/ui/Modal';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { formatDateTime } from '../../utils/formatters';
-import { STAGES } from '../../utils/stitching';
+import { STAGES, STOCK_STAGE, EXIT_STAGE } from '../../utils/stitching';
 import {
   listStitchingPrefixes, createStitchingPrefix, updateStitchingPrefix, deleteStitchingPrefix,
 } from '../../api/stitchingPrefixes.api';
+import { listWarehouses } from '../../api/warehouses.api';
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30 focus:border-[#c1121f]';
 const thCls = 'px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide';
 
-const EMPTY_FORM = { prefix: '', stage: 'Processing' };
+const EMPTY_FORM = { prefix: '', stage: 'Processing', warehouse_id: '' };
+
+// Every stage a lot can ARRIVE at. Third Party takes no prefix -- nothing
+// arrives there to number -- and the table's CHECK refuses one.
+const PREFIX_STAGES = STAGES.filter(s => s !== EXIT_STAGE);
 
 /**
  * The incoming-number prefix master.
@@ -23,9 +28,13 @@ const EMPTY_FORM = { prefix: '', stage: 'Processing' };
  * Forked from MasterTab rather than reusing it, for the same reason
  * OutboundProductsTab is: the row is not just a name — the stage column is what
  * gives the prefix its meaning, so it has to be edited alongside the code.
+ *
+ * A Warehouse prefix also names its warehouse (migration 096): that is how a
+ * lot numbered under it knows which warehouse it is in.
  */
 export default function StitchingPrefixesTab() {
   const [rows, setRows] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // 'add' | { type: 'edit', row }
   const [form, setForm] = useState(EMPTY_FORM);
@@ -47,34 +56,50 @@ export default function StitchingPrefixesTab() {
 
   useEffect(() => { load(); }, [load]);
 
-  const openAdd = () => { setForm(EMPTY_FORM); setFormError(''); setModal('add'); };
+  // Fetched when the form opens rather than once with the page, so a warehouse
+  // added on the next tab a moment ago is offered without a reload.
+  const loadWarehouses = async () => {
+    try {
+      setWarehouses(await listWarehouses());
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Could not load warehouses');
+    }
+  };
+
+  const openAdd = () => { setForm(EMPTY_FORM); setFormError(''); setModal('add'); loadWarehouses(); };
   const openEdit = (row) => {
-    setForm({ prefix: row.prefix, stage: row.stage });
+    setForm({ prefix: row.prefix, stage: row.stage, warehouse_id: row.warehouse_id ?? '' });
     setFormError('');
     setModal({ type: 'edit', row });
+    loadWarehouses();
   };
 
   const handleSave = async (e) => {
     e.preventDefault();
     const prefix = form.prefix.trim();
     if (!prefix) { setFormError('Prefix is required'); return; }
+    const atWarehouse = form.stage === STOCK_STAGE;
+    // Same wording as the server, which holds the same rule.
+    if (atWarehouse && !form.warehouse_id) { setFormError('Warehouse is required for a Warehouse prefix'); return; }
+    const payload = { prefix, stage: form.stage, ...(atWarehouse ? { warehouse_id: Number(form.warehouse_id) } : {}) };
     setSaving(true);
     setFormError('');
     try {
       if (modal === 'add') {
-        await createStitchingPrefix({ prefix, stage: form.stage });
+        await createStitchingPrefix(payload);
         toast.success('Prefix added');
       } else {
-        await updateStitchingPrefix(modal.row.id, { prefix, stage: form.stage });
+        await updateStitchingPrefix(modal.row.id, payload);
         toast.success('Prefix updated');
       }
       setModal(null);
       load();
     } catch (err) {
       const message = err.response?.data?.message || 'Save failed';
-      // 409 (duplicate) and the in-use stage guard are both about a specific
-      // field, so they read better inline than as a toast that scrolls away.
-      if (err.response?.status === 409 || /stage/i.test(message)) setFormError(message);
+      // 409 (duplicate) and the in-use stage and warehouse guards are all about
+      // a specific field, so they read better inline than as a toast that
+      // scrolls away.
+      if (err.response?.status === 409 || /stage|warehouse/i.test(message)) setFormError(message);
       else toast.error(message);
     } finally {
       setSaving(false);
@@ -132,7 +157,12 @@ export default function StitchingPrefixesTab() {
               {!loading && rows.map(row => (
                 <tr key={row.id} className={row.is_active ? '' : 'opacity-50'}>
                   <td className="px-4 py-2 font-mono font-semibold text-[#003049]">{row.prefix}</td>
-                  <td className="px-4 py-2">{row.stage}</td>
+                  <td className="px-4 py-2">
+                    {row.stage}
+                    {row.stage === STOCK_STAGE && row.warehouse_name && (
+                      <span className="text-gray-500"> · {row.warehouse_name}</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2 text-gray-600">{row.in_use || 0}</td>
                   <td className="px-4 py-2">
                     <Badge color={row.is_active ? 'green' : 'gray'}>{row.is_active ? 'Active' : 'Inactive'}</Badge>
@@ -197,7 +227,7 @@ export default function StitchingPrefixesTab() {
               className={inputCls}
               disabled={editingInUse}
             >
-              {STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+              {PREFIX_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
             {editingInUse && (
               <p className="mt-1 text-[11px] text-amber-600">
@@ -206,6 +236,30 @@ export default function StitchingPrefixesTab() {
               </p>
             )}
           </div>
+
+          {form.stage === STOCK_STAGE && (
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Warehouse <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={form.warehouse_id}
+                onChange={e => setForm(f => ({ ...f, warehouse_id: e.target.value }))}
+                className={inputCls}
+                disabled={editingInUse}
+              >
+                <option value="">Select a warehouse…</option>
+                {/* Active ones, plus the one this prefix already names even if
+                    it has since been retired, so the select never shows blank. */}
+                {warehouses
+                  .filter(w => w.is_active || String(w.id) === String(form.warehouse_id))
+                  .map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </select>
+              <p className="mt-1 text-[11px] text-gray-400">
+                Lots numbered under this prefix sit in this warehouse.
+              </p>
+            </div>
+          )}
 
           {formError && <p className="text-xs text-red-600">{formError}</p>}
 

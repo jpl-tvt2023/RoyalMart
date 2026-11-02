@@ -637,10 +637,10 @@ export default function OutboundPODetail() {
                                     <td className={`${tdCls} text-gray-600`}>
                                       {/* Blank unless the goods arrived as
                                           countable pieces: fabric received at
-                                          Stitching, Packing or Panchal. */}
+                                          Stitching, Packing or a warehouse. */}
                                       {receipt.received_dozens == null ? '' : num(receipt.received_dozens)}
-                                      {/* Bought in at Packing or Panchal, the
-                                          dozens arrived graded. */}
+                                      {/* Bought in at Packing or a warehouse,
+                                          the dozens arrived graded. */}
                                       {gradesOf(receipt).length > 0 && (
                                         <div className="text-[11px] text-gray-400">
                                           {gradesOf(receipt).map(([t, n]) => `${t} ${num(n)}`).join(' · ')}
@@ -675,7 +675,7 @@ export default function OutboundPODetail() {
                                       {(receipt.flags || []).includes('missing_incoming_stage') && <span className="ml-1">⚠</span>}
                                     </td>
                                     {/* A checker only where one is asked: every receipt
-                                        off the Stitching page, and Panchal / Third
+                                        off the Stitching page, and a warehouse / Third
                                         Party on one that reaches it. A stored name
                                         that is not a Warehouse POC -- often the
                                         typist, on receipts from the weeks none was
@@ -812,11 +812,14 @@ const cellCls = `w-full ${cellBase}`;
 // Trailing zeros are noise in a dense grid: 62.5 reads better than 62.50.
 const num = (v) => (v == null || v === '' ? '—' : String(Math.round(Number(v) * 100) / 100));
 
-// One tooltip for the Incoming No cell, since either flag can apply to it.
+// One tooltip for the Incoming No cell, since either flag can apply to it. With
+// neither, a receipt booked into a warehouse names it: the prefix alone says
+// where the goods sit only to someone who knows the codes.
 const receiptIncomingHint = (r) => {
   const flags = r.flags || [];
   if (flags.includes('missing_incoming_stage')) return FLAG_META.missing_incoming_stage.hint;
   if (flags.includes('missing_incoming_no')) return FLAG_META.missing_incoming_no.hint;
+  if (r.warehouse_name) return `In ${r.warehouse_name}`;
   return undefined;
 };
 

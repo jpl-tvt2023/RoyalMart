@@ -32,7 +32,9 @@ const path = require('path');
 const { createClient } = require('@libsql/client');
 
 const APPLY = process.argv.includes('--apply');
-const GRADED = ['Packing', 'Panchal', 'Third Party'];
+// Both names for the warehouse stage: it was Panchal until migration 096 renamed
+// it Warehouse, and this script must find the same lots on either side of that.
+const GRADED = ['Packing', 'Panchal', 'Warehouse', 'Third Party'];
 const GRADE_COLS = { Fresh: 'fresh_dozens', Second: 'second_dozens', Third: 'third_dozens' };
 
 const db = createClient({

@@ -1,8 +1,8 @@
 // Who checked the goods in -- a Warehouse POC.
 //
-// Asked on a challan into Panchal or Third Party, and on an outbound PO
+// Asked on a challan into a warehouse or Third Party, and on an outbound PO
 // receipt that takes one (receiptTakesChecker): every receipt that never
-// reaches the Stitching page, and a stitching receipt at Panchal or Third
+// reaches the Stitching page, and a stitching receipt at a warehouse or Third
 // Party. Shared from here because those live in different feature folders.
 
 // How a stored checker who is not (or no longer) a Warehouse POC is labelled --

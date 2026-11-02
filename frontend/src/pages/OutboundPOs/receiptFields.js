@@ -7,8 +7,9 @@
 
 import {
   moneyError, qtyError, STAGES, EPSILON, countsDozens, metresPerDozen,
-  isGradedStage, CHALLAN_TYPES, GRADE_COLUMNS, EXIT_STAGE, isCheckerStage,
+  isGradedStage, CHALLAN_TYPES, GRADE_COLUMNS, EXIT_STAGE, STOCK_STAGE, isCheckerStage,
   umKind, countsInDozens, derivedDozens, receiptHasMetres, receiptStageBlockReason,
+  warehouseTabKey, warehouseIdOfTab,
 } from '../../utils/stitching';
 
 // Twin of INCOMING_NO_MAX in backend/src/controllers/outboundPOs.controller.js,
@@ -27,13 +28,14 @@ const tooManyRateDecimals = (n) =>
   Math.abs(Math.round(n * 10 ** RATE_DECIMALS) - n * 10 ** RATE_DECIMALS) > 1e-6;
 
 // The three grades start at 0 -- the client's default -- and only mean anything
-// on goods received at Packing, Panchal or Third Party (receiptIsGraded).
+// on goods received at Packing, a warehouse or Third Party (receiptIsGraded).
 // outbound_bill_no is asked only at Third Party. checked_by is asked on every
-// receipt that never reaches the Stitching page, and at Panchal and Third Party
-// on one that does (receiptTakesChecker).
+// receipt that never reaches the Stitching page, and at a warehouse and Third
+// Party on one that does (receiptTakesChecker). warehouse_id says WHICH
+// warehouse at the Warehouse stage (migration 096), and only there.
 export const EMPTY_RECEIPT = {
   received_qty: '', unit_metric: '', received_rate: '', bill_no: '', incoming_no: '',
-  process_rate: '', incoming_stage: '',
+  process_rate: '', incoming_stage: '', warehouse_id: '',
   qty_in_metres: '', received_dozens: '', qty_diff_action: '', qty_diff_reason: '',
   fresh_dozens: '0', second_dozens: '0', third_dozens: '0', note: '',
   outbound_bill_no: '', checked_by: '',
@@ -129,7 +131,7 @@ export const RECEIPT_STAGES = [...STAGES];
 export const receiptCountsDozens = (line, incomingStage) =>
   isStitchingLine(line) && countsDozens(incomingStage);
 
-// Goods bought in at Packing, Panchal or Third Party arrive GRADED (migration
+// Goods bought in at Packing, a warehouse or Third Party arrive GRADED (migration
 // 089): their dozens are typed as Fresh, Second and Third, and Dozens Received
 // is their sum. Stitching counts dozens but is not graded.
 export const receiptIsGraded = (line, incomingStage) =>
@@ -142,9 +144,9 @@ export const receiptIsSale = (line, incomingStage) =>
 
 // Whether a receipt is checked over by a Warehouse POC as it is received. Goods
 // that never reach the Stitching page are checked here or never, so every one
-// of those receipts asks. A stitching line asks only at Panchal and Third Party
-// -- the challan's CHECKER_STAGES; anywhere earlier its goods are checked on the
-// challan into Panchal. Twin of receiptTakesChecker on the server.
+// of those receipts asks. A stitching line asks only at a warehouse and Third
+// Party -- the challan's CHECKER_STAGES; anywhere earlier its goods are checked
+// on the challan into a warehouse. Twin of receiptTakesChecker on the server.
 export const receiptTakesChecker = (line, incomingStage) =>
   !isStitchingLine(line) || isCheckerStage(incomingStage);
 
@@ -202,10 +204,12 @@ export function receiptFieldError(v, { requireBillNo = true, requireChecker = tr
 
   // THE STAGE, first: it heads the form because everything below reshapes to
   // it, and the server checks it before anything else too (receiptStageError).
+  // At the Warehouse stage, which warehouse is part of the same answer.
   if (stitching) {
     if (!stage) return 'Stage is required';
     const blocked = receiptStageBlockReason(stage, kind);
     if (blocked) return blocked;
+    if (stage === STOCK_STAGE && (v.warehouse_id === '' || v.warehouse_id == null)) return 'Warehouse is required';
   }
 
   if (!v.received_qty || Number(v.received_qty) <= 0) return 'Received Qty is required';
@@ -300,24 +304,50 @@ export function receiptFieldError(v, { requireBillNo = true, requireChecker = tr
 }
 
 // Stage options, in process order rather than alphabetically, so the list reads
-// Processing -> Stitching -> Packing -> Panchal -> Third Party the way the
-// material actually moves.
+// Processing -> Stitching -> Packing -> each warehouse -> Third Party the way
+// the material actually moves.
 //
 // A STAGE, not a prefix. Nobody picks a prefix anywhere any more: the stage is
 // the fact being recorded, and the code that prints on it follows from it on the
 // server. That also means a receipt keeps rendering a prefix that has since been
 // deactivated without the dropdown having to carry it as an option.
 //
+// The Warehouse stage is one option PER WAREHOUSE (migration 096) when the
+// master's rows are passed -- its value "Warehouse:<id>" (receiptChoiceKey),
+// labelled by name. Active ones, plus `keepId`, the warehouse an edited receipt
+// already sits in, so a retired one still shows rather than a blank. Without
+// `warehouses` the stage stays a single plain option.
+//
 // Processing is DISABLED rather than hidden for goods bought in dozens or
 // pieces, with the reason beside it, so the user sees why it cannot be picked
 // (receiptStageBlockReason).
 // `kind` is the umKind of the delivery's unit.
-export function stageOptionsFor(kind = null) {
-  return RECEIPT_STAGES.map(stage => {
+export function stageOptionsFor(kind = null, warehouses = null, keepId = null) {
+  return RECEIPT_STAGES.flatMap(stage => {
     const reason = receiptStageBlockReason(stage, kind);
-    return { value: stage, label: stage, disabled: !!reason, reason };
+    if (stage === STOCK_STAGE && warehouses) {
+      return warehouses
+        .filter(w => w.is_active || String(w.id) === String(keepId))
+        .map(w => ({ value: warehouseTabKey(w.id), stage, warehouseId: w.id, label: w.name, disabled: !!reason, reason }));
+    }
+    return [{ value: stage, stage, warehouseId: null, label: stage, disabled: !!reason, reason }];
   });
 }
+
+// The stage select's value for a receipt's form: the stage, or the warehouse's
+// key at the Warehouse stage -- and back again, for the two fields it sets.
+export const receiptChoiceKey = (v) => (
+  v?.incoming_stage === STOCK_STAGE && v?.warehouse_id !== '' && v?.warehouse_id != null
+    ? warehouseTabKey(v.warehouse_id)
+    : (v?.incoming_stage || '')
+);
+
+export const fromReceiptChoiceKey = (key) => {
+  const warehouseId = warehouseIdOfTab(key);
+  return warehouseId != null
+    ? { incoming_stage: STOCK_STAGE, warehouse_id: warehouseId }
+    : { incoming_stage: key || '', warehouse_id: '' };
+};
 
 // The stage a new receipt starts on: the first one it may take. Processing for
 // goods with metres, Stitching for anything bought in dozens or pieces.

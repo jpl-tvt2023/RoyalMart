@@ -3,7 +3,8 @@ import {
   isStitchingLine, RECEIPT_STAGES, outstandingOf, qtyDifference, offeredQtyDiffAction,
   receiptFieldError, stageOptionsFor, defaultReceiptStage,
   emptyLine, toLineState, EMPTY_RECEIPT, NOTE_MAX, receiptIsGraded, receiptGradeTotal,
-  receiptSettledDozens, receiptTakesMetres, receiptTakesChecker,
+  receiptSettledDozens, receiptTakesMetres, receiptChoiceKey, fromReceiptChoiceKey,
+  receiptTakesChecker,
 } from '../receiptFields';
 import { STAGES, umKind } from '../../../utils/stitching';
 
@@ -46,6 +47,31 @@ describe('RECEIPT_STAGES', () => {
     expect(processing(umKind('Dzn')).disabled).toBe(true);
     expect(defaultReceiptStage(umKind('taga'))).toBe('Processing');
     expect(defaultReceiptStage(umKind('pcs'))).toBe('Stitching');
+  });
+
+  // Migration 096: the Warehouse stage is picked by warehouse, in its place in
+  // the chain. Active ones only -- plus the one an edited receipt already sits
+  // in, so a retired warehouse still shows rather than a blank select.
+  test('the Warehouse stage is one option per warehouse', () => {
+    const warehouses = [
+      { id: 1, name: 'Panchal', is_active: 1 },
+      { id: 2, name: 'Bhiwandi', is_active: 1 },
+      { id: 3, name: 'Old Godown', is_active: 0 },
+    ];
+    expect(stageOptionsFor(umKind('taga'), warehouses).map(o => o.label))
+      .toEqual(['Processing', 'Stitching', 'Packing', 'Panchal', 'Bhiwandi', 'Third Party']);
+    expect(stageOptionsFor(umKind('taga'), warehouses, 3).map(o => o.value))
+      .toContain('Warehouse:3');
+    expect(stageOptionsFor(umKind('taga'), warehouses).find(o => o.label === 'Bhiwandi'))
+      .toMatchObject({ value: 'Warehouse:2', stage: 'Warehouse', warehouseId: 2, disabled: false });
+  });
+
+  test("a stage choice round-trips through the select's value", () => {
+    expect(receiptChoiceKey({ incoming_stage: 'Warehouse', warehouse_id: 2 })).toBe('Warehouse:2');
+    expect(receiptChoiceKey({ incoming_stage: 'Packing', warehouse_id: '' })).toBe('Packing');
+    expect(fromReceiptChoiceKey('Warehouse:2')).toEqual({ incoming_stage: 'Warehouse', warehouse_id: 2 });
+    expect(fromReceiptChoiceKey('Packing')).toEqual({ incoming_stage: 'Packing', warehouse_id: '' });
+    expect(fromReceiptChoiceKey('')).toEqual({ incoming_stage: '', warehouse_id: '' });
   });
 });
 
@@ -200,9 +226,9 @@ describe('receiptFieldError', () => {
     )).toMatch(/at most 300 characters/);
   });
 
-  // Migration 089: fabric bought in at Packing or Panchal is typed per grade,
+  // Migration 089: fabric bought in at Packing or a warehouse is typed per grade,
   // and Dozens Received is their sum -- so the total is not asked for there.
-  test('Packing and Panchal take grades instead of a dozen total', () => {
+  test('Packing and a warehouse take grades instead of a dozen total', () => {
     const packed = { ...valid, incoming_stage: 'Packing', fresh_dozens: '0', second_dozens: '0', third_dozens: '0' };
     expect(receiptFieldError(packed, { line: fabric })).toBe('Enter the dozens for at least one grade');
     expect(receiptFieldError({ ...packed, second_dozens: '-1' }, { line: fabric }))
@@ -211,8 +237,8 @@ describe('receiptFieldError', () => {
     expect(receiptGradeTotal({ fresh_dozens: '12', second_dozens: '', third_dozens: '3.5' })).toBe(15.5);
     // Stitching counts dozens but is not graded.
     expect(receiptIsGraded(fabric, 'Stitching')).toBe(false);
-    expect(receiptIsGraded(fabric, 'Panchal')).toBe(true);
-    expect(receiptIsGraded(packaging, 'Panchal')).toBe(false);
+    expect(receiptIsGraded(fabric, 'Warehouse')).toBe(true);
+    expect(receiptIsGraded(packaging, 'Warehouse')).toBe(false);
   });
 
   // The stage heads the form, and the server checks it first too, so it is
@@ -220,6 +246,9 @@ describe('receiptFieldError', () => {
   test('the stage is checked first', () => {
     expect(receiptFieldError({ ...valid, incoming_stage: '', received_qty: '' }, { line: fabric }))
       .toBe('Stage is required');
+    // Which warehouse is part of the stage answer -- same wording as the server.
+    expect(receiptFieldError({ ...valid, incoming_stage: 'Warehouse', warehouse_id: '', received_qty: '' }, { line: fabric }))
+      .toBe('Warehouse is required');
     const pc = { ...valid, unit_metric: 'pcs', qty_in_metres: '', incoming_stage: 'Processing', received_qty: '' };
     expect(receiptFieldError(pc, { line: pieces }))
       .toBe('Processing counts metres — goods bought in dozens or pieces cannot be received there');
@@ -252,12 +281,12 @@ describe('receiptFieldError', () => {
     expect(receiptFieldError({ ...sale, outbound_bill_no: 'OB-1', checked_by: '3' }, { line: fabric })).toBeNull();
   });
 
-  // Goods received straight into the warehouse are checked in by a Warehouse
-  // POC, as a challan into Panchal is. Nowhere else on the chain is it asked.
-  test('Panchal needs a checker, and no stage before it does', () => {
+  // Goods received straight into a warehouse are checked in by a Warehouse
+  // POC, as a challan into one is. Nowhere else on the chain is it asked.
+  test('a warehouse needs a checker, and no stage before it does', () => {
     const panchal = {
-      ...valid, incoming_stage: 'Panchal', fresh_dozens: '5', second_dozens: '0', third_dozens: '0',
-      checked_by: '',
+      ...valid, incoming_stage: 'Warehouse', warehouse_id: '1',
+      fresh_dozens: '5', second_dozens: '0', third_dozens: '0', checked_by: '',
     };
     expect(receiptFieldError(panchal, { line: fabric })).toBe('Checked By is required');
     expect(receiptFieldError({ ...panchal, checked_by: '3' }, { line: fabric })).toBeNull();
@@ -265,9 +294,9 @@ describe('receiptFieldError', () => {
       { line: fabric })).toBeNull();
   });
 
-  test('receiptTakesChecker: always off the Stitching page, Panchal and Third Party on it', () => {
+  test('receiptTakesChecker: always off the Stitching page, a warehouse and Third Party on it', () => {
     for (const stage of STAGES) {
-      expect(receiptTakesChecker(fabric, stage)).toBe(stage === 'Panchal' || stage === 'Third Party');
+      expect(receiptTakesChecker(fabric, stage)).toBe(stage === 'Warehouse' || stage === 'Third Party');
     }
     for (const stage of ['', null, ...STAGES]) {
       expect(receiptTakesChecker(packaging, stage)).toBe(true);

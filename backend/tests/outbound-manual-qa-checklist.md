@@ -126,9 +126,10 @@ New in this change — see migrations `084` and `085`.
       it:
       - on **every** receipt for a line without "Goes through Stitching"
         (packaging, barcodes);
-      - on a stitching line, only when the Stage is **Panchal** or **Third
-        Party** (the stages a challan asks it). Switch the Stage to
-        Processing / Stitching / Packing and the field goes.
+      - on a stitching line, only when the Stage is **a warehouse** (Panchal,
+        or any other in the list) or **Third Party** (the stages a challan
+        asks it). Switch the Stage to Processing / Stitching / Packing and the
+        field goes.
 - [ ] On the PO detail page the Checked By column shows `—` for stitching
       receipts at Processing / Stitching / Packing (e.g. PO 055). Everywhere
       else it shows the stored name, and a name that is not a Warehouse POC
@@ -164,8 +165,8 @@ first; it must report 0 Gray rows).
       name shows on hover.
 - [ ] Add Receipt on a fabric line opens with **Processing** pre-selected. The
       Stage list offers Processing, Stitching, Packing, Panchal — **no Gray**.
-- [ ] Picking Panchal shows the hint "… this receipt will be recorded as
-      Closed". After saving, the lot sits on the Panchal tab as **Closed**
+- [ ] Picking Panchal shows the hint "… checked in by a Warehouse POC, and
+      recorded as Closed". After saving, the lot sits on the Panchal tab as **Closed**
       (untick the status filter to see it) and can be reopened.
 
 **Stitching page**
@@ -278,6 +279,52 @@ Purchase Config — a tag now means "works at this stage", Processing included.
       lots whose challans disagree. `--apply` writes `backups/pre-grade-merge-*.json`
       first. Afterwards each merged challan is one lot; the retired lines show in
       the Journey as withdrawn "Merged into lot #N".
+
+## Warehouses become data (migration 096)
+
+Panchal stopped being a stage: the stage is **Warehouse**, and Panchal is the
+first row of a warehouses master. Everything that said "Panchal" before should
+still say "Panchal" — it is now the warehouse's name, not the stage's.
+
+**Nothing visible changed for Panchal**
+- [ ] Stitching tabs still read **Processing, Stitching, Packing, Panchal, Third
+      Party, All**, with Panchal's open-lot badge. A session left on the old
+      Panchal tab opens on Processing, not blank.
+- [ ] Panchal's existing lots are all there, same statuses, same incoming
+      numbers (`PNL…`), same **PCL Inc No** column; Close/Reopen still work.
+- [ ] Add Challan from a Packing lot shows a **Panchal** tile (hint "our
+      warehouse") and asks for **PCL Inc No** and Checked By, as before. The All
+      tab's Stage column and a nested challan row read "→ Panchal".
+- [ ] Add Receipt on a fabric line lists **Panchal** in the Stage select; picking
+      it shows "Goods received straight into Panchal are the end of the chain".
+
+**Adding a second warehouse**
+- [ ] Admin → Purchase Config → **Warehouses**: Panchal is listed (code PCL,
+      prefixes PNL). **Add Warehouse** with a name, code and prefix creates it,
+      and Stitching Prefixes shows the new prefix as `Warehouse · <name>`.
+- [ ] A duplicate name, code or prefix is refused inline, and a refused add
+      leaves no half-created warehouse behind.
+- [ ] Without reloading: the Stitching page shows the new tab after Panchal;
+      Add Challan from a Packing lot shows two warehouse tiles with **neither
+      pre-selected**; the receipt Stage select lists both.
+- [ ] Send a challan to the new warehouse: the field reads "`<code>` Inc No",
+      the lot lands on the new tab only (not Panchal's) numbered under the new
+      prefix, and both tab badges count correctly.
+- [ ] Book a receipt straight into the new warehouse: it asks Checked By (hint
+      "Who received the goods at `<name>`") and is Closed on save. Edit it into
+      Panchal: it stays Closed, moves tabs and keeps its checker. Edit it into
+      Packing: it reopens and the checker goes.
+- [ ] Hovering the receipt's Incoming No on the PO detail page reads "In
+      `<warehouse>`".
+
+**Rename and retire**
+- [ ] Rename the new warehouse: its tab, tiles, Stage option and every lot's
+      label change at once; the warehouse's History shows the old name.
+- [ ] Deactivate it while it holds lots: it vanishes from Add Challan and Add
+      Receipt, but its tab stays and its lots are still there. Reactivate it
+      from the same row.
+- [ ] Stitching Prefixes: changing the warehouse of a prefix that has lots is
+      refused; a Warehouse prefix cannot be saved without a warehouse.
 
 ## Copy issues (not functional bugs — flag, don't spend test time here)
 

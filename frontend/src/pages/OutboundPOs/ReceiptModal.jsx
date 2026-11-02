@@ -4,13 +4,14 @@ import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
 import { addOutboundPOLineReceipt, updateOutboundPOLineReceipt } from '../../api/outboundPOs.api';
 import { listUsersLite } from '../../api/users.api';
+import { listWarehouses } from '../../api/warehouses.api';
 import { ROLES } from '../../utils/roles';
 import { sortByText } from '../../utils/sort';
 import { checkerOptionsFor } from '../../utils/checkers';
 import { fmtNum, STOCK_STAGE, umKind, receiptStageBlockReason, isCheckerStage } from '../../utils/stitching';
 import {
   EMPTY_RECEIPT, INCOMING_NO_MAX, NOTE_MAX,
-  receiptFieldError, stageOptionsFor, defaultReceiptStage,
+  receiptFieldError, stageOptionsFor, defaultReceiptStage, receiptChoiceKey, fromReceiptChoiceKey,
   isStitchingLine, receiptUmKind, receiptTakesMetres,
   receiptDozensDerivable, receiptSettledDozens, receiptIsSale, receiptTakesChecker,
   outstandingOf, qtyDifference, offeredQtyDiffAction,
@@ -149,6 +150,8 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
   const [saving, setSaving] = useState(false);
   // Warehouse POCs, for the two stages that ask who checked the goods over.
   const [checkers, setCheckers] = useState([]);
+  // Our warehouses: the Warehouse stage is one option per warehouse.
+  const [warehouses, setWarehouses] = useState([]);
 
   // Only articles that go through Stitching have a stage. Everything else on an
   // outbound PO is received and done with.
@@ -158,14 +161,18 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
   // so the form asks only for what the UM does not already say.
   const kind = receiptUmKind(form, line);
   const stage = form.incoming_stage;
-  const stageOptions = stageOptionsFor(kind);
+  // An edited receipt keeps its own warehouse on offer even if it was retired.
+  const stageOptions = stageOptionsFor(kind, warehouses, receipt?.warehouse_id);
+  const warehouseName = stage === STOCK_STAGE
+    ? (warehouses.find(w => String(w.id) === String(form.warehouse_id))?.name || receipt?.warehouse_name || 'a warehouse')
+    : null;
   // Pieces to count from Stitching on; graded from Packing on; a sale at Third
   // Party. The stage is the form's first field, so all of this follows it.
   const dozens = receiptCountsDozens(line, stage);
   const graded = receiptIsGraded(line, stage);
   const sale = receiptIsSale(line, stage);
   // A Warehouse POC checks the goods over: on every receipt that never reaches
-  // the Stitching page, and at Panchal and Third Party on one that does.
+  // the Stitching page, and at a warehouse and Third Party on one that does.
   const takesChecker = receiptTakesChecker(line, stage);
   // The checker already on this receipt, from a stage that asked for it. An
   // older stitching receipt at an earlier stage may hold whoever typed it,
@@ -211,6 +218,8 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
       incoming_no: receipt.incoming_no ?? '',
       process_rate: receipt.process_rate ?? '',
       incoming_stage: receipt.incoming_stage ?? '',
+      // Which warehouse, at the Warehouse stage -- read off its prefix.
+      warehouse_id: receipt.warehouse_id ?? '',
       qty_in_metres: receipt.qty_in_metres ?? '',
       // Omitted here once, which made every dozen-stage receipt uneditable: the
       // field rendered blank, validation demanded a count, and the real value
@@ -220,8 +229,8 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
       // re-decided there -- corrections go through the line's Short cell.
       qty_diff_action: receipt.qty_diff_action ?? '',
       qty_diff_reason: receipt.qty_diff_reason ?? '',
-      // A receipt at Packing or Panchal taken before migration 089 has none,
-      // and shows 0s to fill in -- the save asks for them.
+      // A receipt at Packing or a warehouse taken before migration 089 has
+      // none, and shows 0s to fill in -- the save asks for them.
       fresh_dozens: String(receipt.fresh_dozens ?? 0),
       second_dozens: String(receipt.second_dozens ?? 0),
       third_dozens: String(receipt.third_dozens ?? 0),
@@ -245,6 +254,18 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
       .catch(() => setCheckers([]));
   }, []);
 
+  // Fetched when the form opens, so a warehouse added in Purchase Config a
+  // minute ago is already a stage option here.
+  useEffect(() => {
+    if (!stitching) return;
+    listWarehouses()
+      .then(rows => setWarehouses(rows || []))
+      .catch(() => {
+        setWarehouses([]);
+        toast.error('Could not load the warehouse list');
+      });
+  }, [stitching]);
+
   const setField = (field, value) => setForm((f) => ({ ...f, [field]: value }));
 
   const submit = async (e) => {
@@ -263,6 +284,8 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
       };
       if (stitching) {
         payload.incoming_stage = form.incoming_stage || null;
+        // Into the Warehouse stage, which warehouse -- its prefix follows.
+        if (form.incoming_stage === STOCK_STAGE) payload.warehouse_id = Number(form.warehouse_id);
         // Sent only when typed: a UM in metres is copied across by the server,
         // and goods bought in dozens or pieces carry none.
         payload.qty_in_metres = takesMetres && !metresFromQty && form.qty_in_metres !== ''
@@ -316,10 +339,10 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
 
   const articleLabel = `${line.category} · ${line.item_name}${line.variant ? ` · ${line.variant}` : ''}`;
 
-  // What the stage hint says. Panchal and Third Party end the chain in two
+  // What the stage hint says. A warehouse and Third Party end the chain in two
   // different ways, and a disabled Processing says why.
   const stageHint = stage === STOCK_STAGE
-    ? `Goods received straight into ${STOCK_STAGE} are the end of the chain — checked in by a Warehouse POC, and recorded as Closed`
+    ? `Goods received straight into ${warehouseName} are the end of the chain — checked in by a Warehouse POC, and recorded as Closed`
     : sale
       ? 'Sold straight on to a buyer — no incoming number; our outbound bill and a Warehouse POC instead'
       : processingBlocked
@@ -343,9 +366,11 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
               goods that have no metres, and the hint says why. */}
           {stitching && (
             <Field label="Stage" required hint={stageHint} className="sm:col-span-2">
+              {/* A warehouse is picked here by name: the option sets the stage
+                  and which warehouse together. */}
               <select
-                value={stage || ''}
-                onChange={e => setField('incoming_stage', e.target.value)}
+                value={receiptChoiceKey(form)}
+                onChange={e => setForm(f => ({ ...f, ...fromReceiptChoiceKey(e.target.value) }))}
                 className={inputCls}
               >
                 <option value="">Stage…</option>
@@ -438,7 +463,7 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
             </Field>
           ))}
 
-          {/* Goods bought in at Packing, Panchal or Third Party arrive graded,
+          {/* Goods bought in at Packing, a warehouse or Third Party arrive graded,
               exactly as a challan into those stages does: one box per grade, 0
               until filled in, and Dozens Received is their sum -- or, when the
               UM already says how many dozens came, the split of that figure. */}
@@ -545,7 +570,7 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
               label="Checked By"
               required={requireChecker}
               hint={!stitching ? 'A Warehouse POC who checked the goods in'
-                : sale ? 'Who checked the goods out' : `Who received the goods at ${STOCK_STAGE}`}
+                : sale ? 'Who checked the goods out' : `Who received the goods at ${warehouseName}`}
             >
               <select
                 value={form.checked_by === '' || form.checked_by == null ? '' : String(form.checked_by)}
