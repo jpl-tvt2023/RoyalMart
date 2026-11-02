@@ -6,6 +6,9 @@ let token;
 let warehousePocId;
 let untaggedUserId;
 let prefixes;
+// The warehouse migration 096 seeded. A challan or receipt into the Warehouse
+// stage must name one, and every chain-walking test here means this one.
+let panchalId;
 
 const uid = () => Math.random().toString(36).slice(2, 8);
 
@@ -73,8 +76,9 @@ const api = {
         ...(sentQty != null ? { sent_dozens: sentQty } : {}),
         ...(CHECKER_STAGES.includes(target) && body.checked_by === undefined
           ? { checked_by: warehousePocId } : {}),
-        ...(target === STOCK_STAGE && body.panchal_incoming_no === undefined
-          ? { panchal_incoming_no: `PCL-${uid()}` } : {}),
+        ...(target === STOCK_STAGE && body.warehouse_incoming_no === undefined
+          ? { warehouse_incoming_no: `PCL-${uid()}` } : {}),
+        ...(target === STOCK_STAGE && body.warehouse_id === undefined ? { warehouse_id: panchalId } : {}),
         ...rest,
       });
     }
@@ -93,9 +97,11 @@ const api = {
       // dozen count is: so a test walking the chain does not have to know.
       ...(CHECKER_STAGES.includes(target) && body.checked_by === undefined
         ? { checked_by: warehousePocId } : {}),
-      // Panchal files what it takes in under its own number.
-      ...(target === STOCK_STAGE && body.panchal_incoming_no === undefined
-        ? { panchal_incoming_no: `PCL-${uid()}` } : {}),
+      // A warehouse files what it takes in under its own number -- and the
+      // stage alone no longer says which warehouse, so the fixture names Panchal.
+      ...(target === STOCK_STAGE && body.warehouse_incoming_no === undefined
+        ? { warehouse_incoming_no: `PCL-${uid()}` } : {}),
+      ...(target === STOCK_STAGE && body.warehouse_id === undefined ? { warehouse_id: panchalId } : {}),
       ...body,
     });
   },
@@ -144,7 +150,7 @@ async function setupLine(qty = 1000) {
 // it arrived at, its gate number and its metres. Tests that are ABOUT one of
 // those being absent override it explicitly.
 function receiptBody(overrides = {}) {
-  return {
+  const body = {
     received_qty: 100,
     received_rate: 50,
     bill_no: `B-${uid()}`,
@@ -154,6 +160,9 @@ function receiptBody(overrides = {}) {
     incoming_stage: 'Processing',
     ...overrides,
   };
+  // Booked straight into a warehouse names one, Panchal unless the test says.
+  if (body.incoming_stage === STOCK_STAGE && body.warehouse_id === undefined) body.warehouse_id = panchalId;
+  return body;
 }
 
 const postReceipt = (poId, lineId, body) =>
@@ -220,6 +229,8 @@ beforeAll(async () => {
 
   const list = await api.listPrefixes();
   prefixes = Object.fromEntries(list.body.map(p => [p.stage, p]));
+  const { rows: seeded } = await db.execute("SELECT id FROM warehouses WHERE name = 'Panchal'");
+  panchalId = Number(seeded[0].id);
 });
 
 // Every suite shares one database file under --runInBand, and several of them
@@ -236,7 +247,7 @@ describe('Stitching prefixes master', () => {
   // absent and has no prefix: nothing ARRIVES there, so there is nothing to
   // number -- see the CHECK in 081.
   test('one active prefix is seeded per receivable stage', () => {
-    expect(Object.keys(prefixes).sort()).toEqual(['Packing', 'Panchal', 'Processing', 'Stitching']);
+    expect(Object.keys(prefixes).sort()).toEqual(['Packing', 'Processing', 'Stitching', 'Warehouse']);
     for (const p of Object.values(prefixes)) expect(p.is_active).toBe(1);
     expect(prefixes).not.toHaveProperty('Third Party');
   });
@@ -433,7 +444,7 @@ describe('Stitching page — lots and stages', () => {
     const gray = await api.listStage({ stage: 'Processing' });
     expect(findLot(gray.body.rows, 'receipt', receiptId)).toBeTruthy();
 
-    for (const stage of ['Stitching', 'Packing', 'Panchal']) {
+    for (const stage of ['Stitching', 'Packing', 'Warehouse']) {
       const res = await api.listStage({ stage });
       expect(findLot(res.body.rows, 'receipt', receiptId)).toBeFalsy();
     }
@@ -635,14 +646,14 @@ describe('Forwarding through the stages', () => {
       sent_dozens: 49, process_rate: 3,
     });
     const f3 = await api.forward({
-      parent_src: 'entry', parent_id: f2.body.id, target_stage: 'Panchal', party_name: 'Pack',
+      parent_src: 'entry', parent_id: f2.body.id, target_stage: 'Warehouse', party_name: 'Pack',
       sent_dozens: 49, process_rate: 2,
     });
     expect(f1.body.stage).toBe('Stitching');
     expect(f2.body.stage).toBe('Packing');
-    expect(f3.body.stage).toBe('Panchal');
+    expect(f3.body.stage).toBe('Warehouse');
 
-    const panchal = await api.listStage({ stage: 'Panchal' });
+    const panchal = await api.listStage({ stage: 'Warehouse' });
     const lot = findLot(panchal.body.rows, 'entry', f3.body.id);
 
     // One PO rate, shared by every lot in the chain and read off the origin
@@ -673,12 +684,12 @@ describe('Forwarding through the stages', () => {
     });
     // Stitching straight to Panchal, skipping Packing entirely.
     const f2 = await api.forward({
-      parent_src: 'entry', parent_id: f1.body.id, target_stage: 'Panchal',
+      parent_src: 'entry', parent_id: f1.body.id, target_stage: 'Warehouse',
       party_name: 'Pack', sent_qty: 98, process_rate: 4,
     });
-    expect(f2.body.stage).toBe('Panchal');
+    expect(f2.body.stage).toBe('Warehouse');
 
-    const panchal = await api.listStage({ stage: 'Panchal' });
+    const panchal = await api.listStage({ stage: 'Warehouse' });
     const lot = findLot(panchal.body.rows, 'entry', f2.body.id);
     expect(lot.rate_breakdown.map(l => l.label)).toEqual(
       ['PO rate', 'Processing rate (on receipt)', 'Processing rate', 'Stitching rate'],
@@ -721,7 +732,7 @@ describe('Forwarding through the stages', () => {
   test('a Panchal lot cannot be forwarded further', async () => {
     const { receiptId } = await processingLot();
     let parent = { src: 'receipt', id: receiptId };
-    for (const stage of ['Stitching', 'Packing', 'Panchal']) {
+    for (const stage of ['Stitching', 'Packing', 'Warehouse']) {
       const res = await api.forward({
         parent_src: parent.src, parent_id: parent.id, target_stage: stage, party_name: 'P',
         sent_qty: 100, received_qty: 100,
@@ -764,7 +775,7 @@ describe('Forwarding through the stages', () => {
       party_name: 'P', sent_qty: 10, received_qty: 10,
     });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/can only be sent to Stitching, Packing, Panchal, Third Party/);
+    expect(res.body.message).toMatch(/can only be sent to Stitching, Packing, Warehouse, Third Party/);
   });
 
   test('the stage is never taken from the request body', async () => {
@@ -1145,7 +1156,7 @@ describe('Closing a Panchal lot', () => {
   async function panchalLot() {
     const { receiptId } = await processingLot({ qty: 100 });
     let parent = { src: 'receipt', id: receiptId };
-    for (const stage of ['Stitching', 'Packing', 'Panchal']) {
+    for (const stage of ['Stitching', 'Packing', 'Warehouse']) {
       const res = await api.forward({
         parent_src: parent.src, parent_id: parent.id, target_stage: stage,
         party_name: 'P', sent_qty: 100, received_qty: 100,
@@ -1157,7 +1168,7 @@ describe('Closing a Panchal lot', () => {
 
   test('a lot that reaches Panchal is In Stock, not Closed', async () => {
     const lot = await panchalLot();
-    const panchal = await api.listStage({ stage: 'Panchal' });
+    const panchal = await api.listStage({ stage: 'Warehouse' });
     expect(findLot(panchal.body.rows, 'entry', lot.id).status).toBe('In Stock');
   });
 
@@ -1183,11 +1194,11 @@ describe('Closing a Panchal lot', () => {
   test('a receipt bought straight at the Panchal stage is closed on save', async () => {
     const { poId, lineId } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal', received_dozens: 20, fresh_dozens: 20,
+      incoming_no: `K-${uid()}`, incoming_stage: 'Warehouse', received_dozens: 20, fresh_dozens: 20,
     });
     expect(receipt.status).toBe(201);
 
-    let panchal = await api.listStage({ stage: 'Panchal' });
+    let panchal = await api.listStage({ stage: 'Warehouse' });
     const lot = findLot(panchal.body.rows, 'receipt', receipt.body.id);
     expect(lot.status).toBe('Closed');
     expect(lot.closed_by_name).toBeTruthy();
@@ -1198,7 +1209,7 @@ describe('Closing a Panchal lot', () => {
 
     const closed = await api.close('receipt', receipt.body.id);
     expect(closed.body.status).toBe('Closed');
-    panchal = await api.listStage({ stage: 'Panchal' });
+    panchal = await api.listStage({ stage: 'Warehouse' });
     expect(findLot(panchal.body.rows, 'receipt', receipt.body.id).status).toBe('Closed');
   });
 
@@ -1213,7 +1224,7 @@ describe('Closing a Panchal lot', () => {
     };
     expect(await status()).toBe('Pending');
 
-    await patchReceipt(poId, lineId, receipt.body.id, { incoming_stage: 'Panchal' });
+    await patchReceipt(poId, lineId, receipt.body.id, { incoming_stage: 'Warehouse', warehouse_id: panchalId });
     expect(await status()).toBe('Closed');
 
     await patchReceipt(poId, lineId, receipt.body.id, { incoming_stage: 'Packing' });
@@ -1224,7 +1235,7 @@ describe('Closing a Panchal lot', () => {
     const { receiptId } = await processingLot();
     const res = await api.close('receipt', receiptId);
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/Only a Panchal lot can be closed — this one is Processing/);
+    expect(res.body.message).toMatch(/Only a warehouse lot can be closed — this one is Processing/);
   });
 
   // Packing used to be closeable and is not any more: it is an ordinary
@@ -1281,7 +1292,7 @@ describe('Open-lot counts per stage', () => {
     const res = await api.counts();
     expect(res.status).toBe(200);
     expect(Object.keys(res.body.counts).sort())
-      .toEqual(['Packing', 'Panchal', 'Processing', 'Stitching', 'Third Party']);
+      .toEqual(['Packing', 'Processing', 'Stitching', 'Third Party', 'Warehouse']);
     for (const v of Object.values(res.body.counts)) expect(typeof v).toBe('number');
   });
 
@@ -1331,17 +1342,17 @@ describe('Open-lot counts per stage', () => {
     // so filtering by that name isolates this test from every other row.
     const { poId, lineId, vendorName } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_no: `K-${uid()}`, incoming_stage: 'Panchal', received_dozens: 20, fresh_dozens: 20,
+      incoming_no: `K-${uid()}`, incoming_stage: 'Warehouse', received_dozens: 20, fresh_dozens: 20,
     });
 
     // Closed on save, so it is not open work...
-    expect((await api.counts({ party_name: vendorName })).body.counts.Panchal).toBe(0);
+    expect((await api.counts({ party_name: vendorName })).body.counts.Warehouse).toBe(0);
     // ...until someone reopens it.
     await api.reopen('receipt', receipt.body.id);
-    expect((await api.counts({ party_name: vendorName })).body.counts.Panchal).toBe(1);
+    expect((await api.counts({ party_name: vendorName })).body.counts.Warehouse).toBe(1);
 
     await api.close('receipt', receipt.body.id);
-    expect((await api.counts({ party_name: vendorName })).body.counts.Panchal).toBe(0);
+    expect((await api.counts({ party_name: vendorName })).body.counts.Warehouse).toBe(0);
   });
 
   // A sale is never outstanding work, so it never appears in a stage count even
@@ -1572,7 +1583,7 @@ describe('Challans — a lot moves on only under one', () => {
   test('every stage works the way Processing does', async () => {
     const { receiptId } = await processingLot({ qty: 100 });
     let parent = { src: 'receipt', id: receiptId };
-    for (const stage of ['Stitching', 'Packing', 'Panchal']) {
+    for (const stage of ['Stitching', 'Packing', 'Warehouse']) {
       const r = await api.forward({
         parent_src: parent.src, parent_id: parent.id, target_stage: stage,
         party_name: `P-${stage}`, sent_qty: 50, received_qty: 50,
@@ -1582,7 +1593,7 @@ describe('Challans — a lot moves on only under one', () => {
       // Holds material, and offers the same next step -- except at the warehouse,
       // which is the end of the chain and has nowhere left to go.
       expect(row.balance).toBe(50);
-      expect(row.can_forward).toBe(stage !== 'Panchal');
+      expect(row.can_forward).toBe(stage !== 'Warehouse');
       parent = { src: 'entry', id: r.body.id };
     }
   });
@@ -1886,7 +1897,7 @@ describe('Writing material off', () => {
     expect(gray.balance).toBe(40);
 
     // Not a lot: it is at no stage, and no stage counts it.
-    for (const stage of ['Processing', 'Stitching', 'Packing', 'Panchal']) {
+    for (const stage of ['Processing', 'Stitching', 'Packing', 'Warehouse']) {
       const rows = (await api.listStage({ stage })).body.rows;
       expect(rows.find(r => r.src === 'entry' && r.id === res.body.id)).toBeFalsy();
     }
@@ -2069,7 +2080,7 @@ describe('Withdrawing a wrongly entered challan', () => {
     const { challanId } = await dispatched();
     const res = await api.removeChallan(challanId, 'wrong PO');
     const body = JSON.stringify(res.body);
-    for (const stage of ['Processing', 'Stitching', 'Packing', 'Panchal']) {
+    for (const stage of ['Processing', 'Stitching', 'Packing', 'Warehouse']) {
       expect(body).not.toContain(stage);
     }
   });
@@ -2106,7 +2117,7 @@ describe('Withdrawing a wrongly entered challan', () => {
     let parent = { src: 'receipt', id: receiptId };
     let last;
     // All the way to the warehouse: closing is a Panchal-only action now.
-    for (const stage of ['Stitching', 'Packing', 'Panchal']) {
+    for (const stage of ['Stitching', 'Packing', 'Warehouse']) {
       const r = await api.forward({
         parent_src: parent.src, parent_id: parent.id, target_stage: stage,
         party_name: `P-${stage}`, sent_qty: 100, received_qty: 100,
@@ -2198,7 +2209,7 @@ describe('Material only ever flows forward', () => {
   });
 
   test('the two terminal stages lead nowhere', () => {
-    expect(destinationsFor('Panchal')).toEqual([]);
+    expect(destinationsFor('Warehouse')).toEqual([]);
     expect(destinationsFor('Third Party')).toEqual([]);
   });
 
@@ -2206,7 +2217,7 @@ describe('Material only ever flows forward', () => {
     const { receiptId } = await processingLot({ qty: 100 });
     let parent = { src: 'receipt', id: receiptId };
     const seen = [];
-    for (const stage of ['Stitching', 'Packing', 'Panchal']) {
+    for (const stage of ['Stitching', 'Packing', 'Warehouse']) {
       const r = await api.forward({
         parent_src: parent.src, parent_id: parent.id, target_stage: stage,
         party_name: `P-${stage}`, sent_qty: 100, received_qty: 100,
@@ -2214,7 +2225,7 @@ describe('Material only ever flows forward', () => {
       seen.push(r.body.stage);
       parent = { src: 'entry', id: r.body.id };
     }
-    expect(seen).toEqual(['Stitching', 'Packing', 'Panchal']);
+    expect(seen).toEqual(['Stitching', 'Packing', 'Warehouse']);
   });
 
   test('omitting the destination takes the first one', async () => {
@@ -2261,7 +2272,7 @@ describe('a hop knows its real parent', () => {
       sent_qty: 100, received_qty: 100, checked_by: warehousePocId,
     });
     const skipped = await api.forward({
-      parent_src: 'entry', parent_id: child.body.id, target_stage: 'Panchal',
+      parent_src: 'entry', parent_id: child.body.id, target_stage: 'Warehouse',
       party_name: 'Store', sent_qty: 40,
     });
     const rows = (await api.listStage()).body.rows;
@@ -2295,7 +2306,7 @@ describe('Chain-order sorting for the All view', () => {
     const res = await api.listStage({ po_order_no: String(poId) });
     expect(res.status).toBe(200);
     expect(res.body.rows.map(r => r.stage).sort())
-      .toEqual(['Packing', 'Panchal', 'Processing', 'Stitching']);
+      .toEqual(['Packing', 'Processing', 'Stitching', 'Warehouse']);
   });
 
   // The assertion that fails if anyone "simplifies" po_stage to a plain stage
@@ -2307,7 +2318,7 @@ describe('Chain-order sorting for the All view', () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.rows.map(r => r.stage))
-      .toEqual(['Processing', 'Stitching', 'Packing', 'Panchal']);
+      .toEqual(['Processing', 'Stitching', 'Packing', 'Warehouse']);
   });
 
   test('lots from different POs group by PO before stage', async () => {
@@ -2482,7 +2493,7 @@ describe('Dozens from Stitching on', () => {
       incoming_no: `K-${uid()}`, incoming_stage: 'Processing', received_dozens: 25,
     });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/only counted on fabric received at Stitching, Packing, Panchal, Third Party/);
+    expect(res.body.message).toMatch(/only counted on fabric received at Stitching, Packing, Warehouse, Third Party/);
   });
 });
 
@@ -2629,7 +2640,7 @@ describe('Checked By and PCL Inc No at the two hand-overs', () => {
   test('a challan to Panchal needs a checker', async () => {
     const id = await processedLot();
     const r = await api.forward({
-      parent_src: 'entry', parent_id: id, target_stage: 'Panchal',
+      parent_src: 'entry', parent_id: id, target_stage: 'Warehouse',
       party_name: 'Panchal', sent_qty: 10, checked_by: null,
     });
     expect(r.status).toBe(400);
@@ -2639,8 +2650,8 @@ describe('Checked By and PCL Inc No at the two hand-overs', () => {
   test('a challan to Panchal needs its own incoming number', async () => {
     const id = await processedLot();
     const r = await api.forward({
-      parent_src: 'entry', parent_id: id, target_stage: 'Panchal',
-      party_name: 'Panchal', sent_qty: 10, panchal_incoming_no: null,
+      parent_src: 'entry', parent_id: id, target_stage: 'Warehouse',
+      party_name: 'Panchal', sent_qty: 10, warehouse_incoming_no: null,
     });
     expect(r.status).toBe(400);
     expect(r.body.message).toMatch(/PCL Inc No is required when sending to Panchal/);
@@ -2653,14 +2664,14 @@ describe('Checked By and PCL Inc No at the two hand-overs', () => {
     const id = await processedLot();
     const pcl = `PCL-${uid()}`;
     const r = await api.forward({
-      parent_src: 'entry', parent_id: id, target_stage: 'Panchal',
+      parent_src: 'entry', parent_id: id, target_stage: 'Warehouse',
       party_name: 'Panchal', sent_qty: 10,
-      checked_by: warehousePocId, panchal_incoming_no: pcl,
+      checked_by: warehousePocId, warehouse_incoming_no: pcl,
     });
     expect(r.status).toBe(201);
 
-    const row = findLot((await api.listStage({ stage: 'Panchal' })).body.rows, 'entry', r.body.id);
-    expect(row.panchal_incoming_no).toBe(pcl);
+    const row = findLot((await api.listStage({ stage: 'Warehouse' })).body.rows, 'entry', r.body.id);
+    expect(row.warehouse_incoming_no).toBe(pcl);
     expect(row.incoming_prefix).toBe('PNL');
     // Still the suffix inherited from the parent, untouched by the PCL number.
     expect(row.incoming_no).toBeTruthy();
@@ -2688,7 +2699,7 @@ describe('Checked By and PCL Inc No at the two hand-overs', () => {
       args: [`Untagged ${uid()}`, `u-${uid()}`, `u-${uid()}@x.com`],
     });
     const r = await api.forward({
-      parent_src: 'entry', parent_id: id, target_stage: 'Panchal',
+      parent_src: 'entry', parent_id: id, target_stage: 'Warehouse',
       party_name: 'Panchal', sent_qty: 10, checked_by: rows[0].id,
     });
     expect(r.status).toBe(400);
@@ -2701,10 +2712,10 @@ describe('Checked By and PCL Inc No at the two hand-overs', () => {
     const id = await processedLot();
     const r = await api.forward({
       parent_src: 'entry', parent_id: id, target_stage: 'Packing',
-      party_name: 'Packer', sent_qty: 10, panchal_incoming_no: 'PCL-9',
+      party_name: 'Packer', sent_qty: 10, warehouse_incoming_no: 'PCL-9',
     });
     expect(r.status).toBe(400);
-    expect(r.body.message).toMatch(/PCL Inc No applies only to goods sent to Panchal/);
+    expect(r.body.message).toMatch(/A warehouse Inc No applies only to goods sent to a warehouse/);
   });
 
   // An ordinary move between job workers still stamps the session user rather
@@ -2717,11 +2728,11 @@ describe('Checked By and PCL Inc No at the two hand-overs', () => {
     });
     expect(r.status).toBe(201);
     const { rows } = await db.execute({
-      sql: 'SELECT checked_by, panchal_incoming_no FROM stitching_entries WHERE id = ?',
+      sql: 'SELECT checked_by, warehouse_incoming_no FROM stitching_entries WHERE id = ?',
       args: [r.body.id],
     });
     expect(Number(rows[0].checked_by)).toBe(warehousePocId);
-    expect(rows[0].panchal_incoming_no).toBeNull();
+    expect(rows[0].warehouse_incoming_no).toBeNull();
   });
 });
 
@@ -2790,10 +2801,10 @@ describe('Goods bought in dozens or pieces, and Third Party receipts', () => {
     const { receiptId } = await pieceLot();
     const sent = await api.forward({
       parent_src: 'receipt', parent_id: receiptId, party_name: 'Knit Co',
-      sent_dozens: 10, target_stage: 'Panchal', process_rate: 5,
+      sent_dozens: 10, target_stage: 'Warehouse', process_rate: 5,
     });
     expect(sent.status).toBe(201);
-    const row = findLot((await api.listStage({ stage: 'Panchal' })).body.rows, 'entry', sent.body.id);
+    const row = findLot((await api.listStage({ stage: 'Warehouse' })).body.rows, 'entry', sent.body.id);
     expect(row.rate_total_unit).toBe('dozen');
     expect(row.rate_breakdown).toEqual([
       { label: 'PO rate', rate: 10, unit: 'piece', contributes: 120 },
@@ -2835,8 +2846,8 @@ describe('Status SQL/JS parity', () => {
     ['Packing', 50, 50, 'Forwarded'],
     // Panchal is the warehouse: balance is meaningless because nothing forwards
     // out of it, so it reads In Stock until someone closes it.
-    ['Panchal', 50, 0, 'In Stock'],
-    ['Panchal', 50, 50, 'In Stock'],
+    ['Warehouse', 50, 0, 'In Stock'],
+    ['Warehouse', 50, 50, 'In Stock'],
     // Third Party is the exit. The goods are not ours, so there is no state left.
     ['Third Party', 50, 0, 'Sold'],
     ['Third Party', 50, 50, 'Sold'],
@@ -2857,7 +2868,7 @@ describe('Status SQL/JS parity', () => {
     [null, 'In Stock'],
     ['2026-09-05 10:00:00', 'Closed'],
   ])('a Panchal lot with closedAt %s is %s', (closedAt, expected) => {
-    expect(svc.computeStatus({ stage: 'Panchal', receivedQty: 50, forwarded: 0, closedAt })).toBe(expected);
+    expect(svc.computeStatus({ stage: 'Warehouse', receivedQty: 50, forwarded: 0, closedAt })).toBe(expected);
   });
 
   // closed_at is inert everywhere else. Rows closed while Packing WAS the stock
@@ -2885,7 +2896,7 @@ describe('Status SQL/JS parity', () => {
     // Put a lot on each of the new stages too, so the sweep actually exercises
     // the two branches the SQL CASE grew.
     await api.forward({
-      parent_src: 'entry', parent_id: f1.body.id, target_stage: 'Panchal',
+      parent_src: 'entry', parent_id: f1.body.id, target_stage: 'Warehouse',
       party_name: 'P', sent_qty: 20, received_qty: 20,
     });
     await api.forward({
@@ -3017,7 +3028,7 @@ describe('Graded lots — one lot per challan from Packing on', () => {
   test('a line-item body sent to a graded stage is folded into one lot', async () => {
     const { id } = await stitchingLot();
     const res = await api.forward({
-      parent_src: 'entry', parent_id: id, target_stage: 'Panchal', party_name: 'Stitcher',
+      parent_src: 'entry', parent_id: id, target_stage: 'Warehouse', party_name: 'Stitcher',
       lines: [
         { challan_type: 'Fresh', sent_dozens: 10 },
         { challan_type: 'Second', sent_dozens: 4 },
@@ -3026,7 +3037,7 @@ describe('Graded lots — one lot per challan from Packing on', () => {
     });
     expect(res.status).toBe(201);
     expect(res.body.ids).toHaveLength(1);
-    const row = findLot((await api.listStage({ stage: 'Panchal' })).body.rows, 'entry', res.body.id);
+    const row = findLot((await api.listStage({ stage: 'Warehouse' })).body.rows, 'entry', res.body.id);
     expect([row.fresh_dozens, row.second_dozens, row.third_dozens]).toEqual([12, 4, 0]);
     expect(row.received_dozens).toBe(16);
   });
@@ -3078,10 +3089,10 @@ describe('Graded lots — one lot per challan from Packing on', () => {
   test('a receipt booked into Panchal shows its grades on the Panchal tab', async () => {
     const { poId, lineId } = await setupLine();
     const receipt = await postReceipt(poId, lineId, {
-      incoming_stage: 'Panchal', fresh_dozens: 12, second_dozens: 8,
+      incoming_stage: 'Warehouse', fresh_dozens: 12, second_dozens: 8,
     });
     expect(receipt.status).toBe(201);
-    const row = findLot((await api.listStage({ stage: 'Panchal' })).body.rows, 'receipt', receipt.body.id);
+    const row = findLot((await api.listStage({ stage: 'Warehouse' })).body.rows, 'receipt', receipt.body.id);
     expect([row.fresh_dozens, row.second_dozens, row.third_dozens]).toEqual([12, 8, 0]);
     expect(row.received_dozens).toBe(20);
   });
@@ -3176,7 +3187,7 @@ describe('Stage Party and Rate — one value with the challans out of a lot', ()
   test('Panchal and Third Party keep a party but no rate of their own', async () => {
     const { receiptId } = await processingLot({ qty: 100 });
     const p = await api.forward({
-      parent_src: 'receipt', parent_id: receiptId, target_stage: 'Panchal', party_name: 'Dye',
+      parent_src: 'receipt', parent_id: receiptId, target_stage: 'Warehouse', party_name: 'Dye',
       sent_qty: 40, grades: { Fresh: 20 },
     });
     expect(p.status).toBe(201);
@@ -3220,5 +3231,225 @@ describe('Stage Party and Rate — one value with the challans out of a lot', ()
     const receipt = await getReceipt(poId, receiptId);
     expect(receipt.stage_party_name).toBeNull();
     expect(receipt.stage_rate).toBeNull();
+  });
+});
+
+// Migration 096. Panchal stopped being a stage: the stage is Warehouse, and
+// which warehouse a lot is in is read off the prefix it is numbered under, each
+// Warehouse prefix belonging to one row of the warehouses master. Adding,
+// renaming and retiring a warehouse is master data -- no stage, CHECK or code
+// change -- and these pin that down end to end.
+describe('Warehouses', () => {
+  const listWarehouses = () => A(request(app).get('/api/configurations/warehouses'));
+  const createWarehouse = (body) => A(request(app).post('/api/configurations/warehouses')).send(body);
+  const patchWarehouse = (id, body) => A(request(app).patch(`/api/configurations/warehouses/${id}`)).send(body);
+  const deleteWarehouse = (id) => A(request(app).delete(`/api/configurations/warehouses/${id}`));
+
+  // A fresh warehouse with its own codes, as an admin adds one.
+  const newWarehouse = async () => {
+    const tag = uid().toUpperCase();
+    const res = await createWarehouse({ name: `Bhiwandi ${tag}`, code: `B${tag}`.slice(0, 6), prefix: `BH${tag}` });
+    expect(res.status).toBe(201);
+    return { ...res.body, prefix: `BH${tag}` };
+  };
+
+  // A lot at Stitching, which can be sent on to any warehouse.
+  const stitchingLot = async () => {
+    const { receiptId, vendorName } = await processingLot({ qty: 200 });
+    const d = await api.forward({ parent_src: 'receipt', parent_id: receiptId, party_name: 'Dye', sent_qty: 200 });
+    expect(d.status).toBe(201);
+    return { id: d.body.id, vendorName };
+  };
+
+  const sendTo = (id, warehouseId, extra = {}) => api.forward({
+    parent_src: 'entry', parent_id: id, target_stage: 'Warehouse', warehouse_id: warehouseId,
+    party_name: 'P', sent_qty: 5, ...extra,
+  });
+
+  test('Panchal is seeded as the first warehouse, numbered under PNL', async () => {
+    const res = await listWarehouses();
+    expect(res.status).toBe(200);
+    const panchal = res.body.find(w => w.id === panchalId);
+    expect(panchal).toMatchObject({ name: 'Panchal', code: 'PCL', is_active: 1, prefixes: 'PNL' });
+    expect(prefixes.Warehouse).toMatchObject({ prefix: 'PNL', warehouse_id: panchalId, warehouse_name: 'Panchal' });
+  });
+
+  test('a new warehouse comes with its first prefix, and duplicates are refused whole', async () => {
+    const w = await newWarehouse();
+    const prefix = (await api.listPrefixes()).body.find(p => p.prefix === w.prefix);
+    expect(prefix).toMatchObject({ stage: 'Warehouse', warehouse_id: w.id, is_active: 1 });
+
+    const dupName = await createWarehouse({ name: w.name.toLowerCase(), code: `Q${uid()}`.slice(0, 6), prefix: `Q${uid()}` });
+    expect(dupName.status).toBe(409);
+    expect(dupName.body.message).toBe('A warehouse with that name already exists');
+
+    // A clashing prefix rolls the warehouse back with it -- no prefixless
+    // warehouse is left behind.
+    const name = `Orphan ${uid()}`;
+    const clash = await createWarehouse({ name, code: `O${uid()}`.slice(0, 6), prefix: 'PNL' });
+    expect(clash.status).toBe(409);
+    expect(clash.body.message).toBe('A prefix with that code already exists');
+    expect((await listWarehouses()).body.some(x => x.name === name)).toBe(false);
+
+    const noPrefix = await createWarehouse({ name: `No prefix ${uid()}`, code: 'NP' });
+    expect(noPrefix.status).toBe(400);
+    expect(noPrefix.body.message).toBe('Incoming prefix is required');
+  });
+
+  test('a Warehouse prefix must name its warehouse, and no other stage keeps one', async () => {
+    const missing = await api.createPrefix({ prefix: `WX${uid()}`, stage: 'Warehouse' });
+    expect(missing.status).toBe(400);
+    expect(missing.body.message).toBe('Warehouse is required for a Warehouse prefix');
+
+    const w = await newWarehouse();
+    const ok = await api.createPrefix({ prefix: `WY${uid()}`, stage: 'Warehouse', warehouse_id: w.id });
+    expect(ok.status).toBe(201);
+    expect(ok.body.warehouse_id).toBe(w.id);
+
+    const other = await api.createPrefix({ prefix: `WZ${uid()}`, stage: 'Packing', warehouse_id: w.id });
+    expect(other.status).toBe(201);
+    expect(other.body.warehouse_id).toBeNull();
+  });
+
+  test('a challan into the Warehouse stage must say which warehouse', async () => {
+    const { id } = await stitchingLot();
+    const none = await sendTo(id, null);
+    expect(none.status).toBe(400);
+    expect(none.body.message).toBe('Warehouse is required');
+
+    const ghost = await sendTo(id, 999999);
+    expect(ghost.status).toBe(400);
+    expect(ghost.body.message).toBe('Warehouse not found');
+  });
+
+  test('goods sent to a second warehouse land on its prefix and tab only, labelled by its code', async () => {
+    const w = await newWarehouse();
+    const { id, vendorName } = await stitchingLot();
+
+    const unnumbered = await sendTo(id, w.id, { warehouse_incoming_no: null });
+    expect(unnumbered.status).toBe(400);
+    expect(unnumbered.body.message).toBe(`${w.code} Inc No is required when sending to ${w.name}`);
+
+    const sent = await sendTo(id, w.id);
+    expect(sent.status).toBe(201);
+    expect(sent.body.warehouse_id).toBe(w.id);
+
+    const mine = (await api.listStage({ stage: 'Warehouse', warehouse_id: w.id })).body.rows;
+    expect(findLot(mine, 'entry', sent.body.id)).toMatchObject({
+      stage: 'Warehouse', stage_label: w.name, warehouse_id: w.id, warehouse_name: w.name,
+      warehouse_code: w.code, incoming_prefix: w.prefix, status: 'In Stock', can_forward: false,
+    });
+    const panchalTab = (await api.listStage({ stage: 'Warehouse', warehouse_id: panchalId })).body.rows;
+    expect(findLot(panchalTab, 'entry', sent.body.id)).toBeUndefined();
+
+    const counts = (await api.counts({ party_name: vendorName })).body;
+    expect(counts.warehouses[w.id]).toBe(1);
+    expect(counts.warehouses[panchalId]).toBeUndefined();
+    expect(counts.counts.Warehouse).toBe(1);
+
+    // Closing works the same at any warehouse.
+    const closed = await api.close('entry', sent.body.id);
+    expect(closed.status).toBe(200);
+    expect(closed.body.status).toBe('Closed');
+  });
+
+  test('renaming a warehouse shows on its lots without touching a single lot row', async () => {
+    const w = await newWarehouse();
+    const { id } = await stitchingLot();
+    const sent = await sendTo(id, w.id);
+    const rowOf = async () => (await db.execute({
+      sql: 'SELECT * FROM stitching_entries WHERE id = ?', args: [sent.body.id],
+    })).rows[0];
+    const before = await rowOf();
+
+    const renamed = `Renamed ${uid()}`;
+    const res = await patchWarehouse(w.id, { name: renamed, code: 'RNM' });
+    expect(res.status).toBe(200);
+
+    const lot = findLot((await api.listStage({ stage: 'Warehouse', warehouse_id: w.id })).body.rows, 'entry', sent.body.id);
+    expect(lot).toMatchObject({ warehouse_name: renamed, warehouse_code: 'RNM', stage_label: renamed });
+    expect(await rowOf()).toEqual(before);
+  });
+
+  test('a retired warehouse keeps its stock on show but takes no new goods', async () => {
+    const w = await newWarehouse();
+    const { id } = await stitchingLot();
+    const sent = await sendTo(id, w.id);
+    expect((await deleteWarehouse(w.id)).body.is_active).toBe(0);
+
+    const listed = (await listWarehouses()).body.find(x => x.id === w.id);
+    expect(listed).toMatchObject({ is_active: 0, in_use: 1 });
+    const lot = findLot((await api.listStage({ stage: 'Warehouse', warehouse_id: w.id })).body.rows, 'entry', sent.body.id);
+    expect(lot.status).toBe('In Stock');
+
+    const refused = await sendTo(id, w.id);
+    expect(refused.status).toBe(400);
+    expect(refused.body.message).toBe(`${w.name} is no longer active — pick another warehouse`);
+  });
+
+  test('a prefix in use cannot be moved to another warehouse', async () => {
+    const w = await newWarehouse();
+    const { id } = await stitchingLot();
+    expect((await sendTo(id, w.id)).status).toBe(201);
+    const prefix = (await api.listPrefixes()).body.find(p => p.prefix === w.prefix);
+    const res = await api.patchPrefix(prefix.id, { warehouse_id: panchalId });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/Cannot change the warehouse of/);
+  });
+
+  test('a receipt booked into a warehouse names it, closes on save, and stays closed moving between warehouses', async () => {
+    const w = await newWarehouse();
+    const { poId, lineId } = await setupLine();
+    const body = { incoming_no: `K-${uid()}`, incoming_stage: 'Warehouse', received_dozens: 20, fresh_dozens: 20 };
+
+    const unnamed = await postReceipt(poId, lineId, { ...body, warehouse_id: null });
+    expect(unnamed.status).toBe(400);
+    expect(unnamed.body.message).toBe('Warehouse is required');
+
+    const receipt = await postReceipt(poId, lineId, { ...body, warehouse_id: w.id });
+    expect(receipt.status).toBe(201);
+    expect(await getReceipt(poId, receipt.body.id)).toMatchObject({
+      incoming_stage: 'Warehouse', incoming_prefix: w.prefix, warehouse_id: w.id, warehouse_name: w.name,
+    });
+    let lot = findLot((await api.listStage({ stage: 'Warehouse', warehouse_id: w.id })).body.rows, 'receipt', receipt.body.id);
+    expect(lot.status).toBe('Closed');
+
+    // Booked into the wrong warehouse: moving it is a correction, not new stock.
+    const moved = await patchReceipt(poId, lineId, receipt.body.id, { incoming_stage: 'Warehouse', warehouse_id: panchalId });
+    expect(moved.status).toBe(200);
+    expect(await getReceipt(poId, receipt.body.id)).toMatchObject({
+      incoming_prefix: 'PNL', warehouse_id: panchalId, warehouse_name: 'Panchal',
+    });
+    lot = findLot((await api.listStage({ stage: 'Warehouse', warehouse_id: panchalId })).body.rows, 'receipt', receipt.body.id);
+    expect(lot.status).toBe('Closed');
+  });
+
+  // The receipt form restates the stage on every save. A retired warehouse
+  // still holds its stock, so an unrelated edit there must go through -- only
+  // putting NEW goods into it is refused.
+  test('a receipt in a retired warehouse stays editable, but nothing new moves in', async () => {
+    const w = await newWarehouse();
+    const { poId, lineId } = await setupLine();
+    const receipt = await postReceipt(poId, lineId, {
+      incoming_no: `K-${uid()}`, incoming_stage: 'Warehouse', warehouse_id: w.id,
+      received_dozens: 20, fresh_dozens: 20,
+    });
+    expect(receipt.status).toBe(201);
+    expect((await deleteWarehouse(w.id)).body.is_active).toBe(0);
+
+    const edited = await patchReceipt(poId, lineId, receipt.body.id, {
+      incoming_stage: 'Warehouse', warehouse_id: w.id, note: 'bill corrected',
+    });
+    expect(edited.status).toBe(200);
+    expect(await getReceipt(poId, receipt.body.id)).toMatchObject({
+      note: 'bill corrected', incoming_prefix: w.prefix, warehouse_id: w.id,
+    });
+
+    const other = await postReceipt(poId, lineId, {
+      incoming_no: `K-${uid()}`, incoming_stage: 'Packing', received_dozens: 5, fresh_dozens: 5,
+    });
+    const movedIn = await patchReceipt(poId, lineId, other.body.id, { incoming_stage: 'Warehouse', warehouse_id: w.id });
+    expect(movedIn.status).toBe(400);
+    expect(movedIn.body.message).toBe(`${w.name} is no longer active — pick another warehouse`);
   });
 });

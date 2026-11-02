@@ -130,8 +130,9 @@ export default function JourneyModal({ src, id, onClose }) {
                   >
                     <div className="flex items-baseline justify-between gap-3 flex-wrap">
                       <div className="flex items-baseline gap-2 min-w-0">
+                        {/* A warehouse hop names its warehouse, not the stage. */}
                         <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 w-20 shrink-0">
-                          {n.stage}
+                          {n.stage_label || n.stage}
                         </span>
                         <span className={`font-medium text-[#003049] truncate ${n.deleted ? 'line-through' : ''}`}>
                           {n.party_name}

@@ -309,15 +309,32 @@ const nonBlank = (v) => (v != null && String(v).trim() !== '' ? String(v).trim()
 // stitching.controller.js. Prefixes are deliberately many-per-stage, so refusing
 // when a stage has several would break every receipt the moment an admin adds a
 // second one.
-async function prefixIdForStage(stage) {
+//
+// At the Warehouse stage the prefix is the chosen WAREHOUSE's (096) -- it is
+// what puts the receipt in that warehouse -- so `warehouseId` picks among them,
+// and only an active warehouse takes new goods. Returns [prefixId, error,
+// warehouseName]; the name is for the audit line.
+async function prefixIdForStage(stage, warehouseId = null) {
+  let warehouse = null;
+  if (stage === STOCK_STAGE) {
+    const { rows } = await db.execute({
+      sql: 'SELECT id, name, is_active FROM warehouses WHERE id = ?',
+      args: [warehouseId],
+    });
+    if (!rows.length) return [null, 'Warehouse not found'];
+    if (!rows[0].is_active) return [null, `${rows[0].name} is no longer active — pick another warehouse`];
+    warehouse = rows[0];
+  }
   const { rows } = await db.execute({
-    sql: 'SELECT id FROM stitching_prefixes WHERE stage = ? AND is_active = 1 ORDER BY id',
-    args: [stage],
+    sql: `SELECT id FROM stitching_prefixes
+           WHERE stage = ? AND is_active = 1 ${warehouse ? 'AND warehouse_id = ?' : ''}
+           ORDER BY id`,
+    args: warehouse ? [stage, warehouse.id] : [stage],
   });
   if (!rows.length) {
-    return [null, `No active ${stage} prefix — add one in Admin → Purchase Config`];
+    return [null, `No active ${warehouse ? warehouse.name : stage} prefix — add one in Admin → Purchase Config`];
   }
-  return [rows[0].id, null];
+  return [rows[0].id, null, warehouse?.name ?? null];
 }
 
 // A receipt can arrive at ANY stage. Third Party joined in 091: goods bought and
@@ -327,7 +344,7 @@ async function prefixIdForStage(stage) {
 // than here, for goods bought in dozens or pieces (receiptStageBlockReason).
 const RECEIPT_STAGES = [...STAGES];
 
-// The receipt stages whose goods arrive GRADED -- Packing, Panchal and Third
+// The receipt stages whose goods arrive GRADED -- Packing, Warehouse and Third
 // Party. Goods bought in there record their dozens split into Fresh, Second and
 // Third, the same split a challan into those stages carries, and Dozens
 // Received is their sum. Stitching is a dozen stage but not a graded one.
@@ -351,6 +368,10 @@ const dozensFromQty = (stitching, kind, stage) => !!stitching && countsDozens(st
 //
 // `kind` is umKind of the unit this delivery is counted in. Goods bought in
 // dozens or pieces have no metres, so they cannot land at Processing.
+//
+// The Warehouse stage is one choice per warehouse on the form (096), so a
+// receipt booked into it names WHICH, as warehouse_id beside the stage. Whether
+// that warehouse exists and is active is prefixIdForStage's to say.
 function receiptStageError(body, { requireAll, line, kind }) {
   const present = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
   const stitching = isStitchingLine(line);
@@ -360,6 +381,7 @@ function receiptStageError(body, { requireAll, line, kind }) {
     if (!RECEIPT_STAGES.includes(stage)) return `Stage must be one of ${RECEIPT_STAGES.join(', ')}`;
     const blocked = receiptStageBlockReason(stage, kind);
     if (blocked) return blocked;
+    if (stage === STOCK_STAGE && nonBlank(body.warehouse_id) == null) return 'Warehouse is required';
   } else if (stitching && requireAll) {
     return 'Stage is required';
   } else if (stitching && !present('incoming_stage') && present('unit_metric') && line?.incoming_stage) {
@@ -445,7 +467,7 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
   // By column stay -- only the question goes.
   //
   // The real second-pair-of-eyes check moved to the two points in the stitching
-  // chain where the goods genuinely change hands: into Panchal, and out to a
+  // chain where the goods genuinely change hands: into a warehouse, and out to a
   // third party. stitching.controller.js enforces the Warehouse_POC rule there,
   // reusing these message strings verbatim.
   //
@@ -552,7 +574,7 @@ async function validateReceiptFields(body, { requireAll, line, kind = null }) {
     return 'Dozens Received is required';
   }
 
-  // THE GRADES, on fabric bought in at Packing or Panchal (migration 089). Each
+  // THE GRADES, on fabric bought in at Packing or a warehouse (migration 089). Each
   // is 0 or a positive 2dp figure -- 0 is the default and means none of that
   // grade -- and together they must come to something, because a delivery of
   // no dozens is not a delivery. When the total is sent as well it has to
@@ -738,6 +760,9 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
                    -- A receipt booked straight into Third Party has no prefix,
                    -- and its stage is held on the receipt itself (091).
                    sp.prefix AS incoming_prefix, COALESCE(sp.stage, r.direct_stage) AS incoming_stage,
+                   -- Which warehouse, at the Warehouse stage: read off the
+                   -- prefix, never stored on the receipt (096).
+                   sp.warehouse_id, w.name AS warehouse_name,
                    r.direct_stage, r.outbound_bill_no,
                    r.created_by, r.created_at, r.updated_by, r.updated_at, r.deleted_by, r.deleted_at,
                    cb.name AS created_by_name, ub.name AS updated_by_name, kb.name AS checked_by_name,
@@ -751,6 +776,7 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
             LEFT JOIN users ub ON ub.id = r.updated_by
             LEFT JOIN users kb ON kb.id = r.checked_by
             LEFT JOIN stitching_prefixes sp ON sp.id = r.incoming_prefix_id
+            LEFT JOIN warehouses w ON w.id = sp.warehouse_id
             WHERE r.line_id IN (${rPlaceholders}) ${receiptDeletedClause}
             ORDER BY r.line_id, r.created_at, r.id`,
       args: lineIds,
@@ -1428,10 +1454,12 @@ async function createReceipt(req, res, next) {
     const outboundBillNo = thirdParty ? nonBlank(req.body?.outbound_bill_no) : null;
     const incomingNo = thirdParty ? null : nonBlank(req.body?.incoming_no);
     let prefixId = null;
+    let warehouseName = null;
     if (incomingStage && !thirdParty) {
-      const [resolved, prefixError] = await prefixIdForStage(incomingStage);
+      const [resolved, prefixError, name] = await prefixIdForStage(incomingStage, req.body?.warehouse_id);
       if (prefixError) return res.status(400).json({ message: prefixError });
       prefixId = resolved;
+      warehouseName = name;
     }
 
     const pairError = incomingPairError(incomingNo, prefixId);
@@ -1454,7 +1482,7 @@ async function createReceipt(req, res, next) {
         : req.body?.qty_in_metres != null && req.body.qty_in_metres !== ''
           ? Number(req.body.qty_in_metres) : null;
 
-    // At a graded stage (Packing, Panchal, Third Party) the dozens arrive split
+    // At a graded stage (Packing, Warehouse, Third Party) the dozens arrive split
     // by grade and the total is their sum. Everywhere else the three stay 0.
     const graded = isStitchingLine(line) && isGradedStage(incomingStage);
     const grades = Object.fromEntries(GRADE_FIELDS.map(([, col]) => [
@@ -1484,7 +1512,7 @@ async function createReceipt(req, res, next) {
     const processRate = req.body?.process_rate != null && req.body.process_rate !== ''
       ? Number(req.body.process_rate) : null;
 
-    // Panchal is the end of the chain. Goods bought straight into it have
+    // A warehouse is the end of the chain. Goods bought straight into one have
     // nothing left to happen to them, so the receipt is closed as it is saved
     // rather than sitting In Stock until someone remembers to close it.
     const closesOnSave = isStitchingLine(line) && incomingStage === STOCK_STAGE;
@@ -1532,7 +1560,7 @@ async function createReceipt(req, res, next) {
         userId: req.user.id,
         actionType: 'OUTBOUND_PO_LINE_RECEIPT_CREATE',
         description: `Added receipt of ${receivedQty} on line "${line.category} - ${line.item_name}${line.variant ? ` - ${line.variant}` : ''}"${billNo ? `, bill #${billNo}` : ''} @ ${receivedRate}${incomingNo != null ? `, incoming #${incomingNo}` : ''} (PO ${padOrderNo(id)})`
-          + (closesOnSave ? `, received straight into ${STOCK_STAGE} and closed` : '')
+          + (closesOnSave ? `, received straight into ${warehouseName || STOCK_STAGE} and closed` : '')
           + (thirdParty ? `, sold straight on to a third party against outbound bill #${outboundBillNo}` : ''),
         entityType: 'outbound_po_line',
         entityId: Number(lineId),
@@ -1559,11 +1587,13 @@ async function updateReceipt(req, res, next) {
                    r.fresh_dozens, r.second_dozens, r.third_dozens, r.note,
                    r.stage_party_name, r.stage_rate, r.direct_stage, r.outbound_bill_no,
                    COALESCE(sp.stage, r.direct_stage) AS incoming_stage,
+                   sp.warehouse_id, w.name AS warehouse_name,
                    l.category, l.item_name, l.variant, l.unit_metric AS line_unit_metric,
                    ${STITCHING_SQL} AS goes_to_stitching
             FROM outbound_po_line_receipts r
             JOIN outbound_po_lines l ON l.id = r.line_id
             LEFT JOIN stitching_prefixes sp ON sp.id = r.incoming_prefix_id
+            LEFT JOIN warehouses w ON w.id = sp.warehouse_id
             WHERE r.id = ? AND r.line_id = ? AND l.po_id = ? AND r.deleted_at IS NULL`,
       args: [receiptId, lineId, id],
     });
@@ -1609,20 +1639,33 @@ async function updateReceipt(req, res, next) {
     }
     // A stage in, a prefix out -- the client never names a prefix. Third Party
     // has none: its stage is held on the receipt (direct_stage, 091).
+    // At the Warehouse stage the warehouse comes with it (warehouse_id), and
+    // moving a receipt from one warehouse to another is just a new prefix.
     let nextPrefixId = receipt.incoming_prefix_id;
     let nextDirectStage = receipt.direct_stage ?? null;
+    let nextWarehouseName = receipt.warehouse_name ?? null;
     if (has('incoming_stage')) {
       const stage = nonBlank(req.body.incoming_stage);
       if (!stage) {
         nextPrefixId = null;
         nextDirectStage = null;
+        nextWarehouseName = null;
       } else if (stage === EXIT_STAGE && isStitchingLine(receipt)) {
         nextPrefixId = null;
         nextDirectStage = EXIT_STAGE;
+        nextWarehouseName = null;
+      } else if (stage === STOCK_STAGE && receipt.incoming_stage === STOCK_STAGE
+          && String(req.body.warehouse_id ?? '') === String(receipt.warehouse_id ?? '')) {
+        // The warehouse it is already in, restated -- the form sends the stage
+        // on every save. Keep its prefix rather than looking one up again: a
+        // warehouse retired since still holds this stock, and an edit to the
+        // bill number must not be refused because new goods can't go there.
+        nextDirectStage = null;
       } else {
-        const [resolved, prefixError] = await prefixIdForStage(stage);
+        const [resolved, prefixError, name] = await prefixIdForStage(stage, req.body.warehouse_id);
         if (prefixError) return res.status(400).json({ message: prefixError });
         nextPrefixId = resolved;
+        nextWarehouseName = name;
         nextDirectStage = null;
       }
     }
@@ -1789,17 +1832,19 @@ async function updateReceipt(req, res, next) {
       direct_stage: nextDirectStage, outbound_bill_no: nextOutboundBillNo,
     }, RECEIPT_FIELDS);
 
-    // Moving a receipt INTO Panchal closes it, the same as saving one there does.
-    // Moving it OUT reopens it -- closed only means something at Panchal, and a
-    // stale close left on a Processing lot would read as a contradiction. A
-    // receipt that stays at Panchal keeps whatever close state it has, so a
-    // deliberate reopen on the Stitching page is not undone by an unrelated edit.
+    // Moving a receipt INTO a warehouse closes it, the same as saving one there
+    // does. Moving it OUT reopens it -- closed only means something at a
+    // warehouse, and a stale close left on a Processing lot would read as a
+    // contradiction. A receipt that stays at the Warehouse stage keeps whatever
+    // close state it has -- moved to another warehouse included, which is a
+    // correction of where it was booked, not new stock -- so a deliberate reopen
+    // on the Stitching page is not undone by an unrelated edit.
     let closeChange = null;
     if (has('incoming_stage') && (stageMoved || nextPrefixId !== receipt.incoming_prefix_id) && isStitchingLine(receipt)) {
-      const wasPanchal = receipt.incoming_stage === STOCK_STAGE;
-      const isPanchal = nextStage === STOCK_STAGE;
-      if (isPanchal && !wasPanchal) closeChange = 'close';
-      else if (wasPanchal && !isPanchal && receipt.closed_at) closeChange = 'reopen';
+      const wasWarehouse = receipt.incoming_stage === STOCK_STAGE;
+      const isWarehouse = nextStage === STOCK_STAGE;
+      if (isWarehouse && !wasWarehouse) closeChange = 'close';
+      else if (wasWarehouse && !isWarehouse && receipt.closed_at) closeChange = 'reopen';
     }
 
     const tx = await db.transaction('write');
@@ -1816,8 +1861,8 @@ async function updateReceipt(req, res, next) {
           userId: req.user.id,
           actionType: closeChange === 'close' ? 'STITCHING_LOT_CLOSE' : 'STITCHING_LOT_REOPEN',
           description: closeChange === 'close'
-            ? `Receipt moved into ${STOCK_STAGE} and closed (PO ${padOrderNo(id)})`
-            : `Receipt moved out of ${STOCK_STAGE} and reopened (PO ${padOrderNo(id)})`,
+            ? `Receipt moved into ${nextWarehouseName || STOCK_STAGE} and closed (PO ${padOrderNo(id)})`
+            : `Receipt moved out of ${receipt.warehouse_name || STOCK_STAGE} and reopened (PO ${padOrderNo(id)})`,
           entityType: 'outbound_po_line',
           entityId: Number(lineId),
         });

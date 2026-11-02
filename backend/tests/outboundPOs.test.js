@@ -7,6 +7,9 @@ let adminUserId;
 let activeCompanyId;
 let inactiveCompanyId;
 let warehousePocId;
+// The warehouse migration 096 seeded. A receipt booked into the Warehouse stage
+// names one, and every test here means this one unless it says otherwise.
+let panchalId;
 let uidCounter = 0;
 const uid = () => `${Date.now()}-${uidCounter++}`;
 
@@ -43,7 +46,9 @@ function lineFor(article, overrides = {}) {
 // mandatory any more -- the server stamps the session user -- but it is still
 // supplied here so the rows these tests create carry a realistic checker.
 function receiptBody(overrides = {}) {
-  return { received_qty: 1, received_rate: 10, checked_by: warehousePocId, bill_no: 'B-DEF', ...overrides };
+  const body = { received_qty: 1, received_rate: 10, checked_by: warehousePocId, bill_no: 'B-DEF', ...overrides };
+  if (body.incoming_stage === 'Warehouse' && body.warehouse_id === undefined) body.warehouse_id = panchalId;
+  return body;
 }
 
 function postReceipt(poId, lineId, body) {
@@ -106,6 +111,8 @@ beforeAll(async () => {
     args: [adminUserId],
   });
   warehousePocId = adminUserId;
+  const { rows: seeded } = await db.execute("SELECT id FROM warehouses WHERE name = 'Panchal'");
+  panchalId = Number(seeded[0].id);
 
   const active = await request(app)
     .post('/api/configurations/companies')
@@ -1145,7 +1152,7 @@ describe('Outbound POs API', () => {
         // Panchal counts pieces now, so a receipt straight into the warehouse
         // carries a dozen count exactly as one at Stitched or Packed does.
         const ok = await postReceipt(poId, lineId, fabricBody({
-          incoming_stage: 'Panchal', received_dozens: 20, fresh_dozens: 20,
+          incoming_stage: 'Warehouse', received_dozens: 20, fresh_dozens: 20,
         }));
         expect(ok.status).toBe(201);
 
@@ -1249,7 +1256,7 @@ describe('Outbound POs API', () => {
       test('a total that disagrees with the grades is refused', async () => {
         const { poId, lineId } = await fabricLine();
         const res = await postReceipt(poId, lineId, fabricBody({
-          incoming_stage: 'Panchal', received_dozens: 25, fresh_dozens: 20,
+          incoming_stage: 'Warehouse', received_dozens: 25, fresh_dozens: 20,
         }));
         expect(res.status).toBe(400);
         expect(res.body.message).toBe('Fresh + Second + Third must add up to Dozens Received');
@@ -1261,7 +1268,7 @@ describe('Outbound POs API', () => {
           incoming_stage: 'Stitching', received_dozens: 20, fresh_dozens: 20,
         }));
         expect(res.status).toBe(400);
-        expect(res.body.message).toMatch(/only recorded on fabric received at Packing, Panchal/);
+        expect(res.body.message).toMatch(/only recorded on fabric received at Packing, Warehouse/);
       });
 
       test('an edit replaces the grades, and moving off a graded stage drops them', async () => {
@@ -1430,7 +1437,7 @@ describe('Outbound POs API', () => {
 
       test('moving a receipt into Third Party needs the sale fields, and drops the incoming no', async () => {
         const { poId, lineId } = await typedLine({ um: 'dz' });
-        const created = await postReceipt(poId, lineId, plainBody({ incoming_stage: 'Panchal', received_qty: 10, fresh_dozens: 10 }));
+        const created = await postReceipt(poId, lineId, plainBody({ incoming_stage: 'Warehouse', received_qty: 10, fresh_dozens: 10 }));
         expect(created.status).toBe(201);
 
         const noBill = await patchReceipt(poId, lineId, created.body.id, { incoming_stage: 'Third Party', incoming_no: '' });
@@ -1445,9 +1452,11 @@ describe('Outbound POs API', () => {
         expect(receipt).toMatchObject({ incoming_stage: 'Third Party', incoming_no: null, outbound_bill_no: 'OB-MV-1' });
 
         // And back out: the outbound bill belongs to the sale and goes with it.
-        const back = await patchReceipt(poId, lineId, created.body.id, { incoming_stage: 'Panchal', incoming_no: 'IN-BACK' });
+        const back = await patchReceipt(poId, lineId, created.body.id, {
+          incoming_stage: 'Warehouse', warehouse_id: panchalId, incoming_no: 'IN-BACK',
+        });
         expect(back.status).toBe(200);
-        expect((await lineOf(poId)).receipts[0]).toMatchObject({ incoming_stage: 'Panchal', outbound_bill_no: null });
+        expect((await lineOf(poId)).receipts[0]).toMatchObject({ incoming_stage: 'Warehouse', outbound_bill_no: null });
       });
     });
 

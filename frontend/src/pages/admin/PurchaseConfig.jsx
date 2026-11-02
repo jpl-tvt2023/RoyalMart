@@ -3,6 +3,7 @@ import MasterTab from '../Configurations/MasterTab';
 import OutboundProductsTab from '../Configurations/OutboundProductsTab';
 import StitchingPrefixesTab from '../Configurations/StitchingPrefixesTab';
 import StitchingPartiesTab from '../Configurations/StitchingPartiesTab';
+import WarehousesTab from '../Configurations/WarehousesTab';
 import { useSessionState } from '../../hooks/useSessionState';
 import {
   listCompanies, createCompany, updateCompany, deleteCompany,
@@ -13,6 +14,7 @@ const TABS = [
   { key: 'outboundProducts', label: 'Outbound Product List' },
   { key: 'stitchingPrefixes', label: 'Stitching Prefixes' },
   { key: 'stitchingParties', label: 'Stitching Parties' },
+  { key: 'warehouses', label: 'Warehouses' },
 ];
 
 const SUBTITLES = {
@@ -20,6 +22,7 @@ const SUBTITLES = {
   outboundProducts: 'The Category · Item Name · Unit Metric taxonomy that packaging products are onboarded against',
   stitchingPrefixes: 'Incoming-number prefixes, and the processing stage each one records',
   stitchingParties: 'Who material is sent to, and which jobs each party may be given',
+  warehouses: 'Our own warehouses — where finished stock sits at the end of the Stitching chain',
 };
 
 export default function PurchaseConfig() {
@@ -62,6 +65,7 @@ export default function PurchaseConfig() {
       {tab === 'outboundProducts' && <OutboundProductsTab />}
       {tab === 'stitchingPrefixes' && <StitchingPrefixesTab />}
       {tab === 'stitchingParties' && <StitchingPartiesTab />}
+      {tab === 'warehouses' && <WarehousesTab />}
     </AppShell>
   );
 }

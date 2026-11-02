@@ -2,8 +2,9 @@
 //
 // A "lot" is a quantity of material sitting at one processing stage. It enters
 // the chain as an outbound PO receipt whose incoming-number prefix declares the
-// stage it was bought at, then moves forward on challans until it reaches
-// Panchal, where it sits as finished stock, or leaves the business at Third Party.
+// stage it was bought at, then moves forward on challans until it reaches one of
+// our warehouses, where it sits as finished stock, or leaves the business at
+// Third Party.
 //
 // Both kinds of lot (a receipt at its entry stage, a stitching_entries row at a
 // later stage) answer the same questions -- what stage, how much is left, what
@@ -15,17 +16,20 @@
 // across every one of them.
 
 // Listed in CHAIN ORDER, which STAGE_ORDER_SQL in the controller is generated
-// from -- a plain alphabetical sort would read Packing, Panchal, Processing,
-// Stitching and put the end of the chain second.
+// from -- a plain alphabetical sort would read Packing, Processing, Stitching,
+// Third Party, Warehouse and scramble the chain.
 //
 // Named for the WORK being done at the stage, not its result -- migration 087
 // renamed Processed/Stitched/Packed. There is no Gray any more: fabric is never
 // booked in raw, so a receipt starts at the first stage that actually works on it.
 //
-// Panchal is our own warehouse and is where stock actually sits. Third Party is
-// not a processing stage at all: it is the exit, where goods leave the business
-// against an outbound bill.
-const STAGES = ['Processing', 'Stitching', 'Packing', 'Panchal', 'Third Party'];
+// Warehouse is where stock actually sits. It is ONE stage however many
+// warehouses there are (migration 096): which warehouse a lot is in is data --
+// the warehouses master, reached through the lot's incoming prefix -- so adding
+// or renaming one changes nothing here. It was called Panchal, after the first
+// warehouse, until a second one opened. Third Party is not a processing stage at
+// all: it is the exit, where goods leave the business against an outbound bill.
+const STAGES = ['Processing', 'Stitching', 'Packing', 'Warehouse', 'Third Party'];
 
 // Where a lot at each stage may be sent. THE single source of truth: the
 // destination chooser renders from it, create() validates the caller's target
@@ -37,16 +41,18 @@ const STAGES = ['Processing', 'Stitching', 'Packing', 'Panchal', 'Third Party'];
 // finished goods can skip a stage, go to the warehouse, or be sold straight out
 // -- and a single next-stage function cannot express that.
 //
-// Two stages lead nowhere, for different reasons. Panchal is the warehouse: what
-// arrives there is stock, and it leaves by being closed, not forwarded. Third
-// Party is the exit: the goods are gone. Selling stock out of Panchal later is a
-// real possibility the user considered and declined for now -- when they want
-// it, it is 'Third Party' added to the Panchal array and nothing else.
+// Two stages lead nowhere, for different reasons. A warehouse is where stock
+// sits: what arrives there leaves by being closed, not forwarded. Third Party is
+// the exit: the goods are gone. Selling stock out of a warehouse later is a real
+// possibility the user considered and declined for now -- when they want it, it
+// is 'Third Party' added to the Warehouse array and nothing else. Moving stock
+// from one warehouse to another was declined too (096), and is NOT that simple:
+// it is a move within one stage, which this graph has no way to say.
 const DESTINATIONS = {
-  Processing: ['Stitching', 'Packing', 'Panchal', 'Third Party'],
-  Stitching: ['Packing', 'Panchal', 'Third Party'],
-  Packing: ['Panchal', 'Third Party'],
-  Panchal: [],
+  Processing: ['Stitching', 'Packing', 'Warehouse', 'Third Party'],
+  Stitching: ['Packing', 'Warehouse', 'Third Party'],
+  Packing: ['Warehouse', 'Third Party'],
+  Warehouse: [],
   'Third Party': [],
 };
 
@@ -57,8 +63,19 @@ const EXIT_STAGE = 'Third Party';
 
 // The stage finished goods sit at as stock, and the only one where closing means
 // anything. Packing held this role until Panchal existed -- migration 070 gave it
-// an In Stock status precisely because the chain had nowhere else to end.
-const STOCK_STAGE = 'Panchal';
+// an In Stock status precisely because the chain had nowhere else to end -- and
+// Panchal held it until 096 made every warehouse a row under this one stage.
+//
+// A lot here always names its warehouse: a challan or receipt into this stage
+// must say which one (warehouse_id), and the warehouse's own prefix is what it
+// is numbered under.
+const STOCK_STAGE = 'Warehouse';
+
+// What to CALL a lot's stage: the warehouse's own name at the warehouse stage
+// ("Panchal", not "Warehouse"), the stage itself everywhere else. The stored
+// value stays the role so every rule keyed on it holds for every warehouse.
+// Twin in frontend/src/utils/stitching.js.
+const stageLabel = (stage, warehouseName) => (stage === STOCK_STAGE && warehouseName ? warehouseName : stage);
 
 // Half a paisa, half a millimetre, half a piece. Quantities and rates round-trip
 // through SQLite REAL, so exact comparisons would call 100 and 99.99999999
@@ -106,11 +123,11 @@ const isValidChallanType = (s) => CHALLAN_TYPES.includes(s);
 // Fresh, Second and Third side by side, rather than one lot per grade line. A
 // challan into Stitching still makes one lot per line -- the client asked for
 // the split from Packing on. A PO receipt booked straight into one of these
-// (Packing, Panchal, or since 091 Third Party) records the same three.
+// (Packing, a Warehouse, or since 091 Third Party) records the same three.
 //
 // The split is what ARRIVED. Balance, status and every send limit still run on
 // the total dozens, so a lot's grades are never a second balance to keep.
-const GRADED_STAGES = ['Packing', 'Panchal', 'Third Party'];
+const GRADED_STAGES = ['Packing', 'Warehouse', 'Third Party'];
 
 const isGradedStage = (stage) => GRADED_STAGES.includes(stage);
 
@@ -119,7 +136,7 @@ const GRADE_COLUMNS = { Fresh: 'fresh_dozens', Second: 'second_dozens', Third: '
 
 // The stages a lot's own Rate is kept at: those that SEND, because a lot's rate
 // is the "<stage> rate" on every challan out of it (one value -- see
-// planStageSync in the controller). Panchal and Third Party send nothing, and
+// planStageSync in the controller). Warehouse and Third Party send nothing, and
 // their Rate column is still the calculated total until the client settles a
 // formula for it.
 const RATE_STAGES = STAGES.filter(s => (DESTINATIONS[s] || []).length > 0);
@@ -135,7 +152,7 @@ const isRateStage = (stage) => RATE_STAGES.includes(stage);
 // Metres are not forgotten: every dozen lot carries the metres-per-dozen yield
 // of the challan (or receipt) where it was converted, because the per-dozen rate
 // total needs it to price the per-metre PO rate.
-const DOZEN_STAGES = ['Stitching', 'Packing', 'Panchal', 'Third Party'];
+const DOZEN_STAGES = ['Stitching', 'Packing', 'Warehouse', 'Third Party'];
 
 const countsDozens = (stage) => DOZEN_STAGES.includes(stage);
 
@@ -269,11 +286,11 @@ const balanceOf = (receivedQty, forwarded) => Number(receivedQty || 0) - Number(
 // Mirrors computeLineStatus in outboundPOs.controller.js in spirit: a small pure
 // function over quantities, never a user-supplied value.
 //
-// The two terminal stages are special, and only they are. Panchal is the
-// warehouse: balance is meaningless there because nothing forwards out, so it
-// reads In Stock until someone closes it, which is what records the goods
-// leaving. Third Party is the exit and reads Sold flat -- there is no state to
-// track once material is not ours.
+// The two terminal stages are special, and only they are. At a warehouse,
+// balance is meaningless because nothing forwards out, so a lot reads In Stock
+// until someone closes it, which is what records the goods leaving. Third Party
+// is the exit and reads Sold flat -- there is no state to track once material
+// is not ours.
 //
 // Packing carried the In Stock rule until Panchal existed, because the chain had
 // nowhere else to end. It is an ordinary forwarding stage now and reads
@@ -437,7 +454,7 @@ const rateTotal = (components, mPerDozen, { dozenLot = false } = {}) => {
 
 module.exports = {
   STAGES, STATUS, OPEN_STATUSES, EPSILON,
-  DESTINATIONS, EXIT_STAGE, STOCK_STAGE, DOZEN_STAGES, stageRateUnit,
+  DESTINATIONS, EXIT_STAGE, STOCK_STAGE, stageLabel, DOZEN_STAGES, stageRateUnit,
   PARTY_USE_STAGES, CHALLAN_TYPES, GRADED_STAGES, GRADE_COLUMNS, RATE_STAGES,
   REVERT_REASON_MAX, WRITE_OFF_REASON_MAX, CHALLAN_MAX,
   DOZEN_UMS, METRE_UMS, PIECE_UMS, PIECES_PER_DOZEN, umKind, countsInDozens, derivedDozens,

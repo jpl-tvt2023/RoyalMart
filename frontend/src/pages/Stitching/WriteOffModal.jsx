@@ -75,7 +75,7 @@ export default function WriteOffModal({ lot, onClose, onSaved }) {
             {lot.item_name}{lot.variant ? ` — ${lot.variant}` : ''}
           </div>
           <div className="text-gray-500 text-xs mt-0.5">
-            {lot.stage} · {lot.party_name} · PO {lot.po_order_no}
+            {lot.stage_label || lot.stage} · {lot.party_name} · PO {lot.po_order_no}
           </div>
           <div className="text-gray-600 text-xs mt-1">
             Available <span className="font-semibold text-[#003049]">{fmtQty(lot.balance, unit)}</span>

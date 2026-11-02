@@ -6,12 +6,14 @@ import {
   listStitchingPartyNames, addStitchingChallan, updateStitchingLot,
 } from '../../api/stitching.api';
 import { listUsersLite } from '../../api/users.api';
+import { listWarehouses } from '../../api/warehouses.api';
 import { ROLES } from '../../utils/roles';
 import { checkerOptionsFor } from '../../utils/checkers';
 import {
   CHALLAN_MAX, CHALLAN_TYPES, challanError, qtyError, moneyError, fmtNum, EPSILON,
   destinationsFor, nextStage, EXIT_STAGE, STOCK_STAGE, DESTINATION_HINTS,
   countsDozens, metresPerDozen, stageRateLabel, isGradedStage, GRADE_COLUMNS, stageRateUnit,
+  destinationOptions, warehouseTabKey, warehouseIncLabel,
 } from '../../utils/stitching';
 import { sortByText } from '../../utils/sort';
 
@@ -22,7 +24,7 @@ const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
 const EMPTY_HEADER = {
   challan_no: '', party_name: '',
   process_rate: '', outbound_bill_no: '',
-  checked_by: '', panchal_incoming_no: '',
+  checked_by: '', warehouse_incoming_no: '',
 };
 
 // One line of the challan, for one grade.
@@ -91,11 +93,17 @@ function Field({ label, required, children, hint }) {
  * not offered — moving a challan would relocate a live lot and everything
  * hanging off it. Withdraw and re-raise for that.
  *
- * CHECKED BY is asked at two destinations and nowhere else: arriving in OUR
- * warehouse, and leaving the business. Everywhere else the server stamps
- * whoever entered the row. Panchal also gets the warehouse's own incoming
- * number — the carried-down one tracks the material, PCL Inc No is what the
- * warehouse files it under.
+ * CHECKED BY is asked at two destinations and nowhere else: arriving in one of
+ * OUR warehouses, and leaving the business. Everywhere else the server stamps
+ * whoever entered the row. A warehouse also gets its own incoming number — the
+ * carried-down one tracks the material, "<code> Inc No" (PCL Inc No at Panchal)
+ * is what the warehouse files it under.
+ *
+ * EACH WAREHOUSE IS ITS OWN TILE (migration 096). The Warehouse stage alone does
+ * not say where the stock will sit, so the chooser offers every active
+ * warehouse by name, and picking one sends its id with the stage. When the
+ * usual first destination is a warehouse and there are several, none is
+ * pre-selected: guessing between two warehouses is worse than asking.
  *
  * THE PARTY IS THE SENDER — whoever holds the goods at the stage they leave —
  * so it is offered from the parties tagged for the SOURCE stage, and it is the
@@ -103,7 +111,7 @@ function Field({ label, required, children, hint }) {
  * from the lot, and whatever is saved here becomes the lot's and every earlier
  * challan's out of it: the server keeps them one value.
  *
- * GRADED DESTINATIONS (Packing, Panchal, Third Party) take the challan as ONE
+ * GRADED DESTINATIONS (Packing, a warehouse, Third Party) take the challan as ONE
  * lot, so the line items become three fixed boxes — Fresh, Second, Third, 0
  * by default — and, out of Processing, one Sent Qty (m) for the whole challan.
  */
@@ -129,10 +137,28 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
   const [parties, setParties] = useState([]);
   const [partiesLoaded, setPartiesLoaded] = useState(false);
   const [checkers, setCheckers] = useState([]);
-  // On an edit the destination is fixed — it is where the row already sits.
-  const [target, setTarget] = useState(challan?.stage || nextStage(lot?.stage));
+  const [warehouses, setWarehouses] = useState([]);
+  // The picked destination TILE: a stage, or "Warehouse:<id>" for one warehouse.
+  // On an edit it is fixed — it is where the row already sits. A new challan
+  // starts on the usual first destination, unless that is a warehouse, which
+  // waits for the list (and for the user, when there are several).
+  const [choiceKey, setChoiceKey] = useState(() => {
+    if (challan) return challan.stage === STOCK_STAGE ? warehouseTabKey(challan.warehouse_id) : challan.stage;
+    const first = nextStage(lot?.stage);
+    return first && first !== STOCK_STAGE ? first : null;
+  });
 
-  const options = destinationsFor(lot?.stage);
+  // An edit keeps showing the warehouse the challan went to, even one retired
+  // since -- the tile it sits on must not vanish from under it.
+  const keepsOwn = challan?.stage === STOCK_STAGE && challan?.warehouse_id != null
+    && !warehouses.some(w => w.id === challan.warehouse_id && w.is_active);
+  const chooserWarehouses = keepsOwn
+    ? [...warehouses, { id: challan.warehouse_id, name: challan.warehouse_name, code: challan.warehouse_code, is_active: 1 }]
+    : warehouses;
+  const options = destinationOptions(destinationsFor(lot?.stage), chooserWarehouses);
+  const choice = options.find(o => o.key === choiceKey) || null;
+  const target = choice?.stage ?? null;
+  const targetWarehouse = choice?.warehouse ?? null;
   const sourceStage = lot?.stage;
   // Out of a lot that already counts dozens, lines are dozens only.
   const parentDozen = countsDozens(sourceStage);
@@ -209,6 +235,31 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     return () => { cancelled = true; };
   }, [challan?.id]);
 
+  // The warehouses, fetched on open for the same reason: one added in Purchase
+  // Config a minute ago must be a tile here without a reload. Once they are in,
+  // a new challan whose usual first destination is a warehouse pre-selects it
+  // -- but only when there is exactly one to pick.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = (await listWarehouses()) || [];
+        if (cancelled) return;
+        setWarehouses(rows);
+        if (!challan) {
+          const opts = destinationOptions(destinationsFor(lot?.stage), rows);
+          const first = opts[0];
+          const ambiguous = first?.stage === STOCK_STAGE && opts.filter(o => o.stage === STOCK_STAGE).length > 1;
+          setChoiceKey(k => k ?? (first && !ambiguous ? first.key : null));
+        }
+      } catch {
+        if (!cancelled) toast.error('Could not load the warehouse list');
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lot?.lot_key, challan?.id]);
+
   // Prefill once per challan line being edited.
   useEffect(() => {
     if (!challan) return;
@@ -218,7 +269,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
       process_rate: challan.process_rate ?? '',
       outbound_bill_no: challan.outbound_bill_no ?? '',
       checked_by: challan.checked_by ?? '',
-      panchal_incoming_no: challan.panchal_incoming_no ?? '',
+      warehouse_incoming_no: challan.warehouse_incoming_no ?? '',
     });
     setLines([{
       ...newLine(),
@@ -230,7 +281,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     // A graded lot is edited as the grid it was raised with.
     setGrades(Object.fromEntries(CHALLAN_TYPES.map(t => [t, String(challan[GRADE_COLUMNS[t]] ?? 0)])));
     setGradedSentQty(challan.sent_qty ?? '');
-    setTarget(challan.stage);
+    setChoiceKey(challan.stage === STOCK_STAGE ? warehouseTabKey(challan.warehouse_id) : challan.stage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [challan?.id]);
 
@@ -257,9 +308,14 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
   };
 
   // Mirrors the server's rules AND their order, which is the form's order:
-  // party and challan no, then each line, then the rest of the header, then the
-  // balance -- so the message shown here is the one the server would return.
+  // where to, then party and challan no, then each line, then the rest of the
+  // header, then the balance -- so the message shown here is the one the server
+  // would return.
   const fieldError = () => {
+    // Client-only: the server falls back to the first destination when none is
+    // named, but a tile left unpicked here is an unanswered question -- in
+    // practice, which of several warehouses.
+    if (!choice) return 'Choose where to send this lot';
     if (!String(form.party_name || '').trim()) return 'Party Name is required';
     if (!String(form.challan_no || '').trim()) return 'Challan No is required';
     const challanErr = challanError(form.challan_no);
@@ -291,8 +347,10 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
     if (isExit && !String(form.outbound_bill_no || '').trim()) {
       return 'Outbound Bill No is required when sending to a third party';
     }
-    if (isStock && !String(form.panchal_incoming_no || '').trim()) {
-      return 'PCL Inc No is required when sending to Panchal';
+    // Twin of the warehouse number check in validateEntryFields on the server,
+    // named for the warehouse's code: "PCL Inc No is required when sending to Panchal".
+    if (isStock && !String(form.warehouse_incoming_no || '').trim()) {
+      return `${warehouseIncLabel(targetWarehouse)} is required when sending to ${targetWarehouse?.name || 'a warehouse'}`;
     }
     if (totalSent - available > EPSILON) {
       return `Cannot send ${totalSent}${unit} — only ${available}${unit} is left on this lot`;
@@ -322,7 +380,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
       party_name: form.party_name.trim(),
       process_rate: form.process_rate === '' ? null : Number(form.process_rate),
       outbound_bill_no: isExit ? form.outbound_bill_no.trim() : null,
-      panchal_incoming_no: isStock ? form.panchal_incoming_no.trim() : null,
+      warehouse_incoming_no: isStock ? form.warehouse_incoming_no.trim() : null,
       // Omitted, not nulled, everywhere else: an absent key is what tells the
       // server to stamp the session user.
       ...(needsChecker ? { checked_by: Number(form.checked_by) } : {}),
@@ -339,12 +397,14 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
       } else {
         await addStitchingChallan({
           parent_src: lot.src, parent_id: lot.id, target_stage: target,
+          // Into the Warehouse stage, which warehouse.
+          ...(isStock ? { warehouse_id: targetWarehouse.id } : {}),
           ...header, ...(graded ? gradePayload() : { lines: sendLines.map(linePayload) }),
         });
         const what = `${totalSent}${unit}${!graded && sendLines.length > 1 ? ` in ${sendLines.length} grades` : ''}`;
         // The party is the sender now, so a sale does not name the buyer here --
         // that is the Third Party lot's own Stage Party, set on its tab.
-        toast.success(isExit ? `Sold ${what}` : `Sent ${what} to ${target}`);
+        toast.success(isExit ? `Sold ${what}` : `Sent ${what} to ${targetWarehouse?.name || target}`);
       }
       onSaved();
     } catch (err2) {
@@ -365,7 +425,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             {lot.item_name}{lot.variant ? ` — ${lot.variant}` : ''}
           </div>
           <div className="text-gray-500 text-xs mt-0.5">
-            {lot.stage} · {lot.vendor_name || lot.party_name} · PO {lot.po_order_no}
+            {lot.stage_label || lot.stage} · {lot.vendor_name || lot.party_name} · PO {lot.po_order_no}
             {lot.incoming_prefix || lot.incoming_no
               ? ` · ${lot.incoming_prefix || ''}${lot.incoming_no || ''}` : ''}
           </div>
@@ -382,13 +442,14 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             Send this lot to <span className="text-red-500">*</span>
           </label>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {options.map(dest => {
-              const selected = dest === target;
+            {/* One tile per place: each stage, and each active warehouse by name. */}
+            {options.map(opt => {
+              const selected = opt.key === choiceKey;
               return (
                 <button
                   type="button"
-                  key={dest}
-                  onClick={() => !isEdit && setTarget(dest)}
+                  key={opt.key}
+                  onClick={() => !isEdit && setChoiceKey(opt.key)}
                   disabled={isEdit && !selected}
                   aria-pressed={selected}
                   className={`rounded-lg border px-3 py-2 text-left transition ${
@@ -398,10 +459,10 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
                   } ${isEdit && !selected ? 'opacity-40 cursor-not-allowed' : ''}`}
                 >
                   <div className={`text-sm font-medium ${selected ? 'text-[#c1121f]' : 'text-[#003049]'}`}>
-                    {dest}
+                    {opt.warehouse ? opt.warehouse.name : opt.stage}
                   </div>
                   <div className="text-[11px] text-gray-400 leading-tight">
-                    {DESTINATION_HINTS[dest]}
+                    {DESTINATION_HINTS[opt.stage]}
                   </div>
                 </button>
               );
@@ -655,10 +716,14 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
           )}
 
           {isStock && (
-            <Field label="PCL Inc No" required hint="Panchal's incoming number for this lot">
+            <Field
+              label={warehouseIncLabel(targetWarehouse)}
+              required
+              hint={`${targetWarehouse?.name || 'The warehouse'}'s own incoming number for this lot`}
+            >
               <input
-                value={form.panchal_incoming_no}
-                onChange={e => setField('panchal_incoming_no', e.target.value)}
+                value={form.warehouse_incoming_no}
+                onChange={e => setField('warehouse_incoming_no', e.target.value)}
                 className={inputCls}
                 maxLength={50}
                 placeholder="e.g. 4471"
@@ -670,7 +735,7 @@ export default function ChallanModal({ lot, challan = null, onClose, onSaved }) 
             <Field
               label="Checked By"
               required
-              hint={isExit ? 'Who checked the goods out' : 'Who received the goods at Panchal'}
+              hint={isExit ? 'Who checked the goods out' : `Who received the goods at ${targetWarehouse?.name || 'the warehouse'}`}
             >
               <select
                 value={form.checked_by || ''}

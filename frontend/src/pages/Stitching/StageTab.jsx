@@ -17,6 +17,7 @@ import {
   statusesFor, STATUS_COLORS, fmtNum, fmtRate, EPSILON, ALL_TAB, STAGES,
   EXIT_STAGE, STOCK_STAGE, countsDozens, metresPerDozen, NONE_SELECTED,
   isGradedStage, isRateStage, gradesOf, CHALLAN_TYPES, GRADE_COLUMNS, stageRateUnit, stageRateSuffix,
+  warehouseIncLabel,
 } from '../../utils/stitching';
 import { sortByText } from '../../utils/sort';
 import MultiSelect from '../../components/ui/MultiSelect';
@@ -39,8 +40,8 @@ const tdCls = 'px-2 py-1.5 xl:px-3 xl:py-2';
 // Per tab, because "live" is not the same word at every stage. Pending and
 // Partial are lots with material still to send on, which is the whole of the
 // job-work chain -- but nothing is ever Pending at the two terminal stages.
-// Panchal holds stock (In Stock) until it is closed, and Third Party has only
-// ever been Sold. Defaulting those two to Pending + Partial would open them
+// A warehouse holds stock (In Stock) until it is closed, and Third Party has
+// only ever been Sold. Defaulting those two to Pending + Partial would open them
 // empty, which reads as no data rather than as a filter.
 const defaultStatusFor = (stage) => {
   if (stage === STOCK_STAGE) return ['In Stock'];
@@ -356,6 +357,7 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
 
   // One fixed reading order, a quiet dot between each part:
   //   Challan 02 → Panchal · Mahakali creation · Fresh · sent 3570.5 dz · [In Stock]
+  // A challan into a warehouse names the warehouse, not the Warehouse stage.
   // The status is the only badge -- it says what became of the goods at the
   // next stage, which is the one thing this tab cannot otherwise show. The
   // destination lot's incoming number is deliberately NOT repeated here: it is
@@ -366,7 +368,7 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
       <span className="font-mono text-[#003049]">{c.challan_no || '—'}</span>
       {/* Where it went. Obvious on a one-destination stage, load-bearing
           anywhere the lot branched. */}
-      <span className="text-gray-400">→ <span className="text-gray-600">{c.stage}</span></span>
+      <span className="text-gray-400">→ <span className="text-gray-600">{c.stage_label || c.stage}</span></span>
       <Dot />
       <span className="text-gray-600">{c.party_name}</span>
       {c.outbound_bill_no && (
@@ -378,7 +380,7 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
     </>
   );
 
-  // A challan into Packing, Panchal or Third Party is one lot holding its grades
+  // A challan into Packing, a warehouse or Third Party is one lot holding its grades
   // side by side, so it names them; a line into Stitching names its one type.
   const lineBody = (c) => (
     <>
@@ -465,7 +467,7 @@ function OutgoingRows({ lot, columnCount, onEdit, onRemove }) {
 }
 
 // Stage is included even on a single-stage tab: a saved file outlives the tab it
-// came from.
+// came from. At a warehouse it is the warehouse's name.
 const EXPORT_COLUMNS = [
   { key: 'stage', header: 'Stage' },
   { key: 'vendor_name', header: 'PO Party Name' },
@@ -505,19 +507,22 @@ const EXPORT_COLUMNS = [
   { key: 'challan_type', header: 'Challan Type' },
   { key: 'outbound_bill_no', header: 'Outbound Bill No' },
   { key: 'incoming_no', header: 'Incoming No' },
-  { key: 'panchal_incoming_no', header: 'PCL Inc No' },
+  { key: 'warehouse_incoming_no', header: 'Warehouse Inc No' },
   { key: 'checked_by_name', header: 'Checked By' },
   { key: 'updated_by_name', header: 'Updated By' },
   { key: 'updated_at', header: 'Updated At' },
 ];
 
-export default function StageTab({ stage, onOpenCounts }) {
+// `stage` is what the server knows; `warehouse` ({ id, name, code }) narrows the
+// Warehouse stage to one warehouse's tab, and `tabKey` keeps each warehouse's
+// filters apart from the next one's.
+export default function StageTab({ stage, warehouse = null, tabKey = stage, onOpenCounts }) {
   const pageSizeKey = 'stitching.pageSize';
   // v3: status went from a single string to an array of them. useSessionState
   // does no shape validation, so a session holding the old value would arrive
   // in a component that now calls .length on it.
   const [storedFilters, setFilters] = useSessionState(
-    `stitching.filters.v3.${stage}`, () => defaultFilters(stage),
+    `stitching.filters.v3.${tabKey}`, () => defaultFilters(stage),
   );
   // Only statuses this tab can show. A session saved before the filter was
   // narrowed may hold one the tab never produces -- dropped here, and if that
@@ -603,7 +608,7 @@ export default function StageTab({ stage, onOpenCounts }) {
   const columns = [
     isAll && {
       key: 'stage', header: 'Stage',
-      cell: r => <span className="font-medium text-[#003049] whitespace-nowrap">{r.stage}</span>,
+      cell: r => <span className="font-medium text-[#003049] whitespace-nowrap">{r.stage_label || r.stage}</span>,
     },
     {
       // The PO party is the one name every lot in a chain shares, so it leads
@@ -696,9 +701,9 @@ export default function StageTab({ stage, onOpenCounts }) {
       cell: r => <span className="whitespace-nowrap"><PoRateCell r={r} /></span>,
     },
     {
-      // At a stage that sends, this stage's own rate, typed in place. Panchal
-      // and Third Party still show the total worked out down the chain, until
-      // the client settles a formula for them.
+      // At a stage that sends, this stage's own rate, typed in place. A
+      // warehouse and Third Party still show the total worked out down the
+      // chain, until the client settles a formula for them.
       key: 'rate', header: 'Rate',
       cell: r => (isRateStage(r.stage)
         ? <StageRateCell key={`${r.lot_key}:${r.stage_rate}`} r={r} busy={busyKey === r.lot_key} onSave={saveStage} />
@@ -710,12 +715,13 @@ export default function StageTab({ stage, onOpenCounts }) {
         ? <span className="font-mono text-xs whitespace-nowrap">{r.incoming_prefix || ''}{r.incoming_no || ''}</span>
         : <span className="text-gray-300">—</span>),
     },
-    // The warehouse's own number, beside the chain's, because at Panchal both
-    // are real and they are not the same number.
+    // The warehouse's own number, beside the chain's, because at a warehouse
+    // both are real and they are not the same number. Named for the
+    // warehouse's code -- "PCL Inc No" on Panchal's tab.
     isStockTab && {
-      key: 'pcl', header: 'PCL Inc No',
-      cell: r => (r.panchal_incoming_no
-        ? <span className="font-mono text-xs whitespace-nowrap">{r.panchal_incoming_no}</span>
+      key: 'warehouse_inc', header: warehouseIncLabel(warehouse),
+      cell: r => (r.warehouse_incoming_no
+        ? <span className="font-mono text-xs whitespace-nowrap">{r.warehouse_incoming_no}</span>
         : <span className="text-gray-300">—</span>),
     },
     showsChecker && {
@@ -734,9 +740,10 @@ export default function StageTab({ stage, onOpenCounts }) {
     // Chain order matters here and nowhere else — the point of the tab is
     // following one PO from Gray to Packed, which the default updated_at sort
     // interleaves by edit time.
+    // A warehouse tab is the Warehouse stage narrowed to that warehouse.
     const params = isAll
       ? { sort_by: 'po_stage', sort_dir: 'asc' }
-      : { stage };
+      : { stage, ...(warehouse ? { warehouse_id: warehouse.id } : {}) };
     for (const [k, v] of Object.entries(filters)) {
       // Status is the one multi-value filter, and the only one where an EMPTY
       // value has to be sent rather than dropped: the loop below treats a blank
@@ -750,7 +757,7 @@ export default function StageTab({ stage, onOpenCounts }) {
       }
     }
     return params;
-  }, [isAll, stage, filters]);
+  }, [isAll, stage, warehouse, filters]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -768,7 +775,8 @@ export default function StageTab({ stage, onOpenCounts }) {
       ]);
       setRows(data.rows || []);
       setTotal(data.total || 0);
-      onOpenCounts?.(counts.counts || {});
+      // Per stage, and per warehouse for the warehouse tabs.
+      onOpenCounts?.({ stages: counts.counts || {}, warehouses: counts.warehouses || {} });
       setPartiesByStage(Object.fromEntries(partyStages.map((s, i) => [s, sortByText(partyLists[i])])));
     } catch (err) {
       toast.error(err.response?.data?.message || 'Could not load lots');
@@ -788,7 +796,7 @@ export default function StageTab({ stage, onOpenCounts }) {
       // the page on screen — the thing that was actually asked for.
       const res = await listStitchingLots({ ...buildParams(), page: 1, page_size: 'all' });
       const exportRows = (res.rows || []).map(r => ({
-        stage: r.stage,
+        stage: r.stage_label || r.stage,
         vendor_name: r.vendor_name || '',
         stage_party_name: r.stage_party_name || '',
         party_name: r.party_name || '',
@@ -825,12 +833,12 @@ export default function StageTab({ stage, onOpenCounts }) {
         challan_type: r.challan_type || '',
         outbound_bill_no: r.outbound_bill_no || '',
         incoming_no: `${r.incoming_prefix || ''}${r.incoming_no || ''}`,
-        panchal_incoming_no: r.panchal_incoming_no || '',
+        warehouse_incoming_no: r.warehouse_incoming_no || '',
         checked_by_name: r.checked_by_name || '',
         updated_by_name: r.updated_by_name || '',
         updated_at: r.updated_at || '',
       }));
-      downloadRows(`stitching-${String(stage).toLowerCase().replace(/\s+/g, '-')}`, EXPORT_COLUMNS, exportRows);
+      downloadRows(`stitching-${String(warehouse?.name || stage).toLowerCase().replace(/\s+/g, '-')}`, EXPORT_COLUMNS, exportRows);
     } catch {
       toast.error('Failed to export');
     } finally { setDownloading(false); }
@@ -1044,7 +1052,7 @@ export default function StageTab({ stage, onOpenCounts }) {
                               what stops the modal being a surprise. */}
                           <span className="text-gray-400">
                             · {qtyWithUnit(r.balance, r.balance_unit)} left to send to{' '}
-                            {(r.destinations || []).join(', ') || r.next_stage}
+                            {(r.destinations || []).map(d => (d === STOCK_STAGE ? 'a warehouse' : d)).join(', ') || r.next_stage}
                           </span>
                         </button>
                       </td>
@@ -1068,7 +1076,7 @@ export default function StageTab({ stage, onOpenCounts }) {
           <p className="text-center text-gray-400 py-8">
             {isAll
               ? 'No lots yet. A receipt appears here once it has an incoming number with a stage prefix.'
-              : `No lots at the ${stage} stage yet.`}
+              : warehouse ? `No lots at ${warehouse.name} yet.` : `No lots at the ${stage} stage yet.`}
             {!isAll && (stage === 'Processing'
               ? ' A fabric receipt booked at Processing on an outbound PO appears here.'
               : ' Add a challan on a lot at an earlier stage, or book a receipt straight into this stage.')}
@@ -1140,7 +1148,7 @@ export default function StageTab({ stage, onOpenCounts }) {
         loading={deleting}
         title="Remove this lot?"
         message={confirmDelete
-          ? `This removes the ${confirmDelete.stage} lot at ${confirmDelete.party_name} and returns ${confirmDelete.sent_dozens != null ? `${fmtNum(confirmDelete.sent_dozens)} dz` : `${fmtNum(confirmDelete.sent_qty)} m`} to the lot it came from.`
+          ? `This removes the ${confirmDelete.stage_label || confirmDelete.stage} lot at ${confirmDelete.party_name} and returns ${confirmDelete.sent_dozens != null ? `${fmtNum(confirmDelete.sent_dozens)} dz` : `${fmtNum(confirmDelete.sent_qty)} m`} to the lot it came from.`
           : ''}
       />
     </>

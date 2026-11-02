@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'vitest';
 import {
-  STAGES, STAGE_TABS, ALL_TAB, nextStage, DESTINATIONS, destinationsFor, canSendTo,
+  STAGES, ALL_TAB, nextStage, DESTINATIONS, destinationsFor, canSendTo,
   EXIT_STAGE, STOCK_STAGE, PARTY_USE_STAGES,
+  stageLabel, destinationOptions, warehouseTabKey, warehouseIdOfTab, warehouseIncLabel,
   DOZEN_STAGES, countsDozens, balanceUnitFor, stageRateUnit, stageRateSuffix, stageRateLabel, metresPerDozen,
   carriedIncomingNo, soleActivePrefix,
   challanError, revertReasonError, CHALLAN_MAX, REVERT_REASON_MAX, fmtQty,
@@ -11,18 +12,49 @@ import {
   DOZEN_UMS, METRE_UMS, PIECE_UMS,
 } from '../stitching';
 
-describe('STAGE_TABS', () => {
-  test('is the stages in chain order with All appended', () => {
-    expect(STAGE_TABS).toEqual([...STAGES, ALL_TAB]);
-    expect(STAGE_TABS[STAGE_TABS.length - 1]).toBe(ALL_TAB);
-  });
-
+describe('ALL_TAB', () => {
   // The guard that matters: STAGES is the domain chain the DB CHECK constraints
   // mirror. "All" is a view and must never leak into it.
   test('All is not a stage', () => {
     expect(STAGES).not.toContain(ALL_TAB);
     expect(nextStage(ALL_TAB)).toBeNull();
     expect(destinationsFor(ALL_TAB)).toEqual([]);
+  });
+});
+
+// Migration 096: Warehouse is one stage, and which warehouse is data. These are
+// the client helpers that turn the master's rows back into tabs, tiles and labels.
+describe('warehouses', () => {
+  const panchal = { id: 1, name: 'Panchal', code: 'PCL', is_active: 1 };
+  const bhiwandi = { id: 2, name: 'Bhiwandi', code: 'BHW', is_active: 1 };
+  const retired = { id: 3, name: 'Old Godown', code: 'OLD', is_active: 0 };
+
+  test('the warehouse stage is labelled by the warehouse, every other stage by itself', () => {
+    expect(stageLabel(STOCK_STAGE, 'Panchal')).toBe('Panchal');
+    expect(stageLabel(STOCK_STAGE, null)).toBe(STOCK_STAGE);
+    expect(stageLabel('Packing', 'Panchal')).toBe('Packing');
+  });
+
+  test('the Warehouse destination becomes one tile per ACTIVE warehouse, in place', () => {
+    const opts = destinationOptions(destinationsFor('Packing'), [panchal, bhiwandi, retired]);
+    expect(opts.map(o => o.key)).toEqual(['Warehouse:1', 'Warehouse:2', 'Third Party']);
+    expect(opts[1]).toMatchObject({ stage: STOCK_STAGE, warehouse: bhiwandi });
+    expect(opts[2]).toMatchObject({ stage: 'Third Party', warehouse: null });
+    // With no warehouses there is simply nowhere in stock to send to.
+    expect(destinationOptions(destinationsFor('Packing'), []).map(o => o.key)).toEqual(['Third Party']);
+  });
+
+  test('a warehouse tab key round-trips to its id, and a stage is not one', () => {
+    expect(warehouseTabKey(2)).toBe('Warehouse:2');
+    expect(warehouseIdOfTab('Warehouse:2')).toBe(2);
+    expect(warehouseIdOfTab('Packing')).toBeNull();
+    expect(warehouseIdOfTab('Panchal')).toBeNull();
+    expect(warehouseIdOfTab(null)).toBeNull();
+  });
+
+  test("a warehouse's own number is named for its code", () => {
+    expect(warehouseIncLabel(panchal)).toBe('PCL Inc No');
+    expect(warehouseIncLabel(null)).toBe('Warehouse Inc No');
   });
 });
 
@@ -55,7 +87,7 @@ describe('DESTINATIONS', () => {
   // Gray is gone: fabric is never booked in raw, so the chain starts at the
   // first stage that works on it. The stages are named for the work done.
   test('the chain is Processing, Stitching, Packing, then the warehouse or the exit', () => {
-    expect(STAGES).toEqual(['Processing', 'Stitching', 'Packing', 'Panchal', 'Third Party']);
+    expect(STAGES).toEqual(['Processing', 'Stitching', 'Packing', 'Warehouse', 'Third Party']);
     expect(STAGES).not.toContain('Gray');
     expect(nextStage('Processing')).toBe('Stitching');
   });
@@ -77,9 +109,9 @@ describe('DESTINATIONS', () => {
 // Twins of GRADED_STAGES / RATE_STAGES in the backend service (migration 089).
 describe('grades and stage rates', () => {
   test('goods arrive graded from Packing on, and not at Stitching', () => {
-    expect(GRADED_STAGES).toEqual(['Packing', 'Panchal', 'Third Party']);
+    expect(GRADED_STAGES).toEqual(['Packing', 'Warehouse', 'Third Party']);
     expect(isGradedStage('Stitching')).toBe(false);
-    expect(isGradedStage('Panchal')).toBe(true);
+    expect(isGradedStage('Warehouse')).toBe(true);
     expect(GRADE_COLUMNS).toEqual({ Fresh: 'fresh_dozens', Second: 'second_dozens', Third: 'third_dozens' });
   });
 
@@ -91,7 +123,7 @@ describe('grades and stage rates', () => {
 
   test('only the stages that send keep a rate of their own', () => {
     expect(RATE_STAGES).toEqual(['Processing', 'Stitching', 'Packing']);
-    expect(isRateStage('Panchal')).toBe(false);
+    expect(isRateStage('Warehouse')).toBe(false);
     expect(isRateStage('Third Party')).toBe(false);
   });
 });
@@ -100,7 +132,7 @@ describe('grades and stage rates', () => {
 // counted in dozens and nothing else, and every challan rate is per dozen.
 describe('dozens and yield', () => {
   test('dozens are counted from Stitching on, metres only at Processing', () => {
-    expect(DOZEN_STAGES).toEqual(['Stitching', 'Packing', 'Panchal', 'Third Party']);
+    expect(DOZEN_STAGES).toEqual(['Stitching', 'Packing', 'Warehouse', 'Third Party']);
     for (const stage of DOZEN_STAGES) {
       expect(countsDozens(stage)).toBe(true);
       expect(balanceUnitFor(stage)).toBe('dz');

@@ -4,33 +4,64 @@
 
 // Chain order, matching the server. Named for the work done at each stage
 // (migration 087), and with no Gray: a receipt starts at the first stage that
-// actually works on the fabric. Panchal is our warehouse and is where stock
-// actually sits. Third Party is not a processing stage at all — it is the exit,
-// where goods leave the business against an outbound bill.
-export const STAGES = ['Processing', 'Stitching', 'Packing', 'Panchal', 'Third Party'];
+// actually works on the fabric. Warehouse is where stock actually sits -- ONE
+// stage however many warehouses there are (migration 096): which one a lot is in
+// comes from the warehouses master, so each still gets its own tab, tile and
+// label without a stage of its own. It was called Panchal until a second
+// warehouse opened. Third Party is not a processing stage at all — it is the
+// exit, where goods leave the business against an outbound bill.
+export const STAGES = ['Processing', 'Stitching', 'Packing', 'Warehouse', 'Third Party'];
 
 // Twin of DESTINATIONS on the server: where a lot at each stage may be sent.
 // The destination chooser renders straight from this, so a stage with one
-// destination shows one tile and a terminal stage shows none.
+// destination shows one tile and a terminal stage shows none -- except that
+// Warehouse becomes one tile per active warehouse (destinationOptions).
 export const DESTINATIONS = {
-  Processing: ['Stitching', 'Packing', 'Panchal', 'Third Party'],
-  Stitching: ['Packing', 'Panchal', 'Third Party'],
-  Packing: ['Panchal', 'Third Party'],
-  Panchal: [],
+  Processing: ['Stitching', 'Packing', 'Warehouse', 'Third Party'],
+  Stitching: ['Packing', 'Warehouse', 'Third Party'],
+  Packing: ['Warehouse', 'Third Party'],
+  Warehouse: [],
   'Third Party': [],
 };
 
 export const EXIT_STAGE = 'Third Party';
-export const STOCK_STAGE = 'Panchal';
+export const STOCK_STAGE = 'Warehouse';
+
+// Twin of stageLabel on the server: what to CALL a lot's stage -- the
+// warehouse's own name at the Warehouse stage, the stage itself elsewhere.
+export const stageLabel = (stage, warehouseName) => (stage === STOCK_STAGE && warehouseName ? warehouseName : stage);
 
 // What each destination tile says under its name, so the person picking does not
 // have to know the chain by heart.
 export const DESTINATION_HINTS = {
   Stitching: 'next stage',
   Packing: 'next stage',
-  Panchal: 'our warehouse',
+  Warehouse: 'our warehouse',
   'Third Party': 'sold out, needs a bill no',
 };
+
+// THE PLACES a lot can actually go, which is what the chooser shows: every
+// destination stage as one option, except Warehouse, which is one option per
+// ACTIVE warehouse -- the stage alone does not say where the stock will sit.
+// `warehouses` is the master's rows. Each option is { key, stage, warehouse }.
+export const destinationOptions = (destinations, warehouses) => (destinations || []).flatMap(stage => (
+  stage === STOCK_STAGE
+    ? (warehouses || []).filter(w => w.is_active).map(w => ({ key: `${stage}:${w.id}`, stage, warehouse: w }))
+    : [{ key: stage, stage, warehouse: null }]
+));
+
+// A Stitching page tab: a stage, or one warehouse under the Warehouse stage.
+// Warehouse tabs are keyed by id, so a rename keeps the tab a session was on.
+export const warehouseTabKey = (id) => `${STOCK_STAGE}:${id}`;
+
+export const warehouseIdOfTab = (tab) => {
+  const m = /^Warehouse:(\d+)$/.exec(String(tab ?? ''));
+  return m ? Number(m[1]) : null;
+};
+
+// The warehouse's own incoming number, named for its code -- "PCL Inc No" at
+// Panchal. Twin of the label the server's challan validator builds.
+export const warehouseIncLabel = (warehouse) => `${warehouse?.code || 'Warehouse'} Inc No`;
 
 // What a unit metric means, read off its name. Twin of umKind on the server --
 // keep the lists identical, or the form asks for a figure the server fills in
@@ -79,8 +110,9 @@ export const receiptStageBlockReason = (stage, kind) => {
 // DB CHECK constraints mirror that list, so a member here that is not a real
 // stage would corrupt the chain rather than add a tab. It sits last: the stage
 // tabs are the daily work, All is for following one PO through every stage.
+// The tab list itself is built on the Stitching page, which expands Warehouse
+// into one tab per warehouse.
 export const ALL_TAB = 'All';
-export const STAGE_TABS = [...STAGES, ALL_TAB];
 
 // No In Transit, deliberately. Adding a challan IS sending the lot on, so no row
 // ever sits between the two. Shortage is a quantity in its own column, not a
@@ -124,7 +156,7 @@ export const CHALLAN_TYPES = ['Fresh', 'Second', 'Third'];
 // at as ONE lot per challan, its dozens split into Fresh, Second and Third side
 // by side. The split is what arrived -- balance and status still run on the
 // total. A PO receipt booked into any of the three records the same split.
-export const GRADED_STAGES = ['Packing', 'Panchal', 'Third Party'];
+export const GRADED_STAGES = ['Packing', 'Warehouse', 'Third Party'];
 
 export const isGradedStage = (stage) => GRADED_STAGES.includes(stage);
 
@@ -151,7 +183,7 @@ export const STATUS_COLORS = {
 // metres sent and dozens received, which is where fabric becomes pieces. From
 // Stitching on, a lot's quantity, its balance and every challan out of it are
 // dozens.
-export const DOZEN_STAGES = ['Stitching', 'Packing', 'Panchal', 'Third Party'];
+export const DOZEN_STAGES = ['Stitching', 'Packing', 'Warehouse', 'Third Party'];
 
 export const countsDozens = (stage) => DOZEN_STAGES.includes(stage);
 
@@ -192,7 +224,7 @@ export const destinationsFor = (stage) => DESTINATIONS[stage] || [];
 
 // Twin of RATE_STAGES on the server: the stages that SEND, and so keep a Rate of
 // their own -- the "<stage> rate" on every challan out of the lot, one value.
-// Panchal and Third Party send nothing; their Rate is still the worked-out total.
+// Warehouse and Third Party send nothing; their Rate is still the worked-out total.
 export const RATE_STAGES = STAGES.filter(s => destinationsFor(s).length > 0);
 
 export const isRateStage = (stage) => RATE_STAGES.includes(stage);
