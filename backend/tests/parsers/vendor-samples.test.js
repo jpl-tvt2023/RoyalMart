@@ -14,12 +14,14 @@ const VENDORS = {
   Minutes: 'Minutes',
   Amazon: 'Amazon',
   Flipkart: 'Flipkart',
+  Myntra: 'Myntra',
 };
 
 function samplesIn(dir) {
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir)
-    .filter(f => /\.(pdf|xls|xlsx)$/i.test(f))
+    // `~$…` is the lock file Excel leaves beside a workbook it has open.
+    .filter(f => /\.(pdf|xls|xlsx)$/i.test(f) && !f.startsWith('~$'))
     .map(f => path.join(dir, f));
 }
 

@@ -8,6 +8,11 @@ import PartyNameInput from '../../components/ui/PartyNameInput';
 import { sortByText } from '../../utils/sort';
 import { usesPickupDate } from '../../utils/pickupDate';
 
+// Vendors whose Appointment Date is offered at onboarding: Minutes, and Myntra,
+// whose file carries a Slot Date the parser reads into it. Everyone else sets
+// it on the GRN page. The API accepts it for any vendor.
+const ONBOARD_APPOINTMENT_VENDORS = ['Minutes', 'Myntra'];
+
 export default function SummaryEditor({ value, onChange, showVendor = false, readOnlyVendor = true, codePicker = false, manual = false, onboarderSlot = null }) {
   const [cities, setCities] = useState([]);
   useEffect(() => {
@@ -109,7 +114,7 @@ export default function SummaryEditor({ value, onChange, showVendor = false, rea
         <Field label="Status">
           <input disabled value={value.status || 'Open'} className={`${inputCls} bg-gray-50 text-gray-600`} />
         </Field>
-        {value.vendor === 'Minutes' && (
+        {ONBOARD_APPOINTMENT_VENDORS.includes(value.vendor) && (
           <Field label="Appointment Date">
             <input type="date" value={value.appointment_date || ''} onChange={e => set({ appointment_date: e.target.value })} className={inputCls} />
           </Field>

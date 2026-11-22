@@ -2,7 +2,7 @@ const request = require('supertest');
 const app = require('../app');
 const { db } = require('./helpers/db');
 const {
-  QUALIFIES_SQL, EFFECTIVE_STATUS_SQL, rtvQualifies, effectiveStatus,
+  QUALIFIES_SQL, EFFECTIVE_STATUS_SQL, rtvQualifies, effectiveStatus, CN_RULES_ENFORCED,
 } = require('../src/services/rtv.service');
 
 let token;
@@ -143,7 +143,10 @@ describe('Editing an RTV row', () => {
     return rtvFor(poId);
   }
 
-  test('RTV Booked needs a credit note, and a credit note needs its date', async () => {
+  // The two Credit Note rules are switched off for now (CN_RULES_ENFORCED,
+  // client 2026-11-22) -- each mode's test runs only while the flag says so,
+  // so turning the rules back on needs no test edits.
+  (CN_RULES_ENFORCED ? test : test.skip)('RTV Booked needs a credit note, and a credit note needs its date', async () => {
     const row = await openRow();
     const booked = await patchRtv(row.id, { status: 'RTV Booked' });
     expect(booked.status).toBe(400);
@@ -156,6 +159,22 @@ describe('Editing an RTV row', () => {
     const ok = await patchRtv(row.id, { status: 'RTV Booked', cn_number: 'CN-1', cn_date: '2026-09-10' });
     expect(ok.status).toBe(200);
     expect(await rtvFor(row.po_id)).toMatchObject({ status: 'RTV Booked', cn_number: 'CN-1', cn_date: '2026-09-10' });
+  });
+
+  (CN_RULES_ENFORCED ? test.skip : test)('while the CN rules are off, RTV Booked saves with no credit note, and a CN with no date', async () => {
+    const row = await openRow();
+    const booked = await patchRtv(row.id, { status: 'RTV Booked' });
+    expect(booked.status).toBe(200);
+    expect(await rtvFor(row.po_id)).toMatchObject({ status: 'RTV Booked', cn_number: null, cn_date: null });
+
+    const noDate = await patchRtv(row.id, { cn_number: 'CN-2' });
+    expect(noDate.status).toBe(200);
+    expect(await rtvFor(row.po_id)).toMatchObject({ status: 'RTV Booked', cn_number: 'CN-2', cn_date: null });
+
+    // The format rule still holds.
+    const bad = await patchRtv(row.id, { cn_number: 'CN 2!' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.message).toBe('Credit Note Number must be alphanumeric (dashes allowed)');
   });
 
   test('Delivered Yes needs its date, and anything else clears it', async () => {

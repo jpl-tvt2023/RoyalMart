@@ -21,6 +21,21 @@ const TABS = [
   { key: 'categories', label: 'Categories' },
 ];
 
+// A vendor's PO Prefix (migration 097): the letters its PO ids start with --
+// MY gives MY001. One to three letters, unique; the server is the authority
+// (vendors.controller.js) and refuses a change once the vendor has POs.
+const VENDOR_PO_PREFIX = {
+  key: 'po_prefix',
+  label: 'PO Prefix',
+  required: true,
+  placeholder: 'e.g. MY',
+  normalize: (v) => String(v || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3),
+  defaultFrom: (name) => String(name || '').trim().charAt(0),
+  lockedWhen: (row) => !!(row.has_pos && row.po_prefix),
+  hint: 'Letters this vendor’s PO ids start with — MY gives MY001. Must be unused by any other vendor.',
+  lockedHint: 'Fixed — this vendor already has POs numbered with it.',
+};
+
 export default function ConfigurationsPage() {
   const [tab, setTab] = useState('cities');
 
@@ -64,6 +79,7 @@ export default function ConfigurationsPage() {
           createFn={createVendor}
           updateFn={updateVendor}
           deleteFn={deleteVendor}
+          extraField={VENDOR_PO_PREFIX}
           extraColumn={{
             header: 'Parser',
             render: (row) => row.has_parser
