@@ -4,7 +4,7 @@ const { userHasRole } = require('../services/userRoles.service');
 const { isValidDateString } = require('../utils/dateValidation');
 const { buildPagination, buildOrderBy } = require('./marketplacePO.controller');
 const {
-  RTV_STATUSES, RTV_BOOKED, DN_DISPOSED, BLANK_STATUS, DELIVERED_VALUES,
+  RTV_STATUSES, RTV_BOOKED, DN_DISPOSED, BLANK_STATUS, DELIVERED_VALUES, CN_RULES_ENFORCED,
   QUALIFIES_SQL, DN_SQL, EFFECTIVE_STATUS_SQL, rtvQualifies, effectiveStatus,
 } = require('../services/rtv.service');
 
@@ -24,7 +24,9 @@ const TEXT_MAX = 50;
 const NOTE_MAX = 1000;
 
 const padSerial = (n) => String(n).padStart(3, '0');
-const vendorLetter = (vendor) => String(vendor || '').charAt(0).toUpperCase();
+// The letters a PO id starts with -- its vendor's PO Prefix when it was minted
+// (097). B014 gives B, MY003 gives MY.
+const poPrefixOf = (poId) => String(poId || '').replace(/\d+$/, '');
 
 const SORT_COLUMNS = {
   rtv_no: 'r.rtv_no',
@@ -41,20 +43,23 @@ const SORT_COLUMNS = {
 // qualify -- so the PO and its RTV number land together or not at all. Returns
 // the new row's rtv_no, or null when the PO already had one.
 //
-// The serial runs per first LETTER, so two vendors that share one can never
-// collide on a number (the UNIQUE index would refuse it anyway).
+// The number is the PO id's own prefix, then R, then a serial per that prefix
+// (097): BR014 for a Blinkit PO, MYR001 for Myntra's first. Until 097 it was
+// the vendor's first letter, which is the same thing for every PO minted
+// before then, so the old series carry on. GLOB on prefix + R + digits keeps
+// Minutes' MR series from counting MRR or MYR numbers.
 async function ensureRtvRow(client, po, userId) {
   const { rows: existing } = await client.execute({
     sql: 'SELECT id FROM rtv_returns WHERE po_id = ?', args: [po.po_id],
   });
   if (existing.length) return null;
-  const letter = vendorLetter(po.vendor);
+  const stem = `${poPrefixOf(po.po_id)}R`;
   const { rows: maxRows } = await client.execute({
-    sql: `SELECT MAX(CAST(SUBSTR(rtv_no, 3) AS INTEGER)) AS max_seq
-            FROM rtv_returns WHERE SUBSTR(rtv_no, 1, 2) = ?`,
-    args: [`${letter}R`],
+    sql: `SELECT MAX(CAST(SUBSTR(rtv_no, LENGTH(?) + 1) AS INTEGER)) AS max_seq
+            FROM rtv_returns WHERE rtv_no GLOB ? || '[0-9]*'`,
+    args: [stem, stem],
   });
-  const rtvNo = `${letter}R${padSerial((Number(maxRows[0]?.max_seq) || 0) + 1)}`;
+  const rtvNo = `${stem}${padSerial((Number(maxRows[0]?.max_seq) || 0) + 1)}`;
   const { rows } = await client.execute({
     sql: `INSERT INTO rtv_returns (po_id, rtv_no, created_by, updated_by)
           VALUES (?, ?, ?, ?) RETURNING id`,
@@ -284,10 +289,11 @@ async function update(req, res, next) {
     if (row.delivered === 'Yes' && !row.delivery_date) {
       return res.status(400).json({ message: 'Delivery Date is required when Delivered is Yes' });
     }
-    if (row.status === RTV_BOOKED && !row.cn_number) {
+    // Off for now (client, 2026-11-22) -- see CN_RULES_ENFORCED in rtv.service.
+    if (CN_RULES_ENFORCED && row.status === RTV_BOOKED && !row.cn_number) {
       return res.status(400).json({ message: 'Credit Note Number is required when the status is RTV Booked' });
     }
-    if (row.cn_number && !row.cn_date) {
+    if (CN_RULES_ENFORCED && row.cn_number && !row.cn_date) {
       return res.status(400).json({ message: 'CN Date is required when a Credit Note Number is entered' });
     }
 

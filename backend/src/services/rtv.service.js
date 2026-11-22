@@ -9,7 +9,8 @@
 const RETURNED_TO_VENDOR = 'Returned to Vendor';
 
 // The three statuses a user may pick on the RTV page (migration 092). 'RTV
-// Booked' needs a credit note, 'DN - Disposed' clears everything after it.
+// Booked' needs a credit note while CN_RULES_ENFORCED is on, 'DN - Disposed'
+// clears everything after it.
 const RTV_BOOKED = 'RTV Booked';
 const DN_YES = 'DN - Yes';
 const DN_DISPOSED = 'DN - Disposed';
@@ -20,6 +21,13 @@ const RTV_STATUSES = [RTV_BOOKED, DN_YES, DN_DISPOSED];
 const BLANK_STATUS = '__blank__';
 
 const DELIVERED_VALUES = ['Yes', 'No'];
+
+// The two Credit Note rules -- 'RTV Booked' needs a Credit Note Number, and a
+// Credit Note Number needs its CN Date. Switched OFF for now at the client's
+// request (2026-11-22): they will be mandatory again later, and turning them
+// back on is this one flag here and its twin in frontend/src/utils/rtv.js.
+// The format rule (alphanumeric, <= 50) stays on regardless.
+const CN_RULES_ENFORCED = false;
 
 // A PO is on the RTV page while it is not Deleted and the GRN page says the
 // goods came back: the whole shipment refused, or some of it short on receipt.
@@ -47,5 +55,5 @@ const effectiveStatus = ({ status, grn_dn, dn_number }) => status || (dnOf({ grn
 
 module.exports = {
   RETURNED_TO_VENDOR, RTV_BOOKED, DN_YES, DN_DISPOSED, RTV_STATUSES, BLANK_STATUS, DELIVERED_VALUES,
-  QUALIFIES_SQL, DN_SQL, EFFECTIVE_STATUS_SQL, rtvQualifies, effectiveStatus, dnOf,
+  CN_RULES_ENFORCED, QUALIFIES_SQL, DN_SQL, EFFECTIVE_STATUS_SQL, rtvQualifies, effectiveStatus, dnOf,
 };

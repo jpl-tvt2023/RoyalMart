@@ -13,12 +13,24 @@ const PICKUP_DATE_VENDORS = ['Amazon', 'Flipkart'];
 const EFFECTIVE_EXPIRY_SQL = 'COALESCE(p.pickup_date, p.po_expiry_date)';
 
 function pad3(n) { return String(n).padStart(3, '0'); }
-function vendorPrefix(name) { return String(name || '').charAt(0).toUpperCase(); }
+
+// A PO id is the vendor's PO Prefix (097 -- letters, set under Configurations)
+// plus a serial counted per PREFIX, not per vendor name. Letters-then-digits
+// splits one way only, so two prefixes can never mint the same id. The first
+// letter of the name was the prefix until Myntra's M001 hit Minutes' M001.
+async function nextPoId(client, prefix) {
+  const { rows } = await client.execute({
+    sql: `SELECT MAX(CAST(SUBSTR(po_id, LENGTH(?) + 1) AS INTEGER)) AS max_seq
+            FROM marketplace_pos WHERE po_id GLOB ? || '[0-9]*'`,
+    args: [prefix, prefix],
+  });
+  return `${prefix}${pad3((Number(rows[0]?.max_seq) || 0) + 1)}`;
+}
 
 async function lookupActiveVendor(name) {
   if (!name) return null;
   const { rows } = await db.execute({
-    sql: 'SELECT id, name, is_active, has_parser FROM vendors WHERE name = ?',
+    sql: 'SELECT id, name, is_active, has_parser, po_prefix FROM vendors WHERE name = ?',
     args: [name],
   });
   return rows[0] || null;
@@ -260,8 +272,9 @@ async function create(req, res, next) {
       return res.status(400).json({ message: `Pickup date is required for ${vendor} POs` });
     }
 
-    // Appointment date is set at onboarding for Minutes POs (which never reach the
-    // dispatched state where it's otherwise editable). Optional and nullable.
+    // Appointment date may be set at onboarding: the form offers it for Minutes,
+    // and for Myntra, whose file carries a Slot Date the parser reads into it.
+    // Accepted for any vendor. Optional and nullable.
     let appointment_date = null;
     if (req.body.appointment_date != null && String(req.body.appointment_date).trim() !== '') {
       appointment_date = String(req.body.appointment_date).trim();
@@ -300,13 +313,14 @@ async function create(req, res, next) {
         });
       } else {
         isNew = true;
-        const { rows: maxRows } = await tx.execute({
-          sql: `SELECT MAX(CAST(SUBSTR(po_id, 2) AS INTEGER)) AS max_seq
-                FROM marketplace_pos WHERE vendor = ?`,
-          args: [vendor],
-        });
-        const nextSeq = (Number(maxRows[0]?.max_seq) || 0) + 1;
-        poId = `${vendorPrefix(vendor)}${pad3(nextSeq)}`;
+        // Only a NEW PO needs the prefix -- re-importing one keeps its id.
+        if (!v.po_prefix) {
+          throw Object.assign(
+            new Error(`Set a PO Prefix for ${v.name} under Configurations → Vendors first.`),
+            { status: 400 },
+          );
+        }
+        poId = await nextPoId(tx, v.po_prefix);
         await tx.execute({
           sql: `INSERT INTO marketplace_pos
                 (po_id, vendor, vendor_po_id, po_date, po_expiry_date, pickup_date, city, party_name, delivery_code, appointment_date, status, created_by, onboarded_by, updated_by)

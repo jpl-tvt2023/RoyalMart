@@ -6,6 +6,7 @@ const parsers = {
   Minutes: require('./minutes'),  // Flipkart Minutes (binary .xls)
   Amazon:   require('./amazon'),   // Amazon FBA (xlsx)
   Flipkart: require('./flipkart'), // Flipkart Stock Transfer (PDF)
+  Myntra:   require('./myntra'),   // Myntra STN sheet (xlsx)
 };
 
 function hasParser(vendor) {

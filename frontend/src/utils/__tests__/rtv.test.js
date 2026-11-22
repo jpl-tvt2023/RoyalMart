@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { rtvQualifies, rtvRowError, RTV_STATUSES, BLANK_STATUS, NOTE_MAX } from '../rtv';
+import { rtvQualifies, rtvRowError, RTV_STATUSES, BLANK_STATUS, NOTE_MAX, CN_RULES_ENFORCED } from '../rtv';
 
 // Twin of backend/src/services/rtv.service.js and the RTV controller's PATCH
 // rules (migration 092). The messages are the server's, verbatim -- the backend
@@ -16,10 +16,19 @@ describe('rtvQualifies', () => {
 });
 
 describe('rtvRowError', () => {
-  test('RTV Booked needs a credit note, and a credit note needs its date', () => {
+  // The Credit Note rules are off for now (CN_RULES_ENFORCED, client
+  // 2026-11-22). Each mode's test runs only while the flag says so -- the same
+  // switch as backend tests/rtv.test.js.
+  (CN_RULES_ENFORCED ? test : test.skip)('RTV Booked needs a credit note, and a credit note needs its date', () => {
     expect(rtvRowError({ status: 'RTV Booked' })).toBe('Credit Note Number is required when the status is RTV Booked');
     expect(rtvRowError({ status: 'RTV Booked', cn_number: 'CN-1' })).toBe('CN Date is required when a Credit Note Number is entered');
     expect(rtvRowError({ status: 'RTV Booked', cn_number: 'CN-1', cn_date: '2026-09-10' })).toBeNull();
+  });
+
+  (CN_RULES_ENFORCED ? test.skip : test)('while the CN rules are off, neither the credit note nor its date is required', () => {
+    expect(rtvRowError({ status: 'RTV Booked' })).toBeNull();
+    expect(rtvRowError({ status: 'RTV Booked', cn_number: 'CN-1' })).toBeNull();
+    expect(rtvRowError({ cn_number: 'CN/1' })).toBe('Credit Note Number must be alphanumeric (dashes allowed)');
   });
 
   test('Delivered Yes needs its date', () => {

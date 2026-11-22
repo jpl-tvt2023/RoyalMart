@@ -34,6 +34,11 @@ export const AFTER_STATUS = ['inward_courier_id', 'inward_tracking_id', 'deliver
 // Twin of NOTE_MAX in rtv.controller.js -- the Note is prose, so only capped.
 export const NOTE_MAX = 1000;
 
+// Twin of CN_RULES_ENFORCED in rtv.service.js. The two Credit Note rules (RTV
+// Booked needs a CN Number, a CN Number needs its CN Date) are OFF for now at
+// the client's request (2026-11-22) and will come back: flip both flags.
+export const CN_RULES_ENFORCED = false;
+
 const ALNUM = /^[A-Za-z0-9-]+$/;
 const TEXT_MAX = 50;
 const blank = (v) => v == null || String(v).trim() === '';
@@ -58,7 +63,7 @@ export function rtvRowError(row) {
   if (String(row.note ?? '').trim().length > NOTE_MAX) return `Note must be ${NOTE_MAX} characters or less`;
   if (row.status === DN_DISPOSED) return null;
   if (row.delivered === 'Yes' && blank(row.delivery_date)) return 'Delivery Date is required when Delivered is Yes';
-  if (row.status === RTV_BOOKED && blank(row.cn_number)) return 'Credit Note Number is required when the status is RTV Booked';
-  if (!blank(row.cn_number) && blank(row.cn_date)) return 'CN Date is required when a Credit Note Number is entered';
+  if (CN_RULES_ENFORCED && row.status === RTV_BOOKED && blank(row.cn_number)) return 'Credit Note Number is required when the status is RTV Booked';
+  if (CN_RULES_ENFORCED && !blank(row.cn_number) && blank(row.cn_date)) return 'CN Date is required when a Credit Note Number is entered';
   return null;
 }
