@@ -35,4 +35,19 @@ const loginLimiter = rateLimit({
   skip: () => process.env.NODE_ENV === 'test',
 });
 
-module.exports = { globalLimiter, loginLimiter };
+// The Barcode Station's PIN sign-in (/api/station/session), the other
+// unauthenticated write. Same shape as loginLimiter. It counts per lambda
+// instance, so it is only the first line of defence: the real guard is the
+// escalating lockout kept in barcode_station_settings (migration 098), which
+// every instance shares.
+const stationPinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  limit: 20,                // failed attempts per IP per window
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many wrong PINs from this network. Please try again in a few minutes.' },
+  skip: () => process.env.NODE_ENV === 'test',
+});
+
+module.exports = { globalLimiter, loginLimiter, stationPinLimiter };
