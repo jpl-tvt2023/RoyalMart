@@ -6,7 +6,7 @@ const { barcodeStationUser } = require('../services/systemUser.service');
 const { signStationToken, NOT_SET_UP_MESSAGE } = require('../middleware/stationAuth');
 const { isValidDateString } = require('../utils/dateValidation');
 const {
-  KEY_MIN, KEY_MAX, batchFieldsError, normOperator, operatorError, keyError, pinError,
+  KEY_MIN, KEY_MAX, batchFieldsError, normOperator, operatorError, deleteReasonError, keyError, pinError,
 } = require('../services/barcodeStation.service');
 
 // The public Barcode Station (migration 098) -- /api/station.
@@ -17,7 +17,8 @@ const {
 //
 // A batch is the entry an operator fills in. Generate turns a draft into N
 // random 8-digit keys (one per sticker) in one transaction, after which the
-// batch is locked for good -- its stickers may already be on boxes.
+// batch can no longer be edited -- its stickers may already be on boxes. It can
+// still be deleted, with a reason (099): its keys are retired, never reused.
 
 // India has no daylight saving, so a fixed offset turns the stored UTC
 // generated_at into the IST calendar day the operator saw.
@@ -49,6 +50,7 @@ const FAIL_SQL = `
 const BATCH_SELECT = `
   SELECT b.id, b.outbound_vendor_id, b.article_id, b.floor_id, b.pack_size, b.label_count,
          b.entered_by, b.generated_at, b.generated_by, b.created_at, b.updated_at, b.deleted_at,
+         b.deleted_by, b.delete_reason,
          v.name AS vendor_name,
          prm.category, prm.item_name, NULLIF(prm.variant, '') AS variant, prm.unit_metric,
          f.name AS floor_name,
@@ -418,33 +420,46 @@ async function update(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// DELETE /batches/:id { operator } -- soft-deletes a draft. A generated batch
-// cannot be deleted: its keys are printed and must keep resolving.
+// DELETE /batches/:id { operator, reason } -- soft-deletes a batch, draft or
+// generated (099). A generated batch needs a reason: its stickers may already
+// be on boxes and stop being valid. Its label_keys rows are KEPT -- the keys
+// are retired, never handed to another batch, and a scan of one says the
+// batch was deleted (findKey answers 410).
 async function remove(req, res, next) {
   try {
     const id = parseId(req.params.id);
-    const current = await loadDraft(id, res);
-    if (!current) return;
+    const current = id == null ? null : await fetchBatch(id);
+    if (!current || current.deleted_at) return res.status(404).json({ message: BATCH_NOT_FOUND });
 
-    const opErr = operatorError(req.body?.operator);
-    if (opErr) return res.status(400).json({ message: opErr });
-    const operator = normOperator(req.body.operator);
+    const body = req.body || {};
+    const err = operatorError(body.operator) || deleteReasonError(body.reason, current.is_generated);
+    if (err) return res.status(400).json({ message: err });
+    const operator = normOperator(body.operator);
+    const reason = body.reason == null ? '' : String(body.reason).trim();
 
     const tx = await db.transaction('write');
     let deleted;
     try {
+      // Without a reason only a draft may go: if Generate won a race since the
+      // read above, this matches nothing and the operator is asked for one.
       const { rows } = await tx.execute({
-        sql: `UPDATE label_batches SET deleted_at = datetime('now'), updated_at = datetime('now')
-               WHERE id = ? AND generated_at IS NULL AND deleted_at IS NULL RETURNING id`,
-        args: [id],
+        sql: `UPDATE label_batches
+                 SET deleted_at = datetime('now'), deleted_by = ?, delete_reason = ?, updated_at = datetime('now')
+               WHERE id = ? AND deleted_at IS NULL AND (generated_at IS NULL OR ? = 1)
+               RETURNING generated_at`,
+        args: [operator, reason || null, id, reason ? 1 : 0],
       });
       deleted = rows.length > 0;
       if (deleted) {
+        const generated = rows[0].generated_at != null;
+        const what = generated
+          ? `generated label batch #${id} (${current.vendor_name}, ${articleLabel(current)}, ${current.floor_name}) — ${current.label_count} key${current.label_count !== 1 ? 's' : ''} retired`
+          : `draft label batch #${id} (${current.vendor_name}, ${articleLabel(current)}, ${current.label_count} labels)`;
         await logAction({
           client: tx,
           userId: req.user.id,
           actionType: 'LABEL_BATCH_DELETE',
-          description: `${operator} deleted draft label batch #${id} (${current.vendor_name}, ${articleLabel(current)}, ${current.label_count} labels)`,
+          description: `${operator} deleted ${what}${reason ? `. Reason: ${reason}` : ''}`,
           entityType: 'label_batch',
           entityId: id,
         });
@@ -454,7 +469,11 @@ async function remove(req, res, next) {
       await tx.rollback();
       throw e;
     }
-    if (!deleted) return res.status(409).json({ message: ALREADY_GENERATED });
+    if (!deleted) {
+      const now = await fetchBatch(id);
+      if (!now || now.deleted_at) return res.status(404).json({ message: BATCH_NOT_FOUND });
+      return res.status(409).json({ message: 'Keys were just generated for this entry — give a reason to delete it' });
+    }
     res.json({ deleted: true });
   } catch (err) { next(err); }
 }
@@ -593,6 +612,11 @@ async function findKey(req, res, next) {
     });
     if (!rows.length) return res.status(404).json({ message: `No label has the key ${raw}` });
     const batch = await fetchBatch(Number(rows[0].batch_id));
+    // A deleted batch keeps its keys (they are never reused), so its stickers
+    // still resolve -- to "deleted", never to some other batch.
+    if (batch.deleted_at) {
+      return res.status(410).json({ message: `Key ${raw} belongs to batch #${batch.id}, which was deleted — its sticker is no longer valid` });
+    }
     res.json({ label_key: Number(raw), label_no: Number(rows[0].label_no), batch });
   } catch (err) { next(err); }
 }

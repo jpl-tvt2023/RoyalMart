@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import JsBarcode from 'jsbarcode';
 import {
-  batchFieldsError, operatorError, keyError, pinError, labelSizeError, wholeNumberError,
+  batchFieldsError, operatorError, keyError, pinError, labelSizeError, wholeNumberError, deleteReasonError,
   KEY_RE, PIN_RE, LABEL_COUNT_MAX, PACK_SIZE_MAX, articleLabel, keyCountLabel,
 } from '../barcodeStation';
 import { encodeKey } from '../../pages/BarcodeStation/stationHelpers';
@@ -48,6 +48,16 @@ describe('operator, key and PIN', () => {
     expect(operatorError('  ')).toBe('Operator name is required');
     expect(operatorError('x'.repeat(61))).toBe('Operator name cannot be longer than 60 characters');
     expect(operatorError('Ramesh Kumar')).toBeNull();
+  });
+
+  test('delete reason: required once generated, optional for a draft (099)', () => {
+    expect(deleteReasonError('', true)).toBe('A reason is required to delete an entry whose keys are generated');
+    expect(deleteReasonError('   ', true)).toBe('A reason is required to delete an entry whose keys are generated');
+    expect(deleteReasonError(null, true)).toBe('A reason is required to delete an entry whose keys are generated');
+    expect(deleteReasonError('Wrong vendor', true)).toBeNull();
+    expect(deleteReasonError('', false)).toBeNull();
+    expect(deleteReasonError('x'.repeat(301), false)).toBe('Reason cannot be longer than 300 characters');
+    expect(deleteReasonError('x'.repeat(300), true)).toBeNull();
   });
 
   test('key', () => {

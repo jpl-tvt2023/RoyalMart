@@ -89,8 +89,9 @@ export async function updateLabelBatch(id, payload) {
   return data;
 }
 
-export async function deleteLabelBatch(id, operator) {
-  const { data } = await station.delete(`/batches/${id}`, { data: { operator } });
+// A generated batch needs a reason (099), a draft does not.
+export async function deleteLabelBatch(id, operator, reason) {
+  const { data } = await station.delete(`/batches/${id}`, { data: { operator, reason } });
   return data;
 }
 

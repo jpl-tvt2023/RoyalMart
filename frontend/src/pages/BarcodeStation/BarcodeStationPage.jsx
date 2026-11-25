@@ -10,6 +10,7 @@ import Pagination, { loadPersistedPageSize, persistPageSize } from '../../compon
 import PinScreen from './PinScreen';
 import BatchEditModal, { BatchFields } from './BatchEditModal';
 import KeysModal from './KeysModal';
+import DeleteBatchModal from './DeleteBatchModal';
 import { fieldsOf, inputCls, openPrintSheet } from './stationHelpers';
 import {
   getStationToken, getOperator, setOperator, onStationSignedOut, endStationSession,
@@ -89,6 +90,7 @@ function Station({ operator, onOperatorChange, onLock }) {
 
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deletingGenerated, setDeletingGenerated] = useState(null);
   const [confirmGenerate, setConfirmGenerate] = useState(null);
   const [viewing, setViewing] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -383,15 +385,20 @@ function Station({ operator, onOperatorChange, onLock }) {
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1">
                         {!b.is_generated && (
-                          <>
-                            <button type="button" onClick={() => setEditing(b)} className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50" title="Edit draft">
-                              <Pencil size={15} />
-                            </button>
-                            <button type="button" onClick={() => setConfirmDelete(b)} className="p-1.5 rounded-lg text-red-600 hover:bg-red-50" title="Delete draft">
-                              <Trash2 size={15} />
-                            </button>
-                          </>
+                          <button type="button" onClick={() => setEditing(b)} className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50" title="Edit draft">
+                            <Pencil size={15} />
+                          </button>
                         )}
+                        {/* A draft deletes on a plain confirm. A generated
+                            entry asks for a reason: its stickers stop being valid. */}
+                        <button
+                          type="button"
+                          onClick={() => (b.is_generated ? setDeletingGenerated(b) : setConfirmDelete(b))}
+                          className="p-1.5 rounded-lg text-red-600 hover:bg-red-50"
+                          title={b.is_generated ? 'Delete entry — its keys are retired' : 'Delete draft'}
+                        >
+                          <Trash2 size={15} />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -423,6 +430,19 @@ function Station({ operator, onOperatorChange, onLock }) {
         />
       )}
       {viewing && <KeysModal batch={viewing.batch} highlightKey={viewing.highlightKey} onClose={() => setViewing(null)} />}
+      {deletingGenerated && (
+        <DeleteBatchModal
+          batch={deletingGenerated}
+          operator={operator}
+          onClose={() => setDeletingGenerated(null)}
+          onDeleted={() => {
+            // A key search pinned to this batch would now point at nothing.
+            if (keyHit?.batch.id === deletingGenerated.id) { setKeyHit(null); setKeyQuery(''); }
+            setDeletingGenerated(null);
+            load({ focusId: keyHit?.batch.id === deletingGenerated.id ? null : undefined });
+          }}
+        />
+      )}
       {renaming && (
         <OperatorModal
           current={operator}
@@ -439,7 +459,7 @@ function Station({ operator, onOperatorChange, onLock }) {
         title="Generate keys?"
         confirmLabel={confirmGenerate ? `Generate ${keyCountLabel(confirmGenerate.label_count)}` : 'Generate'}
         message={confirmGenerate
-          ? `${confirmGenerate.vendor_name} · ${articleLabel(confirmGenerate)} · pack of ${packSizeLabel(confirmGenerate)} · ${confirmGenerate.floor_name}. After this the entry is locked — it can no longer be edited or deleted.`
+          ? `${confirmGenerate.vendor_name} · ${articleLabel(confirmGenerate)} · pack of ${packSizeLabel(confirmGenerate)} · ${confirmGenerate.floor_name}. After this the entry is locked — it can no longer be edited.`
           : ''}
       />
       <ConfirmDialog

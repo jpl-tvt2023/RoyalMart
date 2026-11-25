@@ -444,7 +444,7 @@ describe('Barcode Station — Generate', () => {
     expect(await keysOf(draft.id)).toHaveLength(10);
   });
 
-  test('once generated, a batch cannot be generated again, edited or deleted', async () => {
+  test('once generated, a batch cannot be generated again or edited', async () => {
     const draft = (await createDraft()).body;
     expect((await generate(draft.id)).status).toBe(200);
 
@@ -452,8 +452,69 @@ describe('Barcode Station — Generate', () => {
     expect(again.status).toBe(409);
     expect(again.body.message).toBe('Keys have already been generated for this batch — it can no longer be changed');
     expect((await asStation(request(app).patch(`/api/station/batches/${draft.id}`)).send({ pack_size: 1, operator: OPERATOR })).status).toBe(409);
-    expect((await asStation(request(app).delete(`/api/station/batches/${draft.id}`)).send({ operator: OPERATOR })).status).toBe(409);
     expect(await keysOf(draft.id)).toHaveLength(5);
+  });
+
+  test('a generated batch can be deleted with a reason, and its keys are retired, not freed (099)', async () => {
+    const draft = (await createDraft({ label_count: 6 })).body;
+    expect((await generate(draft.id)).status).toBe(200);
+    const keys = await keysOf(draft.id);
+    const del = (body) => asStation(request(app).delete(`/api/station/batches/${draft.id}`)).send(body);
+
+    const noReason = await del({ operator: OPERATOR });
+    expect(noReason.status).toBe(400);
+    expect(noReason.body.message).toBe('A reason is required to delete an entry whose keys are generated');
+    const blank = await del({ operator: OPERATOR, reason: '   ' });
+    expect(blank.body.message).toBe('A reason is required to delete an entry whose keys are generated');
+    const tooLong = await del({ operator: OPERATOR, reason: 'x'.repeat(301) });
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.message).toBe('Reason cannot be longer than 300 characters');
+
+    const ok = await del({ operator: 'Suresh', reason: '  Wrong vendor picked  ' });
+    expect(ok.status).toBe(200);
+
+    const { rows } = await db.execute({
+      sql: 'SELECT deleted_at, deleted_by, delete_reason, generated_at FROM label_batches WHERE id = ?',
+      args: [draft.id],
+    });
+    expect(rows[0].deleted_at).toBeTruthy();
+    expect(rows[0].generated_at).toBeTruthy();
+    expect(rows[0]).toMatchObject({ deleted_by: 'Suresh', delete_reason: 'Wrong vendor picked' });
+
+    // The keys stay taken -- same rows, same batch -- so they can never be reused.
+    expect(await keysOf(draft.id)).toEqual(keys);
+
+    const list = await asStation(request(app).get('/api/station/batches'));
+    expect(list.body.rows.map(r => r.id)).not.toContain(draft.id);
+
+    const scan = await asStation(request(app).get(`/api/station/keys/${keys[2].label_key}`));
+    expect(scan.status).toBe(410);
+    expect(scan.body.message).toBe(`Key ${keys[2].label_key} belongs to batch #${draft.id}, which was deleted — its sticker is no longer valid`);
+
+    expect((await asStation(request(app).get(`/api/station/batches/${draft.id}/keys`))).status).toBe(404);
+    expect((await generate(draft.id)).status).toBe(404);
+    expect((await asStation(request(app).patch(`/api/station/batches/${draft.id}`)).send({ pack_size: 1, operator: OPERATOR })).status).toBe(404);
+    expect((await del({ operator: OPERATOR, reason: 'again' })).status).toBe(404);
+
+    const audit = await db.execute({
+      sql: `SELECT description FROM audit_logs WHERE entity_type = 'label_batch' AND entity_id = ? AND action_type = 'LABEL_BATCH_DELETE'`,
+      args: [draft.id],
+    });
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0].description).toMatch(/^Suresh deleted generated label batch #\d+ .* 6 keys retired\. Reason: Wrong vendor picked$/);
+  });
+
+  test('a draft still deletes without a reason, and a reason given is kept', async () => {
+    const plain = (await createDraft()).body;
+    expect((await asStation(request(app).delete(`/api/station/batches/${plain.id}`)).send({ operator: OPERATOR })).status).toBe(200);
+
+    const withReason = (await createDraft()).body;
+    expect((await asStation(request(app).delete(`/api/station/batches/${withReason.id}`)).send({ operator: OPERATOR, reason: 'Duplicate' })).status).toBe(200);
+    const { rows } = await db.execute({
+      sql: 'SELECT id, deleted_by, delete_reason FROM label_batches WHERE id IN (?, ?) ORDER BY id',
+      args: [plain.id, withReason.id],
+    });
+    expect(rows.map(r => [r.deleted_by, r.delete_reason])).toEqual([[OPERATOR, null], [OPERATOR, 'Duplicate']]);
   });
 
   test('two Generate clicks at once write one set of keys', async () => {
