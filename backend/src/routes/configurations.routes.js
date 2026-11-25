@@ -9,6 +9,8 @@ const outboundProducts = require('../controllers/outboundProducts.controller');
 const stitchingPrefixes = require('../controllers/stitchingPrefixes.controller');
 const stitchingParties = require('../controllers/stitchingParties.controller');
 const warehouses = require('../controllers/warehouses.controller');
+const floors = require('../controllers/floors.controller');
+const barcodeStationSettings = require('../controllers/barcodeStationSettings.controller');
 
 const canView  = allowRoles(...ALL_ROLES);
 // Master data is editable by any logged-in user; every change is audited.
@@ -75,8 +77,21 @@ router.post('/stitching-parties',       auth, canAdminOnly, stitchingParties.cre
 router.patch('/stitching-parties/:id',  auth, canAdminOnly, stitchingParties.update);
 router.delete('/stitching-parties/:id', auth, canAdminOnly, stitchingParties.remove);
 
+// Floors (098) -- where a Barcode Station batch is stored, printed on its
+// stickers. Deliberately separate from warehouses. Admin -> Purchase Config,
+// so writes are Admin/Owner only.
+router.get('/floors',        auth, canView,      floors.list);
+router.post('/floors',       auth, canAdminOnly, floors.create);
+router.patch('/floors/:id',  auth, canAdminOnly, floors.update);
+router.delete('/floors/:id', auth, canAdminOnly, floors.remove);
+
+// Barcode Station settings (098) -- the shared PIN, sign-in lock and sticker
+// size. Admin/Owner only, reads included: nothing here is for anyone else.
+router.get('/barcode-station', auth, canAdminOnly, barcodeStationSettings.get);
+router.put('/barcode-station', auth, canAdminOnly, barcodeStationSettings.update);
+
 // Vendors master
-router.get('/vendors',        auth, canView,  vendors.list);
+router.get('/vendors',       auth, canView,  vendors.list);
 router.post('/vendors',       auth, canAdmin, vendors.create);
 router.patch('/vendors/:id',  auth, canAdmin, vendors.update);
 router.delete('/vendors/:id', auth, canAdmin, vendors.remove);

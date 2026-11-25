@@ -49,6 +49,8 @@ app.use('/api/stitching', require('./src/routes/stitching.routes'));
 app.use('/api/packaging-raw-materials', require('./src/routes/packagingRawMaterials.routes'));
 app.use('/api/audit-logs',   require('./src/routes/audit.routes'));
 app.use('/api/integration',  require('./src/routes/integration.routes'));
+// Public Barcode Station (098): no user login -- its own PIN-issued device token.
+app.use('/api/station',      require('./src/routes/station.routes'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 

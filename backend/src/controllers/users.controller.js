@@ -3,6 +3,15 @@ const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
 const { validatePassword } = require('../services/passwordPolicy');
 const { ALL_ROLES } = require('../middleware/rbac');
+const { isSystemUser } = require('../services/systemUser.service');
+
+// System users (tally-sync, barcode-station) are machine identities other code
+// looks up by name and caches by id. Deleting one breaks every write audited
+// as it, and a password reset is meaningless -- login refuses them anyway.
+async function systemUserRefusal(id, what) {
+  const { rows } = await db.execute({ sql: 'SELECT username FROM users WHERE id = ?', args: [id] });
+  return rows.length && isSystemUser(rows[0]) ? `${rows[0].username} is a system account and cannot be ${what}` : null;
+}
 
 const BCRYPT_COST = 12;
 const VALID_ROLES = ALL_ROLES;
@@ -172,6 +181,8 @@ async function remove(req, res, next) {
     if (parseInt(id) === req.user.id) {
       return res.status(400).json({ message: 'Cannot delete your own account' });
     }
+    const systemRefusal = await systemUserRefusal(id, 'deleted');
+    if (systemRefusal) return res.status(400).json({ message: systemRefusal });
 
     // supplier_pos was dropped in migration 022; only marketplace POs link to users now.
     // Authorship links (created/onboarded/updated) can't be auto-resolved — block them.
@@ -217,6 +228,8 @@ async function remove(req, res, next) {
 async function adminResetPassword(req, res, next) {
   try {
     const { id } = req.params;
+    const systemRefusal = await systemUserRefusal(id, 'given a password');
+    if (systemRefusal) return res.status(400).json({ message: systemRefusal });
     const { newPassword } = req.body;
     const policyError = await validatePassword(newPassword);
     if (policyError) return res.status(400).json({ message: policyError });

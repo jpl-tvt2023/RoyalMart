@@ -4,10 +4,14 @@ import OutboundProductsTab from '../Configurations/OutboundProductsTab';
 import StitchingPrefixesTab from '../Configurations/StitchingPrefixesTab';
 import StitchingPartiesTab from '../Configurations/StitchingPartiesTab';
 import WarehousesTab from '../Configurations/WarehousesTab';
+import BarcodeStationTab from '../Configurations/BarcodeStationTab';
 import { useSessionState } from '../../hooks/useSessionState';
 import {
   listCompanies, createCompany, updateCompany, deleteCompany,
 } from '../../api/companies.api';
+import {
+  listFloors, createFloor, updateFloor, deleteFloor,
+} from '../../api/floors.api';
 
 const TABS = [
   { key: 'global', label: 'Global' },
@@ -15,6 +19,8 @@ const TABS = [
   { key: 'stitchingPrefixes', label: 'Stitching Prefixes' },
   { key: 'stitchingParties', label: 'Stitching Parties' },
   { key: 'warehouses', label: 'Warehouses' },
+  { key: 'floors', label: 'Floors' },
+  { key: 'barcodeStation', label: 'Barcode Station' },
 ];
 
 const SUBTITLES = {
@@ -23,6 +29,8 @@ const SUBTITLES = {
   stitchingPrefixes: 'Incoming-number prefixes, and the processing stage each one records',
   stitchingParties: 'Who material is sent to, and which jobs each party may be given',
   warehouses: 'Our own warehouses — where finished stock sits at the end of the Stitching chain',
+  floors: 'Where Barcode Station stock is stored — printed on each sticker as its Panchal Floor',
+  barcodeStation: 'The public page warehouse staff label incoming stock on: its PIN, sticker size and link',
 };
 
 export default function PurchaseConfig() {
@@ -66,6 +74,18 @@ export default function PurchaseConfig() {
       {tab === 'stitchingPrefixes' && <StitchingPrefixesTab />}
       {tab === 'stitchingParties' && <StitchingPartiesTab />}
       {tab === 'warehouses' && <WarehousesTab />}
+      {tab === 'floors' && (
+        <MasterTab
+          label="Floor"
+          labelPlural="floors"
+          entityType="floor"
+          listFn={listFloors}
+          createFn={createFloor}
+          updateFn={updateFloor}
+          deleteFn={deleteFloor}
+        />
+      )}
+      {tab === 'barcodeStation' && <BarcodeStationTab />}
     </AppShell>
   );
 }

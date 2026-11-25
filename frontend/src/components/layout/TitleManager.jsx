@@ -9,6 +9,8 @@ const BRAND = 'Royal Mart';
 const TITLES = [
   ['/login', 'Login'],
   ['/force-reset', 'Reset Password'],
+  ['/barcode-station/print/:id', (m) => `Labels · Batch #${m.params.id}`],
+  ['/barcode-station', 'Barcode Station'],
   ['/dashboard', null],
   ['/admin/users', 'User Management'],
   ['/admin/purchase-config', 'Purchase Config'],

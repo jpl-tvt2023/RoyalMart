@@ -64,6 +64,19 @@ async function referencingVendorNames(category, itemName, variant) {
 const referencedMessage = (category, itemName, variant, names) =>
   `Cannot delete "${category} / ${itemName}${variant ? ` / ${variant}` : ''}" — still mapped to vendor(s): ${names.join(', ')}. Remove those mappings first.`;
 
+// Barcode Station batches (migration 098) reference a catalog row by id -- the
+// first table that does. A vendor mapping can be removed after a batch was
+// written, so the vendor guard above does not cover it, and the delete would
+// otherwise die on the foreign key as a 500. Soft-deleted drafts count too:
+// their row still holds the id.
+async function labelBatchCount(id) {
+  const { rows } = await db.execute({ sql: 'SELECT COUNT(*) AS c FROM label_batches WHERE article_id = ?', args: [id] });
+  return Number(rows[0].c);
+}
+
+const labelBatchMessage = (category, itemName, variant, count) =>
+  `Cannot delete "${category} / ${itemName}${variant ? ` / ${variant}` : ''}" — ${count} Barcode Station label batch${count !== 1 ? 'es use' : ' uses'} it.`;
+
 async function list(req, res, next) {
   try {
     // Two queries plus a JS join rather than GROUP_CONCAT: SQLite forbids a
@@ -227,6 +240,10 @@ async function remove(req, res, next) {
     if (names.length) {
       return res.status(400).json({ message: referencedMessage(existing[0].category, existing[0].item_name, existing[0].variant, names) });
     }
+    const batches = await labelBatchCount(id);
+    if (batches) {
+      return res.status(400).json({ message: labelBatchMessage(existing[0].category, existing[0].item_name, existing[0].variant, batches) });
+    }
 
     const { rows } = await db.execute({ sql: 'DELETE FROM packaging_raw_materials WHERE id = ? RETURNING category, item_name, variant', args: [id] });
     await logAction({
@@ -261,7 +278,9 @@ async function bulkDelete(req, res, next) {
     const deletableIds = [];
     for (const row of candidates) {
       const names = await referencingVendorNames(row.category, row.item_name, row.variant);
-      if (names.length) skipped.push({ id: row.id, reason: referencedMessage(row.category, row.item_name, row.variant, names) });
+      if (names.length) { skipped.push({ id: row.id, reason: referencedMessage(row.category, row.item_name, row.variant, names) }); continue; }
+      const batches = await labelBatchCount(row.id);
+      if (batches) skipped.push({ id: row.id, reason: labelBatchMessage(row.category, row.item_name, row.variant, batches) });
       else deletableIds.push(row.id);
     }
     if (!deletableIds.length) return res.json({ deleted: 0, skipped });

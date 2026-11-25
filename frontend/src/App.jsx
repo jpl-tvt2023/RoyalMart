@@ -25,6 +25,8 @@ import OutboundPOList from './pages/OutboundPOs/OutboundPOList';
 import StitchingPage from './pages/Stitching/StitchingPage';
 import OutboundPODetail from './pages/OutboundPOs/OutboundPODetail';
 import PackagingList from './pages/packaging/PackagingList';
+import BarcodeStationPage from './pages/BarcodeStation/BarcodeStationPage';
+import LabelPrintPage from './pages/BarcodeStation/LabelPrintPage';
 import { ALL_ROLES, ADMIN_ONLY } from './utils/roles';
 
 export default function App() {
@@ -44,6 +46,11 @@ export default function App() {
         />
         <Routes>
           <Route path="/login" element={<Login />} />
+
+          {/* Public: the Barcode Station (098) has no portal login. It unlocks
+              with its own PIN and talks to /api/station only. */}
+          <Route path="/barcode-station" element={<BarcodeStationPage />} />
+          <Route path="/barcode-station/print/:id" element={<LabelPrintPage />} />
 
           <Route path="/force-reset" element={
             <ProtectedRoute><ForcePasswordReset /></ProtectedRoute>
