@@ -18,6 +18,9 @@ const PACK_SIZE_MAX = 1000000;
 // thousand pages, and a delivery bigger than this can be split.
 const LABEL_COUNT_MAX = 2000;
 const OPERATOR_MAX = 60;
+// Why a batch was deleted (099). Required once its keys exist -- deleting it
+// invalidates stickers that may already be on boxes -- optional for a draft.
+const DELETE_REASON_MAX = 300;
 
 // The shared station PIN: numeric, 4 to 8 digits (client's choice). Short PINs
 // are why the server also keeps a database-backed, escalating lockout.
@@ -70,6 +73,13 @@ function operatorError(value) {
   return null;
 }
 
+function deleteReasonError(value, isGenerated) {
+  const reason = value == null ? '' : String(value).trim();
+  if (isGenerated && !reason) return 'A reason is required to delete an entry whose keys are generated';
+  if (reason.length > DELETE_REASON_MAX) return `Reason cannot be longer than ${DELETE_REASON_MAX} characters`;
+  return null;
+}
+
 function keyError(value) {
   if (isBlank(value)) return 'Key is required';
   if (!KEY_RE.test(String(value).trim())) return 'Key must be 8 digits';
@@ -94,7 +104,7 @@ function labelSizeError(width, height) {
 }
 
 module.exports = {
-  KEY_MIN, KEY_MAX, KEY_RE, PACK_SIZE_MAX, LABEL_COUNT_MAX, OPERATOR_MAX, PIN_RE,
+  KEY_MIN, KEY_MAX, KEY_RE, PACK_SIZE_MAX, LABEL_COUNT_MAX, OPERATOR_MAX, DELETE_REASON_MAX, PIN_RE,
   LABEL_WIDTH_MIN, LABEL_WIDTH_MAX, LABEL_HEIGHT_MIN, LABEL_HEIGHT_MAX,
-  wholeNumberError, batchFieldsError, normOperator, operatorError, keyError, pinError, labelSizeError,
+  wholeNumberError, batchFieldsError, normOperator, operatorError, deleteReasonError, keyError, pinError, labelSizeError,
 };

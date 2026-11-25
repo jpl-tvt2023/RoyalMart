@@ -14,6 +14,7 @@ export const KEY_RE = /^[1-9]\d{7}$/;
 export const PACK_SIZE_MAX = 1000000;
 export const LABEL_COUNT_MAX = 2000;
 export const OPERATOR_MAX = 60;
+export const DELETE_REASON_MAX = 300;
 
 export const PIN_RE = /^\d{4,8}$/;
 
@@ -55,6 +56,15 @@ export function operatorError(value) {
   const name = normOperator(value);
   if (!name) return 'Operator name is required';
   if (name.length > OPERATOR_MAX) return `Operator name cannot be longer than ${OPERATOR_MAX} characters`;
+  return null;
+}
+
+// Required once the entry's keys exist (its stickers may be on boxes),
+// optional for a draft (099).
+export function deleteReasonError(value, isGenerated) {
+  const reason = value == null ? '' : String(value).trim();
+  if (isGenerated && !reason) return 'A reason is required to delete an entry whose keys are generated';
+  if (reason.length > DELETE_REASON_MAX) return `Reason cannot be longer than ${DELETE_REASON_MAX} characters`;
   return null;
 }
 
