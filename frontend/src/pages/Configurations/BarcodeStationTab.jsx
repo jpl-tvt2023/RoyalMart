@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Copy, ExternalLink, KeyRound, LogOut, Ruler, ShieldAlert, Unlock } from 'lucide-react';
+import { Copy, ExternalLink, KeyRound, LogOut, Printer, Ruler, ShieldAlert, Unlock } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
@@ -11,10 +11,41 @@ import { formatDateTime } from '../../utils/formatters';
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30';
 const panel = 'bg-white rounded-xl border border-gray-200 p-5';
 
+// The two shortcuts a station PC needs for kiosk printing (Chrome / Edge). A
+// dedicated --user-data-dir makes it a separate browser instance, so its flags
+// apply even while the normal browser is open, and it keeps its own remembered
+// print settings. --app opens the station without an address bar.
+const BROWSERS = {
+  chrome: { label: 'Chrome', exe: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', dir: 'C:\\BarcodeStation\\Chrome' },
+  edge: { label: 'Edge', exe: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', dir: 'C:\\BarcodeStation\\Edge' },
+};
+const shortcutTarget = (b, url, kiosk) => `"${b.exe}"${kiosk ? ' --kiosk-printing' : ''} --user-data-dir="${b.dir}" --app=${url}`;
+
+function CopyRow({ label, value }) {
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success(`${label} copied`);
+    } catch {
+      toast.error('Could not copy — select the text and copy it by hand');
+    }
+  };
+  return (
+    <div>
+      <span className="block text-xs font-medium text-gray-600 mb-1">{label}</span>
+      <div className="flex gap-2">
+        <input readOnly value={value} className={`${inputCls} font-mono text-xs`} onFocus={(e) => e.target.select()} />
+        <Button type="button" variant="outline" onClick={copy} title="Copy"><Copy size={14} /></Button>
+      </div>
+    </div>
+  );
+}
+
 // Admin -> Purchase Config -> Barcode Station (migration 098): the shared PIN
-// that unlocks the public station page, its sign-in lock, and the sticker size
-// the label sheet prints at. The PIN is write-only -- the server never sends it
-// back, only whether one is set.
+// that unlocks the public station page, its sign-in lock, the sticker size the
+// label sheet prints at, and (migration 100) how the station prints -- through
+// the browser's print dialog, or straight to the printer on kiosk PCs. The PIN
+// is write-only -- the server never sends it back, only whether one is set.
 export default function BarcodeStationTab() {
   const [settings, setSettings] = useState(null);
   const [pin, setPin] = useState('');
@@ -24,6 +55,7 @@ export default function BarcodeStationTab() {
   const [sizeMsg, setSizeMsg] = useState('');
   const [saving, setSaving] = useState('');
   const [confirmSignOut, setConfirmSignOut] = useState(false);
+  const [browser, setBrowser] = useState('chrome');
 
   const stationUrl = `${window.location.origin}/barcode-station`;
 
@@ -183,6 +215,71 @@ export default function BarcodeStationTab() {
             <Button type="submit" variant="secondary" loading={saving === 'size'}>Save size</Button>
           </form>
           {sizeMsg && <p className="text-sm text-[#c1121f] mt-2">{sizeMsg}</p>}
+        </section>
+
+        {/* ---- Printing ---- */}
+        <section className={panel}>
+          <div className="flex items-start justify-between gap-3 mb-1">
+            <h3 className="font-semibold text-[#003049] flex items-center gap-2"><Printer size={17} /> Printing</h3>
+          </div>
+          <p className="text-sm text-gray-500 mb-3">
+            How the station prints. Warehouse staff never see the stickers on screen either way. Only Admins see keys.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {[
+              ['dialog', 'Print dialog', "The browser's print dialog opens. It shows its own preview of the stickers."],
+              ['direct', 'Direct (kiosk PCs)', 'Straight to the label printer: no dialog, no preview. Needs the kiosk shortcut below on every station PC.'],
+            ].map(([value, title, hint]) => {
+              const active = settings.print_mode === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  disabled={saving === 'mode' || active}
+                  onClick={() => save('mode', { print_mode: value }, value === 'direct' ? 'Printing set to direct (kiosk PCs)' : 'Printing set to the print dialog')}
+                  className={`text-left rounded-lg border p-3 transition-colors ${active ? 'border-[#c1121f] bg-red-50/50' : 'border-gray-200 hover:border-[#003049]/40'}`}
+                >
+                  <span className="flex items-center gap-2 text-sm font-semibold text-[#003049]">
+                    <span className={`h-3 w-3 rounded-full border-2 ${active ? 'border-[#c1121f] bg-[#c1121f]' : 'border-gray-300'}`} />
+                    {title}
+                  </span>
+                  <span className="block text-xs text-gray-500 mt-1">{hint}</span>
+                </button>
+              );
+            })}
+          </div>
+          {settings.print_mode === 'direct' && (
+            <p className="text-xs text-amber-700 mt-2">
+              A PC not opened from the kiosk shortcut will still show the print dialog — the browser decides that, not the portal.
+            </p>
+          )}
+        </section>
+
+        {/* ---- Kiosk setup ---- */}
+        <section className={panel}>
+          <h3 className="font-semibold text-[#003049] mb-1">Kiosk printing setup (each station PC)</h3>
+          <ol className="list-decimal pl-5 text-sm text-gray-600 space-y-1 mb-3">
+            <li>Install the label printer, set its paper to the sticker size ({settings.label_width_mm} × {settings.label_height_mm} mm), and make it the <b>Windows default printer</b>.</li>
+            <li>Create a desktop shortcut with the <b>calibration</b> target below, open it, unlock the station and print one entry: choose the label printer, margins None, scale 100%, headers and footers off. The browser remembers these.</li>
+            <li>Change the shortcut to the <b>kiosk</b> target and name it “Barcode Station”. From now on Print goes straight to the printer.</li>
+            <li>When every station PC uses the kiosk shortcut, set Printing to <b>Direct</b> above.</li>
+          </ol>
+          <div className="flex gap-1 mb-3">
+            {Object.entries(BROWSERS).map(([key, b]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setBrowser(key)}
+                className={`px-3 py-1 rounded-md text-xs font-medium ${browser === key ? 'bg-[#003049] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                {b.label}
+              </button>
+            ))}
+          </div>
+          <div className="space-y-3">
+            <CopyRow label="Calibration shortcut (once)" value={shortcutTarget(BROWSERS[browser], stationUrl, false)} />
+            <CopyRow label="Kiosk shortcut (everyday)" value={shortcutTarget(BROWSERS[browser], stationUrl, true)} />
+          </div>
         </section>
       </div>
 

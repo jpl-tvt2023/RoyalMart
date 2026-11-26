@@ -6,19 +6,26 @@ const { barcodeStationUser } = require('../services/systemUser.service');
 const { signStationToken, NOT_SET_UP_MESSAGE } = require('../middleware/stationAuth');
 const { isValidDateString } = require('../utils/dateValidation');
 const {
-  KEY_MIN, KEY_MAX, batchFieldsError, normOperator, operatorError, deleteReasonError, keyError, pinError,
+  KEY_MIN, KEY_MAX, batchFieldsError, normOperator, operatorError, keyError, pinError,
 } = require('../services/barcodeStation.service');
 
-// The public Barcode Station (migration 098) -- /api/station.
+// The public Barcode Station (migration 098) -- /api/station -- and its Admin
+// side, /api/label-batches (labelBatches.routes.js).
 //
-// Every route but POST /session sits behind stationAuth, which sets req.user to
-// the barcode-station system user. The person at the PC is the `operator` named
-// in each write, recorded on the row and in the audit description.
+// Every station route but POST /session sits behind stationAuth, which sets
+// req.user to the barcode-station system user. The person at the PC is the
+// `operator` named in each write, recorded on the row and in the audit
+// description.
 //
-// A batch is the entry an operator fills in. Generate turns a draft into N
-// random 8-digit keys (one per sticker) in one transaction, after which the
-// batch can no longer be edited -- its stickers may already be on boxes. It can
-// still be deleted, with a reason (099): its keys are retired, never reused.
+// A batch is the entry an operator fills in. A DRAFT can be edited or deleted.
+// Generate turns it into N random 8-digit keys (one per sticker) in one
+// transaction, and from then on the batch is FINAL -- never edited, never
+// deleted (the schema enforces the second, migration 101).
+//
+// Only Admins see keys (client's rule). The station API returns keys in exactly
+// one place: the logged print (POST /batches/:id/print), which the station
+// renders off-screen straight to the printer. Viewing keys -- the list's key
+// preview, a batch's key sheet -- is the Admin router's alone.
 
 // India has no daylight saving, so a fixed offset turns the stored UTC
 // generated_at into the IST calendar day the operator saw.
@@ -47,14 +54,20 @@ const FAIL_SQL = `
    WHERE id = 1
    RETURNING failed_attempts, locked_until`;
 
+// Every print writes one of these audit rows. print_count is derived from them
+// at read time, never stored (idx_audit_entity serves the lookup).
+const PRINT_ACTION = 'LABEL_BATCH_PRINT';
+
 const BATCH_SELECT = `
   SELECT b.id, b.outbound_vendor_id, b.article_id, b.floor_id, b.pack_size, b.label_count,
          b.entered_by, b.generated_at, b.generated_by, b.created_at, b.updated_at, b.deleted_at,
-         b.deleted_by, b.delete_reason,
          v.name AS vendor_name,
          prm.category, prm.item_name, NULLIF(prm.variant, '') AS variant, prm.unit_metric,
          f.name AS floor_name,
-         (SELECT COUNT(*) FROM label_keys k WHERE k.batch_id = b.id) AS key_count
+         (SELECT COUNT(*) FROM label_keys k WHERE k.batch_id = b.id) AS key_count,
+         (SELECT COUNT(*) FROM audit_logs a
+           WHERE a.entity_type = 'label_batch' AND a.entity_id = b.id
+             AND a.action_type = '${PRINT_ACTION}') AS print_count
     FROM label_batches b
     JOIN outbound_vendors v        ON v.id = b.outbound_vendor_id
     JOIN packaging_raw_materials prm ON prm.id = b.article_id
@@ -72,6 +85,7 @@ function shapeBatch(r) {
     pack_size: Number(r.pack_size),
     label_count: Number(r.label_count),
     key_count: Number(r.key_count),
+    print_count: Number(r.print_count),
     is_generated: r.generated_at != null,
   };
 }
@@ -224,7 +238,7 @@ async function options(req, res, next) {
                    prm.item_name COLLATE NOCASE, prm.variant COLLATE NOCASE`
       ),
       db.execute('SELECT id, name FROM floors WHERE is_active = 1 ORDER BY name COLLATE NOCASE'),
-      db.execute('SELECT label_width_mm, label_height_mm FROM barcode_station_settings WHERE id = 1'),
+      db.execute('SELECT label_width_mm, label_height_mm, print_mode FROM barcode_station_settings WHERE id = 1'),
     ]);
 
     const vendors = new Map();
@@ -242,14 +256,16 @@ async function options(req, res, next) {
       vendors: Array.from(vendors.values()),
       floors: floors.rows.map(f => ({ id: Number(f.id), name: f.name })),
       label: { width_mm: Number(s.label_width_mm) || 152, height_mm: Number(s.label_height_mm) || 51 },
+      print_mode: s.print_mode || 'dialog',
       token: signStationToken(req.stationPinVersion),
     });
   } catch (err) { next(err); }
 }
 
-// GET /batches -- the station grid. Drafts first (they still need a Generate),
-// then newest. Each row carries its first three keys as a preview.
-async function list(req, res, next) {
+// The grid: drafts first (they still need a Generate), then newest. The
+// station's list carries no keys at all. The Admin's adds each generated row's
+// first three keys as a preview.
+const makeList = ({ withKeyPreview }) => async function list(req, res, next) {
   try {
     const q = req.query || {};
     const conditions = ['b.deleted_at IS NULL'];
@@ -291,28 +307,34 @@ async function list(req, res, next) {
       total = rows.length;
     }
 
-    const generatedIds = rows.filter(r => r.is_generated).map(r => r.id);
-    if (generatedIds.length) {
-      const { rows: preview } = await db.execute({
-        sql: `SELECT batch_id, label_key FROM label_keys
-               WHERE label_no <= 3 AND batch_id IN (${generatedIds.map(() => '?').join(',')})
-               ORDER BY batch_id, label_no`,
-        args: generatedIds,
-      });
+    if (withKeyPreview) {
+      const generatedIds = rows.filter(r => r.is_generated).map(r => r.id);
       const byBatch = new Map();
-      for (const p of preview) {
-        const id = Number(p.batch_id);
-        if (!byBatch.has(id)) byBatch.set(id, []);
-        byBatch.get(id).push(Number(p.label_key));
+      if (generatedIds.length) {
+        const { rows: preview } = await db.execute({
+          sql: `SELECT batch_id, label_key FROM label_keys
+                 WHERE label_no <= 3 AND batch_id IN (${generatedIds.map(() => '?').join(',')})
+                 ORDER BY batch_id, label_no`,
+          args: generatedIds,
+        });
+        for (const p of preview) {
+          const id = Number(p.batch_id);
+          if (!byBatch.has(id)) byBatch.set(id, []);
+          byBatch.get(id).push(Number(p.label_key));
+        }
       }
       for (const r of rows) r.key_preview = byBatch.get(r.id) || [];
     }
-    for (const r of rows) if (!r.key_preview) r.key_preview = [];
 
     if (!pag.paginated) return res.json({ rows, total, page: 1, page_size: rows.length });
     res.json({ rows, total, page: pag.page, page_size: pag.page_size });
   } catch (err) { next(err); }
-}
+};
+
+// GET /api/station/batches -- no keys.
+const list = makeList({ withKeyPreview: false });
+// GET /api/label-batches -- Admin only, with the key preview.
+const adminList = makeList({ withKeyPreview: true });
 
 // POST /batches -- a new draft. No keys yet.
 async function create(req, res, next) {
@@ -420,46 +442,35 @@ async function update(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// DELETE /batches/:id { operator, reason } -- soft-deletes a batch, draft or
-// generated (099). A generated batch needs a reason: its stickers may already
-// be on boxes and stop being valid. Its label_keys rows are KEPT -- the keys
-// are retired, never handed to another batch, and a scan of one says the
-// batch was deleted (findKey answers 410).
+// DELETE /batches/:id { operator } -- soft-deletes a DRAFT. A generated batch
+// is final: its keys exist and its stickers may be on boxes, so it is never
+// deleted (409 here, and the schema's CHECK behind it since migration 101).
 async function remove(req, res, next) {
   try {
     const id = parseId(req.params.id);
-    const current = id == null ? null : await fetchBatch(id);
-    if (!current || current.deleted_at) return res.status(404).json({ message: BATCH_NOT_FOUND });
+    const current = await loadDraft(id, res);
+    if (!current) return;
 
-    const body = req.body || {};
-    const err = operatorError(body.operator) || deleteReasonError(body.reason, current.is_generated);
-    if (err) return res.status(400).json({ message: err });
-    const operator = normOperator(body.operator);
-    const reason = body.reason == null ? '' : String(body.reason).trim();
+    const opErr = operatorError(req.body?.operator);
+    if (opErr) return res.status(400).json({ message: opErr });
+    const operator = normOperator(req.body.operator);
 
     const tx = await db.transaction('write');
     let deleted;
     try {
-      // Without a reason only a draft may go: if Generate won a race since the
-      // read above, this matches nothing and the operator is asked for one.
       const { rows } = await tx.execute({
         sql: `UPDATE label_batches
-                 SET deleted_at = datetime('now'), deleted_by = ?, delete_reason = ?, updated_at = datetime('now')
-               WHERE id = ? AND deleted_at IS NULL AND (generated_at IS NULL OR ? = 1)
-               RETURNING generated_at`,
-        args: [operator, reason || null, id, reason ? 1 : 0],
+                 SET deleted_at = datetime('now'), deleted_by = ?, updated_at = datetime('now')
+               WHERE id = ? AND generated_at IS NULL AND deleted_at IS NULL RETURNING id`,
+        args: [operator, id],
       });
       deleted = rows.length > 0;
       if (deleted) {
-        const generated = rows[0].generated_at != null;
-        const what = generated
-          ? `generated label batch #${id} (${current.vendor_name}, ${articleLabel(current)}, ${current.floor_name}) — ${current.label_count} key${current.label_count !== 1 ? 's' : ''} retired`
-          : `draft label batch #${id} (${current.vendor_name}, ${articleLabel(current)}, ${current.label_count} labels)`;
         await logAction({
           client: tx,
           userId: req.user.id,
           actionType: 'LABEL_BATCH_DELETE',
-          description: `${operator} deleted ${what}${reason ? `. Reason: ${reason}` : ''}`,
+          description: `${operator} deleted draft label batch #${id} (${current.vendor_name}, ${articleLabel(current)}, ${current.label_count} labels)`,
           entityType: 'label_batch',
           entityId: id,
         });
@@ -469,10 +480,11 @@ async function remove(req, res, next) {
       await tx.rollback();
       throw e;
     }
+    // Generated, or deleted, between the read above and the write.
     if (!deleted) {
       const now = await fetchBatch(id);
       if (!now || now.deleted_at) return res.status(404).json({ message: BATCH_NOT_FOUND });
-      return res.status(409).json({ message: 'Keys were just generated for this entry — give a reason to delete it' });
+      return res.status(409).json({ message: ALREADY_GENERATED });
     }
     res.json({ deleted: true });
   } catch (err) { next(err); }
@@ -570,36 +582,100 @@ async function generate(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// GET /batches/:id/keys?from=&to= -- every key of a batch in label order (or a
-// slice of them, for a reprint), with the batch itself for the print sheet.
+async function labelSize() {
+  const { rows } = await db.execute('SELECT label_width_mm, label_height_mm FROM barcode_station_settings WHERE id = 1');
+  const s = rows[0] || {};
+  return { width_mm: Number(s.label_width_mm) || 152, height_mm: Number(s.label_height_mm) || 51 };
+}
+
+// A generated batch and the slice of its keys from..to (label numbers, both
+// optional: the whole batch by default). Returns { status, message } on a bad
+// request, so the view and the print routes answer alike.
+async function loadKeySlice(rawId, rawFrom, rawTo) {
+  const id = parseId(rawId);
+  const batch = id == null ? null : await fetchBatch(id);
+  if (!batch || batch.deleted_at) return { status: 404, message: BATCH_NOT_FOUND };
+  if (!batch.is_generated) return { status: 409, message: 'Generate the keys for this batch first' };
+
+  const n = batch.label_count;
+  const blank = (v) => v == null || v === '';
+  const from = blank(rawFrom) ? 1 : parseId(rawFrom);
+  const to = blank(rawTo) ? n : parseId(rawTo);
+  if (from == null || to == null || from < 1 || to > n || from > to) {
+    return { status: 400, message: `Labels must be a range within 1 to ${n}` };
+  }
+
+  const { rows } = await db.execute({
+    sql: `SELECT label_no, label_key FROM label_keys
+           WHERE batch_id = ? AND label_no BETWEEN ? AND ? ORDER BY label_no`,
+    args: [id, from, to],
+  });
+  return {
+    batch,
+    from,
+    to,
+    keys: rows.map(r => ({ label_no: Number(r.label_no), label_key: Number(r.label_key) })),
+  };
+}
+
+// GET /api/label-batches/:id/keys?from=&to= -- ADMIN ONLY. Every key of a
+// batch (or a slice), with the batch and the sticker size, for the Admin's key
+// list and print preview. Viewing is not a print, so it is not logged.
 async function keys(req, res, next) {
   try {
-    const id = parseId(req.params.id);
-    const batch = id == null ? null : await fetchBatch(id);
-    if (!batch || batch.deleted_at) return res.status(404).json({ message: BATCH_NOT_FOUND });
-    if (!batch.is_generated) return res.status(409).json({ message: 'Generate the keys for this batch first' });
-
-    const n = batch.label_count;
-    const q = req.query || {};
-    const from = q.from == null || q.from === '' ? 1 : parseId(q.from);
-    const to = q.to == null || q.to === '' ? n : parseId(q.to);
-    if (from == null || to == null || from < 1 || to > n || from > to) {
-      return res.status(400).json({ message: `Labels must be a range within 1 to ${n}` });
-    }
-
-    const { rows } = await db.execute({
-      sql: `SELECT label_no, label_key FROM label_keys
-             WHERE batch_id = ? AND label_no BETWEEN ? AND ? ORDER BY label_no`,
-      args: [id, from, to],
-    });
-    res.json({
-      batch,
-      keys: rows.map(r => ({ label_no: Number(r.label_no), label_key: Number(r.label_key) })),
-    });
+    const slice = await loadKeySlice(req.params.id, req.query?.from, req.query?.to);
+    if (slice.status) return res.status(slice.status).json({ message: slice.message });
+    res.json({ batch: slice.batch, keys: slice.keys, label: await labelSize() });
   } catch (err) { next(err); }
 }
 
-// GET /keys/:key -- which entry a scanned or typed key belongs to.
+// POST .../batches/:id/print { from?, to? } -- the keys to print, and the log
+// entry that says they were printed. EVERY print goes through here and writes a
+// LABEL_BATCH_PRINT audit row -- logged before the keys are handed over, so
+// there is no print without a record. Reprints are allowed, any number of times.
+//
+// `operatorOf(req)` names who printed: on the station the typed operator name
+// (validated), for an Admin their portal name. The audit user_id is req.user:
+// the barcode-station system user, or the Admin.
+const makePrint = (operatorOf) => async function print(req, res, next) {
+  try {
+    const who = operatorOf(req);
+    if (who.error) return res.status(400).json({ message: who.error });
+
+    const body = req.body || {};
+    const slice = await loadKeySlice(req.params.id, body.from, body.to);
+    if (slice.status) return res.status(slice.status).json({ message: slice.message });
+
+    const { batch, from, to } = slice;
+    const which = from === 1 && to === batch.label_count
+      ? `all ${batch.label_count} label${batch.label_count !== 1 ? 's' : ''}`
+      : `labels ${from}–${to} of ${batch.label_count}`;
+    await logAction({
+      userId: req.user.id,
+      actionType: PRINT_ACTION,
+      description: `${who.name} printed ${which} of label batch #${batch.id} (${batch.vendor_name}, ${articleLabel(batch)}, ${batch.floor_name})`,
+      entityType: 'label_batch',
+      entityId: batch.id,
+    });
+    res.json({
+      batch: { ...batch, print_count: batch.print_count + 1 },
+      keys: slice.keys,
+      label: await labelSize(),
+    });
+  } catch (err) { next(err); }
+};
+
+// POST /api/station/batches/:id/print { operator, from?, to? }
+const print = makePrint((req) => {
+  const error = operatorError(req.body?.operator);
+  return error ? { error } : { name: normOperator(req.body.operator) };
+});
+
+// POST /api/label-batches/:id/print { from?, to? } -- ADMIN ONLY.
+const adminPrint = makePrint((req) => ({ name: req.user.name || req.user.username }));
+
+// GET /keys/:key -- which entry a scanned or typed key belongs to. Shows the
+// entry for a sticker the person already holds -- never any other key.
 async function findKey(req, res, next) {
   try {
     const raw = String(req.params.key || '').trim();
@@ -612,17 +688,15 @@ async function findKey(req, res, next) {
     });
     if (!rows.length) return res.status(404).json({ message: `No label has the key ${raw}` });
     const batch = await fetchBatch(Number(rows[0].batch_id));
-    // A deleted batch keeps its keys (they are never reused), so its stickers
-    // still resolve -- to "deleted", never to some other batch.
-    if (batch.deleted_at) {
-      return res.status(410).json({ message: `Key ${raw} belongs to batch #${batch.id}, which was deleted — its sticker is no longer valid` });
-    }
     res.json({ label_key: Number(raw), label_no: Number(rows[0].label_no), batch });
   } catch (err) { next(err); }
 }
 
 module.exports = {
-  createSession, options, list, create, update, remove, generate, keys, findKey,
+  // station (stationAuth)
+  createSession, options, list, create, update, remove, generate, print, findKey,
+  // Admin (auth + ADMIN_ROLES)
+  adminList, keys, adminPrint,
   // exported for the tests
   insertRandomKeys,
 };

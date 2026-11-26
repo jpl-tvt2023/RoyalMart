@@ -8,6 +8,10 @@ const c = require('../controllers/barcodeStation.controller');
 // a device token, and everything after `router.use(stationAuth)` requires one.
 // There is no allowRoles -- the station token is the whole check, like the RAMS
 // integration's service token.
+//
+// No route here SHOWS keys -- only Admins see them (labelBatches.routes.js).
+// The one route that returns keys is the logged print, whose stickers the
+// station renders off-screen straight to the printer.
 
 router.post('/session', stationPinLimiter, c.createSession);
 
@@ -19,7 +23,7 @@ router.get('/batches',                c.list);
 router.post('/batches',               c.create);
 // Literal segments after :id are distinct paths, but keep them above the bare
 // /:id routes anyway, per the house convention.
-router.get('/batches/:id/keys',       c.keys);
+router.post('/batches/:id/print',     c.print);
 router.post('/batches/:id/generate',  c.generate);
 router.patch('/batches/:id',          c.update);
 router.delete('/batches/:id',         c.remove);

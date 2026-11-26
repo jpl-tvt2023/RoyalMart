@@ -89,9 +89,9 @@ export async function updateLabelBatch(id, payload) {
   return data;
 }
 
-// A generated batch needs a reason (099), a draft does not.
-export async function deleteLabelBatch(id, operator, reason) {
-  const { data } = await station.delete(`/batches/${id}`, { data: { operator, reason } });
+// Drafts only: a generated batch is final.
+export async function deleteLabelBatch(id, operator) {
+  const { data } = await station.delete(`/batches/${id}`, { data: { operator } });
   return data;
 }
 
@@ -100,9 +100,11 @@ export async function generateLabelBatch(id, operator) {
   return data;
 }
 
-// { batch, keys: [{ label_no, label_key }] }, optionally a from/to slice.
-export async function getLabelBatchKeys(id, params) {
-  const { data } = await station.get(`/batches/${id}/keys`, { params });
+// Logs the print and returns what to print -- { batch, keys, label } -- for
+// PrintPortal, which renders it off-screen. The station's only way to keys:
+// viewing them is Admin-only (labelBatches.api.js). range = { from?, to? }.
+export async function printLabelBatch(id, operator, range = {}) {
+  const { data } = await station.post(`/batches/${id}/print`, { operator, ...range });
   return data;
 }
 

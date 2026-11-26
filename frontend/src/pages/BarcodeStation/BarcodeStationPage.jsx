@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
-  Lock, Search, X, Pencil, Trash2, Printer, Eye, UserRound, Plus, Sparkles,
+  Lock, Search, X, Pencil, Trash2, Printer, Eye, UserRound, Plus, Sparkles, ShieldCheck,
 } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import Modal from '../../components/ui/Modal';
@@ -10,27 +10,39 @@ import Pagination, { loadPersistedPageSize, persistPageSize } from '../../compon
 import PinScreen from './PinScreen';
 import BatchEditModal, { BatchFields } from './BatchEditModal';
 import KeysModal from './KeysModal';
-import DeleteBatchModal from './DeleteBatchModal';
+import PrintLabelsModal from './PrintLabelsModal';
+import PrintPortal from './PrintPortal';
 import { fieldsOf, inputCls, openPrintSheet } from './stationHelpers';
 import {
   getStationToken, getOperator, setOperator, onStationSignedOut, endStationSession,
   getStationOptions, listLabelBatches, createLabelBatch, deleteLabelBatch, generateLabelBatch, findLabelKey,
 } from '../../api/station.api';
+import { listLabelBatchesAdmin } from '../../api/labelBatches.api';
+import { useAuth } from '../../context/AuthContext';
+import { useRBAC } from '../../hooks/useRBAC';
 import {
-  batchFieldsError, operatorError, keyError, normOperator, articleLabel, packSizeLabel, keyCountLabel,
+  batchFieldsError, operatorError, keyError, normOperator, articleLabel, packSizeLabel, keyCountLabel, printCountLabel,
 } from '../../utils/barcodeStation';
 import { formatDateTime } from '../../utils/formatters';
 import { sortByText } from '../../utils/sort';
 
 // The public Barcode Station (migration 098) -- reached WITHOUT a portal login.
 // A device unlocks it once with the shared PIN; the operator types their name.
-// Each delivery becomes a batch: saved as a draft, then Generate gives every
-// sticker its own random 8-digit key and locks the batch, and Print lays the
-// stickers out in the client's format.
+// Each delivery becomes a batch: saved as a draft (editable, deletable), then
+// Generate gives every sticker its own random 8-digit key and the batch is
+// FINAL -- never edited or deleted again.
+//
+// ONLY ADMINS SEE KEYS (client's rule). Everyone else gets "N keys · printed
+// N×" and a Print button that sends the stickers to the printer off-screen
+// (PrintPortal) -- no keys, no preview. When this browser is also logged into
+// the portal as Admin/Owner (useRBAC), the same page shows the keys, the key
+// list and a print preview, all fetched from the Admin API -- which checks the
+// role server-side, so editing localStorage reveals nothing. Admins only use
+// their own machines, never the warehouse PC.
 //
 // No AppShell (that is the logged-in shell), no HistoryButton (it calls the
-// portal API), and every call goes through api/station.api.js, never the
-// shared axios instance.
+// portal API). Station calls go through api/station.api.js; only the Admin view
+// uses the shared portal instance (api/labelBatches.api.js).
 
 const PAGE_SIZE_KEY = 'barcodeStation.batches';
 const defaultFilters = () => ({ vendor_id: '', floor_id: '', date_from: '', date_to: '' });
@@ -39,6 +51,8 @@ export default function BarcodeStationPage() {
   const [signedIn, setSignedIn] = useState(() => !!getStationToken());
   const [operator, setOperatorState] = useState(() => getOperator());
   const [note, setNote] = useState('');
+  const { user, loading: authLoading } = useAuth();
+  const { isAdmin } = useRBAC();
 
   useEffect(() => onStationSignedOut((body) => {
     setNote(body?.message || '');
@@ -61,16 +75,23 @@ export default function BarcodeStationPage() {
     );
   }
 
+  // Wait for the portal session to be read, so the first fetch already goes to
+  // the right list (Admin or station).
+  if (authLoading) return null;
+
   return (
     <Station
+      key={isAdmin ? 'admin' : 'staff'}
       operator={operator}
+      isAdmin={isAdmin}
+      adminName={user?.name || user?.username}
       onOperatorChange={(name) => { setOperator(name); setOperatorState(name); }}
       onLock={() => { endStationSession(); setNote(''); setSignedIn(false); }}
     />
   );
 }
 
-function Station({ operator, onOperatorChange, onLock }) {
+function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
   const [options, setOptions] = useState(null);
 
   const [entry, setEntry] = useState(() => fieldsOf(null));
@@ -90,7 +111,8 @@ function Station({ operator, onOperatorChange, onLock }) {
 
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
-  const [deletingGenerated, setDeletingGenerated] = useState(null);
+  const [printing, setPrinting] = useState(null);
+  const [printJob, setPrintJob] = useState(null);
   const [confirmGenerate, setConfirmGenerate] = useState(null);
   const [viewing, setViewing] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -115,10 +137,11 @@ function Station({ operator, onOperatorChange, onLock }) {
 
   // State is only set in the promise callbacks, so the mount effect can call
   // this directly; `load` adds the synchronous loading flag for later fetches.
-  const fetchRows = useCallback((o = {}) => listLabelBatches(buildParams(o))
+  // An Admin's list (with key previews) comes from the Admin API.
+  const fetchRows = useCallback((o = {}) => (isAdmin ? listLabelBatchesAdmin : listLabelBatches)(buildParams(o))
     .then((res) => { setRows(res.rows); setTotal(res.total); })
     .catch((err) => { if (err.response?.status !== 401) toast.error(err.response?.data?.message || 'Could not load batches'); })
-    .finally(() => setLoading(false)), [buildParams]);
+    .finally(() => setLoading(false)), [buildParams, isAdmin]);
 
   const load = (o = {}) => {
     setLoading(true);
@@ -222,10 +245,26 @@ function Station({ operator, onOperatorChange, onLock }) {
       load();
     } catch (ex) {
       toastError(ex, 'Delete failed');
+      // Generated meanwhile: it is final now, so show it as it is.
+      if (ex.response?.status === 409) { setConfirmDelete(null); load(); }
     } finally {
       setBusy(false);
     }
   };
+
+  // The print was logged and the keys are in hand: close the modal and let
+  // PrintPortal send the stickers to the printer, off-screen.
+  const startPrint = (job) => {
+    setPrinting(null);
+    setPrintJob(job);
+  };
+  const printDone = () => {
+    const n = printJob?.labels.length || 0;
+    toast.success(`${n} label${n !== 1 ? 's' : ''} sent to print`);
+    setPrintJob(null);
+    load();
+  };
+  const printMode = options?.print_mode || 'dialog';
 
   const vendorsSorted = sortByText(options?.vendors || [], (v) => v.name);
   const floorsSorted = sortByText(options?.floors || [], (f) => f.name);
@@ -264,6 +303,14 @@ function Station({ operator, onOperatorChange, onLock }) {
             <Lock size={15} /> Lock
           </Button>
         </div>
+        {isAdmin && (
+          <div className="bg-[#003049] text-white text-xs">
+            <div className="max-w-7xl mx-auto px-4 py-1.5 flex items-center gap-2">
+              <ShieldCheck size={14} />
+              Admin view — signed in to the portal as {adminName}. Barcode keys are visible on this screen.
+            </div>
+          </div>
+        )}
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-5 space-y-5">
@@ -317,9 +364,11 @@ function Station({ operator, onOperatorChange, onLock }) {
               <span className="text-[#003049]">
                 Key <span className="font-mono font-semibold">{keyHit.label_key}</span> → batch #{keyHit.batch.id}, label {keyHit.label_no} of {keyHit.batch.label_count}
               </span>
-              <button type="button" onClick={() => setViewing({ batch: keyHit.batch, highlightKey: keyHit.label_key })} className="text-[#c1121f] font-medium hover:underline">
-                Show in keys
-              </button>
+              {isAdmin && (
+                <button type="button" onClick={() => setViewing({ batch: keyHit.batch, highlightKey: keyHit.label_key })} className="text-[#c1121f] font-medium hover:underline">
+                  Show in keys
+                </button>
+              )}
               <button type="button" onClick={clearKeyHit} className="ml-auto flex items-center gap-1 text-gray-500 hover:text-gray-700">
                 <X size={14} /> Show all batches
               </button>
@@ -358,22 +407,35 @@ function Station({ operator, onOperatorChange, onLock }) {
                     <td className="px-4 py-3 whitespace-nowrap">{b.floor_name}</td>
                     <td className="px-4 py-3 text-right tabular-nums">{b.label_count}</td>
                     <td className="px-4 py-3">
-                      {b.is_generated ? (
+                      {b.is_generated && isAdmin && (
                         <div className="min-w-[200px]">
                           <div className="flex items-center gap-2">
                             <span className="font-semibold text-[#003049]">{keyCountLabel(b.key_count)}</span>
                             <button type="button" onClick={() => setViewing({ batch: b })} className="inline-flex items-center gap-1 text-xs font-medium text-[#003049] hover:underline">
                               <Eye size={13} /> View
                             </button>
-                            <button type="button" onClick={() => openPrintSheet(b.id)} className="inline-flex items-center gap-1 text-xs font-medium text-[#c1121f] hover:underline">
+                            <button type="button" onClick={() => openPrintSheet(b.id)} className="inline-flex items-center gap-1 text-xs font-medium text-[#c1121f] hover:underline" title="Preview and print (Admin)">
                               <Printer size={13} /> Print
                             </button>
                           </div>
                           <p className="font-mono text-xs text-gray-500 mt-0.5">
-                            {b.key_preview.join(', ')}{b.key_count > b.key_preview.length ? ', …' : ''}
+                            {(b.key_preview || []).join(', ')}{b.key_count > (b.key_preview || []).length ? ', …' : ''}
                           </p>
+                          <p className="text-xs text-gray-400">{printCountLabel(b.print_count)}</p>
                         </div>
-                      ) : (
+                      )}
+                      {b.is_generated && !isAdmin && (
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-[200px]">
+                          <span className="text-[#003049]">
+                            <span className="font-semibold">{keyCountLabel(b.key_count)}</span>
+                            <span className="text-xs text-gray-500"> · {printCountLabel(b.print_count)}</span>
+                          </span>
+                          <Button size="sm" variant="secondary" onClick={() => setPrinting(b)}>
+                            <Printer size={14} /> Print
+                          </Button>
+                        </div>
+                      )}
+                      {!b.is_generated && (
                         <Button size="sm" onClick={() => setConfirmGenerate(b)}>
                           <Sparkles size={14} /> Generate
                         </Button>
@@ -383,23 +445,17 @@ function Station({ operator, onOperatorChange, onLock }) {
                       {b.is_generated ? formatDateTime(b.generated_at) : <span className="text-gray-400 italic">Draft</span>}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex justify-end gap-1">
-                        {!b.is_generated && (
+                      {/* Only a draft can change. A generated entry is final. */}
+                      {!b.is_generated && (
+                        <div className="flex justify-end gap-1">
                           <button type="button" onClick={() => setEditing(b)} className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50" title="Edit draft">
                             <Pencil size={15} />
                           </button>
-                        )}
-                        {/* A draft deletes on a plain confirm. A generated
-                            entry asks for a reason: its stickers stop being valid. */}
-                        <button
-                          type="button"
-                          onClick={() => (b.is_generated ? setDeletingGenerated(b) : setConfirmDelete(b))}
-                          className="p-1.5 rounded-lg text-red-600 hover:bg-red-50"
-                          title={b.is_generated ? 'Delete entry — its keys are retired' : 'Delete draft'}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
+                          <button type="button" onClick={() => setConfirmDelete(b)} className="p-1.5 rounded-lg text-red-600 hover:bg-red-50" title="Delete draft">
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -429,20 +485,18 @@ function Station({ operator, onOperatorChange, onLock }) {
           onSaved={() => { setEditing(null); load(); }}
         />
       )}
-      {viewing && <KeysModal batch={viewing.batch} highlightKey={viewing.highlightKey} onClose={() => setViewing(null)} />}
-      {deletingGenerated && (
-        <DeleteBatchModal
-          batch={deletingGenerated}
+      {/* Admin only: the key list. Never rendered for anyone else. */}
+      {isAdmin && viewing && <KeysModal batch={viewing.batch} highlightKey={viewing.highlightKey} onClose={() => setViewing(null)} />}
+      {printing && (
+        <PrintLabelsModal
+          batch={printing}
           operator={operator}
-          onClose={() => setDeletingGenerated(null)}
-          onDeleted={() => {
-            // A key search pinned to this batch would now point at nothing.
-            if (keyHit?.batch.id === deletingGenerated.id) { setKeyHit(null); setKeyQuery(''); }
-            setDeletingGenerated(null);
-            load({ focusId: keyHit?.batch.id === deletingGenerated.id ? null : undefined });
-          }}
+          printMode={printMode}
+          onClose={() => setPrinting(null)}
+          onJob={startPrint}
         />
       )}
+      <PrintPortal job={printJob} onDone={printDone} />
       {renaming && (
         <OperatorModal
           current={operator}
@@ -459,7 +513,7 @@ function Station({ operator, onOperatorChange, onLock }) {
         title="Generate keys?"
         confirmLabel={confirmGenerate ? `Generate ${keyCountLabel(confirmGenerate.label_count)}` : 'Generate'}
         message={confirmGenerate
-          ? `${confirmGenerate.vendor_name} · ${articleLabel(confirmGenerate)} · pack of ${packSizeLabel(confirmGenerate)} · ${confirmGenerate.floor_name}. After this the entry is locked — it can no longer be edited.`
+          ? `${confirmGenerate.vendor_name} · ${articleLabel(confirmGenerate)} · pack of ${packSizeLabel(confirmGenerate)} · ${confirmGenerate.floor_name}. After this the entry is final — it can never be edited or deleted.`
           : ''}
       />
       <ConfirmDialog
