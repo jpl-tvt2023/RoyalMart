@@ -29,13 +29,12 @@ router.post('/batches/:id/generate',  c.generate);
 router.patch('/batches/:id',          c.update);
 router.delete('/batches/:id',         c.remove);
 
-// Daily stock counts (migration 102). The station starts, scans and closes a
-// count -- the results, missed scans and the cross-check are the portal's
-// (/api/stock, stockReports.routes.js). No route here says whether a pack was
-// Out: missed scans are Admin/Owner only.
-router.get('/counts/current',         counts.current);
-router.post('/counts',                counts.start);
-router.post('/counts/:id/scans',      counts.scan);
-router.post('/counts/:id/close',      counts.close);
+// Daily stock counts (migrations 102, 103). The count is the IST day: no
+// start, no close -- the day's first scan creates it and midnight finishes it.
+// The results, missed scans and the cross-check are the portal's (/api/stock,
+// stockReports.routes.js). No route here says whether a pack was Out: missed
+// scans are Admin/Owner only.
+router.get('/counts/today',           counts.today);
+router.post('/counts/today/scans',    counts.scan);
 
 module.exports = router;
