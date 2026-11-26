@@ -4,8 +4,8 @@ import Button from '../../components/ui/Button';
 import { getCrossCheck } from '../../api/stock.api';
 import { fmt, istDate, toastMessage } from './stockHelpers';
 
-// ADMIN/OWNER ONLY. Per labelled article: the pieces that went Out on counts
-// closed in the window, against what POs dispatched in the window should have
+// ADMIN/OWNER ONLY. Per labelled article: the pieces that went Out on days
+// finished in the window, against what POs dispatched in the window should have
 // used (each SKU's packaging / barcode usage per unit, migration 061 -- the
 // same link Procurement orders packaging by).
 //
@@ -60,7 +60,7 @@ export default function CrossCheckTab() {
           <Button type="submit" variant="secondary">Check</Button>
           {data && (
             <p className="text-sm text-gray-600 basis-full sm:basis-auto sm:ml-auto">
-              {fmt(data.counts_closed)} count{data.counts_closed !== 1 ? 's' : ''} closed in this window.
+              {fmt(data.counts_finished)} finished day{data.counts_finished !== 1 ? 's' : ''} counted in this window.
               {data.unlinked_lines > 0 && (
                 <span className="text-amber-700"> {fmt(data.unlinked_lines)} dispatched PO line{data.unlinked_lines !== 1 ? 's' : ''} link to no SKU usage, so expected use reads low.</span>
               )}

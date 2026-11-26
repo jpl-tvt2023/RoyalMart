@@ -6,17 +6,18 @@ import Modal from '../../components/ui/Modal';
 import Badge from '../../components/ui/Badge';
 import Pagination, { loadPersistedPageSize, persistPageSize } from '../../components/ui/Pagination';
 import { listMissedScans, listMissedPacks, getStickerHistory } from '../../api/stock.api';
-import { formatDateTime } from '../../utils/formatters';
+import { formatDate, formatDateTime } from '../../utils/formatters';
 import { keyError } from '../../utils/barcodeStation';
 import { articleText, fmt, labelText, packText, toastMessage } from './stockHelpers';
 
 // ADMIN/OWNER ONLY (the server refuses anyone else). A missed scan is a pack a
-// count did not find that turned up again on a later count -- so it was there
-// all along, and the scanner missed it. Miss rate = missed / (found + missed):
-// of the packs that were really there, the share he did not scan.
+// finished day did not find that turned up again on a later day -- so it was
+// there all along, and the scanner missed it (or the day was short). Miss
+// rate = missed / (found + missed): of the packs that were really there, the
+// share he did not scan. One count per IST day (migration 103).
 
 const PAGE_SIZE_KEY = 'stock.missed';
-const COLS = 6;
+const COLS = 5;
 
 const STATUS_BADGE = {
   in_stock: { color: 'green', label: 'In stock' },
@@ -59,7 +60,7 @@ export default function MissedScansTab() {
       <section className="bg-white rounded-xl border border-gray-200">
         <div className="flex flex-wrap items-end justify-between gap-3 p-4 border-b border-gray-100">
           <p className="text-sm text-gray-600">
-            <span className="font-semibold text-[#003049]">{fmt(totalMissed)}</span> missed scan{totalMissed !== 1 ? 's' : ''} across every count.
+            <span className="font-semibold text-[#003049]">{fmt(totalMissed)}</span> missed scan{totalMissed !== 1 ? 's' : ''} across every finished day.
           </p>
           <form onSubmit={(e) => { e.preventDefault(); openHistory(lookup.trim()); }} className="flex items-end gap-2">
             <label className="block">
@@ -83,8 +84,7 @@ export default function MissedScansTab() {
           <table className="w-full text-sm">
             <thead className="sticky top-0 z-10 bg-gray-50 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">
               <tr>
-                <th className="px-4 py-3">Count</th>
-                <th className="px-4 py-3">Closed</th>
+                <th className="px-4 py-3">Day</th>
                 <th className="px-4 py-3">Scanned by</th>
                 <th className="px-4 py-3 text-right">Found</th>
                 <th className="px-4 py-3 text-right">Missed</th>
@@ -103,8 +103,7 @@ export default function MissedScansTab() {
                   onClick={() => c.missed && setSelected(selected?.id === c.id ? null : c)}
                   className={`border-b border-gray-100 ${c.missed ? 'cursor-pointer hover:bg-gray-50' : ''} ${selected?.id === c.id ? 'bg-[#fdf0d5]/60' : ''}`}
                 >
-                  <td className="px-4 py-3 font-medium text-[#003049]">#{c.id}</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-gray-600">{formatDateTime(c.closed_at)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap font-medium text-[#003049]">{formatDate(c.count_date)}</td>
                   <td className="px-4 py-3">{c.operators.join(', ') || '—'}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{fmt(c.found)}</td>
                   <td className={`px-4 py-3 text-right tabular-nums ${c.missed ? 'font-semibold text-[#c1121f]' : 'text-gray-400'}`}>{fmt(c.missed)}</td>
@@ -113,7 +112,7 @@ export default function MissedScansTab() {
               ))}
             </tbody>
           </table>
-          {!loading && !rows.length && <p className="text-center text-sm text-gray-500 py-10">No count has been closed yet.</p>}
+          {!loading && !rows.length && <p className="text-center text-sm text-gray-500 py-10">No day has finished yet.</p>}
         </div>
         <Pagination
           page={page}
@@ -144,7 +143,7 @@ function MissedPacks({ count, onOpenKey }) {
 
   return (
     <section className="bg-white rounded-xl border border-gray-200">
-      <h3 className="p-4 border-b border-gray-100 text-sm font-semibold text-[#003049]">Missed on count #{count.id}</h3>
+      <h3 className="p-4 border-b border-gray-100 text-sm font-semibold text-[#003049]">Missed on {formatDate(count.count_date)}</h3>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">
@@ -167,7 +166,7 @@ function MissedPacks({ count, onOpenKey }) {
                 <td className="px-4 py-2.5 text-[#003049]">{articleText(p)}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums whitespace-nowrap">{packText(p)}</td>
                 <td className="px-4 py-2.5 whitespace-nowrap">{p.sticker_floor_name}</td>
-                <td className="px-4 py-2.5 whitespace-nowrap">count #{p.found_again_count_id}</td>
+                <td className="px-4 py-2.5 whitespace-nowrap">{formatDate(p.found_again_date)}</td>
               </tr>
             ))}
           </tbody>
@@ -180,7 +179,7 @@ function MissedPacks({ count, onOpenKey }) {
 
 function HistoryModal({ history: h, onClose }) {
   const badge = STATUS_BADGE[h.status] || STATUS_BADGE.not_counted;
-  const missed = new Set(h.missed_on.map((m) => m.count_id));
+  const missed = h.missed_on.map((m) => formatDate(m.count_date));
   return (
     <Modal isOpen onClose={onClose} title={`Sticker ${h.label_key}`} size="md">
       <div className="space-y-4 text-sm">
@@ -190,24 +189,24 @@ function HistoryModal({ history: h, onClose }) {
           <p className="text-gray-600">Generated {formatDateTime(h.generated_at)} by {h.generated_by}</p>
           <p className="flex items-center gap-2">
             <Badge color={badge.color}>{badge.label}</Badge>
-            {h.out_since && <span className="text-gray-600">since count #{h.out_since.count_id} ({formatDateTime(h.out_since.closed_at)})</span>}
+            {h.out_since && <span className="text-gray-600">since {formatDate(h.out_since.count_date)}</span>}
           </p>
         </div>
         <div>
-          <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Counts it was seen on</p>
-          {h.sightings.length === 0 && <p className="text-gray-500">Never scanned on a count.</p>}
+          <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Days it was seen on</p>
+          {h.sightings.length === 0 && <p className="text-gray-500">Never scanned.</p>}
           <ul className="divide-y divide-gray-100">
             {h.sightings.map((s) => (
               <li key={s.count_id} className="flex flex-wrap justify-between gap-2 py-1.5">
-                <span>Count #{s.count_id}{s.closed_at ? '' : ' (open)'} · {s.floor_name}{s.floor_mismatch && <span className="text-amber-700"> (wrong floor)</span>}</span>
+                <span>{formatDate(s.count_date)} · {s.floor_name}{s.floor_mismatch && <span className="text-amber-700"> (wrong floor)</span>}</span>
                 <span className="text-gray-500">{formatDateTime(s.scanned_at)} · {s.scanned_by}</span>
               </li>
             ))}
           </ul>
         </div>
-        {missed.size > 0 && (
+        {missed.length > 0 && (
           <p className="rounded-lg bg-red-50 px-3 py-2 text-red-800">
-            Missed on count{missed.size > 1 ? 's' : ''} {[...missed].map((id) => `#${id}`).join(', ')} — it was there, but not scanned.
+            Missed on {missed.join(', ')} — it was there, but not scanned.
           </p>
         )}
       </div>

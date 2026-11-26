@@ -114,30 +114,22 @@ export async function findLabelKey(key) {
   return data;
 }
 
-// ---- Stock counts (migration 102) -----------------------------------------
-// The station never learns whether a pack was Out -- missed scans are
-// Admin/Owner only, in the portal (stock.api.js).
+// ---- Stock counts (migrations 102, 103) -----------------------------------
+// The count is the IST day: no start, no close -- the day's first scan creates
+// it, midnight finishes it. The station never learns whether a pack was Out --
+// missed scans are Admin/Owner only, in the portal (stock.api.js).
 
-// { count, progress, last_closed } -- count is null when none is open.
-export async function getCurrentCount() {
-  const { data } = await station.get('/counts/current');
+// { today, count, progress, last_finished } -- count is null before the day's
+// first scan.
+export async function getTodayCount() {
+  const { data } = await station.get('/counts/today');
   return data;
 }
 
-export async function startStockCount(operator) {
-  const { data } = await station.post('/counts', { operator });
-  return data;
-}
-
-// { results: [{ key, status, pack?, floor_mismatch? }], scanned, floor }
-// status: counted | already_counted | unknown. Re-sending is harmless.
-export async function sendScans(countId, { operator, floor_id, keys }) {
-  const { data } = await station.post(`/counts/${countId}/scans`, { operator, floor_id, keys });
-  return data;
-}
-
-// { count: { found, new_packs, out_packs, flagged, ... } }
-export async function closeStockCount(countId, operator) {
-  const { data } = await station.post(`/counts/${countId}/close`, { operator });
+// { results: [{ key, status, pack?, floor_mismatch? }], scanned, floor, count }
+// status: counted | already_counted | unknown. Re-sending is harmless. The
+// server puts the scans into TODAY's count.
+export async function sendScans({ operator, floor_id, keys }) {
+  const { data } = await station.post('/counts/today/scans', { operator, floor_id, keys });
   return data;
 }
