@@ -4,20 +4,25 @@ const { excludedItemNameSql } = require('../services/packagingExclusions');
 const { isValidDateString } = require('../utils/dateValidation');
 const { normOperator, operatorError, keyError, scanFieldsError } = require('../services/barcodeStation.service');
 const {
-  STATUS, IST_DATE, IST_TODAY,
+  STATUS, IST_TODAY,
   STATE_CTES, MISSED_CTES, COUNT_TOTALS_SELECT, EXPECTED_USE_SQL, UNLINKED_LINES_SQL,
 } = require('../services/stockCount.service');
 
-// Daily stock counts -- Barcode Station phase 2 (migration 102).
+// Daily stock counts -- Barcode Station phase 2 (migrations 102, 103).
+//
+// THE COUNT IS THE IST DAY (103). Nobody starts or closes a count: the day's
+// first scan creates its row, every scan that day joins it, and midnight IST
+// finishes it. Every day with a scan is a full count.
 //
 // Two halves, two routers:
-//   /api/station/counts...  the public station (station.routes.js, stationAuth):
-//                           start a count, send scans, close it. The person at
-//                           the PC is the typed `operator`, the audit user the
-//                           barcode-station system user.
+//   /api/station/counts/today...  the public station (station.routes.js,
+//                           stationAuth): today's progress, and sending scans.
+//                           The person at the PC is the typed `operator`, the
+//                           audit user the barcode-station system user.
 //   /api/stock/...          the portal (stockReports.routes.js, auth): stock and
-//                           count results for everyone logged in, missed scans,
-//                           the cross-check and sticker keys for Admin/Owner.
+//                           each day's results for everyone logged in, missed
+//                           scans, the cross-check and sticker keys for
+//                           Admin/Owner.
 //
 // The status rules -- In Stock, Out, Not yet counted, missed -- live in SQL in
 // stockCount.service.js. Nothing here stores a status.
@@ -28,12 +33,11 @@ const {
 // Owner see them.
 //
 // Scans are NOT audited one by one: the scan rows are the record (who, when,
-// which floor), and a row per scan would flood audit_logs. Starting, closing
-// and reopening a count are.
+// which floor), and a row per scan would flood audit_logs. The day's first
+// scan, which creates its count, is.
 
 const COUNT_NOT_FOUND = 'Stock count not found';
-const COUNT_CLOSED = 'This count is closed — start a new one';
-const NOTHING_SCANNED = 'Scan at least one pack before closing the count';
+const TODAY_IN_PROGRESS = "Today's count is still in progress — Out shows after midnight";
 
 const parseId = (v) => (/^\d+$/.test(String(v)) ? Number(v) : null);
 const num = (v) => (v == null ? 0 : Number(v));
@@ -87,20 +91,24 @@ const shapePack = (r) => ({
   }),
 });
 
+const COUNT_COLS = 'id, count_date, started_by, started_at';
+
 const shapeCount = (r) => (r ? {
   id: num(r.id),
+  count_date: r.count_date,
   started_by: r.started_by,
   started_at: r.started_at,
-  closed_by: r.closed_by ?? null,
-  closed_at: r.closed_at ?? null,
 } : null);
 
+// finished: the day is over (count_date before today, IST). Today's count has
+// no Out figure yet -- out_packs is null, not 0.
 const shapeTotals = (r) => ({
   ...shapeCount(r),
   seq: num(r.seq),
+  finished: !!num(r.finished),
   found: num(r.found),
   new_packs: num(r.new_packs),
-  out_packs: num(r.out_packs),
+  out_packs: r.out_packs == null ? null : num(r.out_packs),
   flagged: num(r.flagged),
 });
 
@@ -112,24 +120,54 @@ async function countTotals(id, client = db) {
   return rows.length ? shapeTotals(rows[0]) : null;
 }
 
+// Today in IST, as the database sees it -- one clock for every write and read.
+async function istToday(client = db) {
+  return (await client.execute(`SELECT ${IST_TODAY} AS d`)).rows[0].d;
+}
+
+// The newest finished day's count, or null before Day 1 has finished.
+async function lastFinished() {
+  const { rows } = await db.execute(
+    `SELECT ${COUNT_COLS} FROM stock_counts WHERE count_date < ${IST_TODAY} ORDER BY count_date DESC LIMIT 1`
+  );
+  return shapeCount(rows[0]);
+}
+
+// Today's count and how many packs it has so far, or null before the day's
+// first scan.
+async function todayCount() {
+  const { rows } = await db.execute(
+    `SELECT ${COUNT_COLS}, (SELECT COUNT(*) FROM stock_count_scans s WHERE s.count_id = c.id) AS scanned
+       FROM stock_counts c WHERE c.count_date = ${IST_TODAY}`
+  );
+  return rows.length ? { ...shapeCount(rows[0]), scanned: num(rows[0].scanned) } : null;
+}
+
 // ===========================================================================
 // STATION (stationAuth)
 // ===========================================================================
 
-// What is left to find on the open count: every key In Stock or Not yet
-// counted is expected, on the floor it was last seen on (its sticker's floor
-// if it has never been counted). Out packs are not expected -- if one turns up
-// it is simply counted.
+// What is left to find today. Expected = every key that was not Out as of the
+// last finished day (In Stock or Not yet counted), on the floor it was last
+// seen on (its sticker's floor if it has never been counted). A pack that was
+// Out is not expected -- if one turns up it is simply counted, and the
+// expected figure does not move, so the station cannot tell it was Out.
+// countId is today's count, or null before the day's first scan.
 async function progressOf(countId) {
+  const id = countId ?? 0;
   const [groups, scannedHere, floors, total] = await Promise.all([
     db.execute({
       sql: `WITH ${STATE_CTES},
+              kf AS (SELECT s.label_key, MAX(c.seq) AS last_fin
+                       FROM stock_count_scans s JOIN cc c ON c.id = s.count_id GROUP BY s.label_key),
               cur AS (SELECT label_key FROM stock_count_scans WHERE count_id = ?),
               exp AS (
                 SELECT st.article_id, COALESCE(st.seen_floor_id, st.sticker_floor_id) AS floor_id,
                        (cur.label_key IS NOT NULL) AS found
-                  FROM kstate st LEFT JOIN cur ON cur.label_key = st.label_key
-                 WHERE st.status IN ('${STATUS.IN_STOCK}', '${STATUS.NOT_COUNTED}')
+                  FROM kstate st
+                  LEFT JOIN kf ON kf.label_key = st.label_key
+                  LEFT JOIN cur ON cur.label_key = st.label_key
+                 WHERE kf.label_key IS NULL OR kf.last_fin = (SELECT seq FROM latest)
               )
             SELECT 'floor' AS dim, e.floor_id AS id, NULL AS label, COUNT(*) AS expected, SUM(e.found) AS found
               FROM exp e GROUP BY e.floor_id
@@ -137,21 +175,21 @@ async function progressOf(countId) {
             SELECT 'article', e.article_id, ${ARTICLE_LABEL_SQL('prm')}, COUNT(*), SUM(e.found)
               FROM exp e JOIN packaging_raw_materials prm ON prm.id = e.article_id
              GROUP BY e.article_id`,
-      args: [countId],
+      args: [id],
     }),
     db.execute({
       sql: 'SELECT floor_id, COUNT(*) AS n FROM stock_count_scans WHERE count_id = ? GROUP BY floor_id',
-      args: [countId],
+      args: [id],
     }),
     db.execute('SELECT id, name FROM floors'),
-    db.execute({ sql: 'SELECT COUNT(*) AS n FROM stock_count_scans WHERE count_id = ?', args: [countId] }),
+    db.execute({ sql: 'SELECT COUNT(*) AS n FROM stock_count_scans WHERE count_id = ?', args: [id] }),
   ]);
 
   const floorName = new Map(floors.rows.map((f) => [num(f.id), f.name]));
   const byFloor = new Map();
-  const floorRow = (id) => {
-    if (!byFloor.has(id)) byFloor.set(id, { floor_id: id, floor_name: floorName.get(id) || '—', expected: 0, found: 0, scanned_here: 0 });
-    return byFloor.get(id);
+  const floorRow = (fid) => {
+    if (!byFloor.has(fid)) byFloor.set(fid, { floor_id: fid, floor_name: floorName.get(fid) || '—', expected: 0, found: 0, scanned_here: 0 });
+    return byFloor.get(fid);
   };
   const byArticle = [];
   for (const r of groups.rows) {
@@ -183,79 +221,25 @@ async function progressOf(countId) {
   };
 }
 
-async function lastClosed() {
-  const { rows } = await db.execute(
-    'SELECT id, started_by, started_at, closed_by, closed_at FROM stock_counts WHERE closed_at IS NOT NULL ORDER BY id DESC LIMIT 1'
-  );
-  return shapeCount(rows[0]);
-}
-
-// GET /api/station/counts/current -- the open count and what is left to find.
-async function current(req, res, next) {
+// GET /api/station/counts/today -- today's count (null before the day's first
+// scan) and what is left to find.
+async function today(req, res, next) {
   try {
-    const { rows } = await db.execute(
-      'SELECT id, started_by, started_at, closed_by, closed_at FROM stock_counts WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1'
-    );
-    const last = await lastClosed();
-    if (!rows.length) return res.json({ count: null, progress: null, last_closed: last });
-    const count = shapeCount(rows[0]);
-    res.json({ count, progress: await progressOf(count.id), last_closed: last });
+    const [day, count, last] = await Promise.all([istToday(), todayCount(), lastFinished()]);
+    res.json({
+      today: day,
+      count,
+      progress: await progressOf(count ? count.id : null),
+      last_finished: last,
+    });
   } catch (err) { next(err); }
 }
 
-// POST /api/station/counts { operator } -- start a count. One open at a time.
-async function start(req, res, next) {
-  try {
-    const opErr = operatorError(req.body?.operator);
-    if (opErr) return res.status(400).json({ message: opErr });
-    const operator = normOperator(req.body.operator);
-
-    const tx = await db.transaction('write');
-    let created;
-    let open;
-    try {
-      open = (await tx.execute('SELECT id, started_by, started_at FROM stock_counts WHERE closed_at IS NULL LIMIT 1')).rows[0];
-      if (!open) {
-        created = (await tx.execute({
-          sql: 'INSERT INTO stock_counts (started_by) VALUES (?) RETURNING id, started_by, started_at, closed_by, closed_at',
-          args: [operator],
-        })).rows[0];
-        await logAction({
-          client: tx,
-          userId: req.user.id,
-          actionType: 'STOCK_COUNT_START',
-          description: `${operator} started stock count #${created.id}`,
-          entityType: 'stock_count',
-          entityId: Number(created.id),
-        });
-        await tx.commit();
-      } else {
-        await tx.rollback();
-      }
-    } catch (e) {
-      await tx.rollback();
-      // The unique index is the backstop for two PCs starting at once.
-      if (/UNIQUE constraint failed/i.test(e.message || '')) {
-        return res.status(409).json({ message: 'A count is already open — carry on with it' });
-      }
-      throw e;
-    }
-    if (open) {
-      return res.status(409).json({
-        message: `Count #${open.id} is already open (started by ${open.started_by}) — carry on with it`,
-        count: shapeCount(open),
-      });
-    }
-    res.status(201).json({ count: shapeCount(created) });
-  } catch (err) { next(err); }
-}
-
-// POST /api/station/counts/:id/scans { operator, floor_id, keys } -- a batch of
-// scans. Re-sending one is harmless: the PK (count_id, label_key) drops it.
+// POST /api/station/counts/today/scans { operator, floor_id, keys } -- a batch
+// of scans into TODAY's count, created by the day's first scan. Re-sending one
+// is harmless: the PK (count_id, label_key) drops it.
 async function scan(req, res, next) {
   try {
-    const id = parseId(req.params.id);
-    if (id == null) return res.status(404).json({ message: COUNT_NOT_FOUND });
     const opErr = operatorError(req.body?.operator);
     if (opErr) return res.status(400).json({ message: opErr });
     const operator = normOperator(req.body.operator);
@@ -272,13 +256,22 @@ async function scan(req, res, next) {
     const marks = keys.map(() => '?').join(', ');
 
     const tx = await db.transaction('write');
-    let inserted;
+    let count = null;
+    let inserted = new Set();
     try {
-      const count = (await tx.execute({ sql: 'SELECT closed_at FROM stock_counts WHERE id = ?', args: [id] })).rows[0];
-      if (!count || count.closed_at != null) {
-        await tx.rollback();
-        return res.status(count ? 409 : 404).json({ message: count ? COUNT_CLOSED : COUNT_NOT_FOUND });
-      }
+      // One clock for the whole batch, so a scan at midnight cannot straddle
+      // two days.
+      const day = await istToday(tx);
+      // UNIQUE (count_date): two PCs sending the day's first scans at once
+      // share one row.
+      const created = (await tx.execute({
+        sql: `INSERT INTO stock_counts (count_date, started_by) VALUES (?, ?)
+              ON CONFLICT (count_date) DO NOTHING RETURNING ${COUNT_COLS}`,
+        args: [day, operator],
+      })).rows[0];
+      count = shapeCount(created
+        || (await tx.execute({ sql: `SELECT ${COUNT_COLS} FROM stock_counts WHERE count_date = ?`, args: [day] })).rows[0]);
+
       // From label_keys, so an unknown key inserts nothing. The WHERE also
       // settles SQLite's INSERT ... SELECT ... ON CONFLICT parsing ambiguity.
       const { rows } = await tx.execute({
@@ -286,10 +279,28 @@ async function scan(req, res, next) {
               SELECT ?, k.label_key, ?, ? FROM label_keys k WHERE k.label_key IN (${marks})
               ON CONFLICT (count_id, label_key) DO NOTHING
               RETURNING label_key`,
-        args: [id, floorId, operator, ...keys],
+        args: [count.id, floorId, operator, ...keys],
       });
       inserted = new Set(rows.map((r) => Number(r.label_key)));
-      await tx.commit();
+
+      if (created && !inserted.size) {
+        // Only unknown keys: no count for the day. An empty finished day would
+        // mark every pack Out.
+        await tx.rollback();
+        count = null;
+      } else {
+        if (created) {
+          await logAction({
+            client: tx,
+            userId: req.user.id,
+            actionType: 'STOCK_COUNT_START',
+            description: `${operator} started the stock count for ${day} (the day's first scan, on ${floor.name})`,
+            entityType: 'stock_count',
+            entityId: count.id,
+          });
+        }
+        await tx.commit();
+      }
     } catch (e) {
       await tx.rollback();
       throw e;
@@ -297,7 +308,9 @@ async function scan(req, res, next) {
 
     const [packs, total] = await Promise.all([
       db.execute({ sql: `SELECT k.label_key, ${PACK_COLS} FROM label_keys x ${PACK_JOINS('x.label_key')} WHERE x.label_key IN (${marks})`, args: keys }),
-      db.execute({ sql: 'SELECT COUNT(*) AS n FROM stock_count_scans WHERE count_id = ?', args: [id] }),
+      count
+        ? db.execute({ sql: 'SELECT COUNT(*) AS n FROM stock_count_scans WHERE count_id = ?', args: [count.id] })
+        : { rows: [{ n: 0 }] },
     ]);
     const byKey = new Map(packs.rows.map((r) => [Number(r.label_key), shapePack(r)]));
     const results = keys.map((key) => {
@@ -310,60 +323,7 @@ async function scan(req, res, next) {
         floor_mismatch: pack.sticker_floor_id !== floorId,
       };
     });
-    res.json({ results, scanned: num(total.rows[0].n), floor: { id: floorId, name: floor.name } });
-  } catch (err) { next(err); }
-}
-
-// POST /api/station/counts/:id/close { operator } -- close the open count.
-// From this moment every pack seen on the last count and not on this one is
-// Out. A count with no scans cannot be closed: it would mark everything Out.
-async function close(req, res, next) {
-  try {
-    const id = parseId(req.params.id);
-    if (id == null) return res.status(404).json({ message: COUNT_NOT_FOUND });
-    const opErr = operatorError(req.body?.operator);
-    if (opErr) return res.status(400).json({ message: opErr });
-    const operator = normOperator(req.body.operator);
-
-    const tx = await db.transaction('write');
-    let totals;
-    try {
-      const count = (await tx.execute({ sql: 'SELECT closed_at FROM stock_counts WHERE id = ?', args: [id] })).rows[0];
-      if (!count || count.closed_at != null) {
-        await tx.rollback();
-        return res.status(count ? 409 : 404).json({ message: count ? 'This count is already closed' : COUNT_NOT_FOUND });
-      }
-      const scanned = num((await tx.execute({ sql: 'SELECT COUNT(*) AS n FROM stock_count_scans WHERE count_id = ?', args: [id] })).rows[0].n);
-      if (!scanned) {
-        await tx.rollback();
-        return res.status(400).json({ message: NOTHING_SCANNED });
-      }
-      // Compare-and-set: a second click, or a second PC, closes nothing.
-      const { rows } = await tx.execute({
-        sql: `UPDATE stock_counts SET closed_at = datetime('now'), closed_by = ?
-               WHERE id = ? AND closed_at IS NULL RETURNING id`,
-        args: [operator, id],
-      });
-      if (!rows.length) {
-        await tx.rollback();
-        return res.status(409).json({ message: 'This count is already closed' });
-      }
-      totals = await countTotals(id, tx);
-      await logAction({
-        client: tx,
-        userId: req.user.id,
-        actionType: 'STOCK_COUNT_CLOSE',
-        description: `${operator} closed stock count #${id}: ${totals.found} counted, ${totals.new_packs} new, `
-          + `${totals.out_packs} not found (marked Out), ${totals.flagged} on the wrong floor`,
-        entityType: 'stock_count',
-        entityId: id,
-      });
-      await tx.commit();
-    } catch (e) {
-      await tx.rollback();
-      throw e;
-    }
-    res.json({ count: totals });
+    res.json({ results, scanned: num(total.rows[0].n), floor: { id: floorId, name: floor.name }, count });
   } catch (err) { next(err); }
 }
 
@@ -373,7 +333,8 @@ async function close(req, res, next) {
 
 // GET /api/stock/summary?vendor_id&floor_id -- stock per article and floor.
 // A pack sits on the floor it was last seen on (its sticker's floor if it has
-// never been counted).
+// never been counted). In Stock already includes packs scanned today. "Out on
+// the last count" is the latest FINISHED day's Out.
 async function summary(req, res, next) {
   try {
     const q = req.query || {};
@@ -389,7 +350,7 @@ async function summary(req, res, next) {
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const outLast = `st.status = '${STATUS.OUT}' AND st.last_seq = (SELECT seq FROM latest) - 1`;
 
-    const [{ rows }, latest, open] = await Promise.all([
+    const [{ rows }, latest, todays] = await Promise.all([
       db.execute({
         sql: `WITH ${STATE_CTES}
               SELECT st.article_id, prm.category, prm.item_name, NULLIF(prm.variant, '') AS variant, prm.unit_metric,
@@ -410,8 +371,8 @@ async function summary(req, res, next) {
                ORDER BY prm.category COLLATE NOCASE, prm.item_name COLLATE NOCASE, prm.variant COLLATE NOCASE, f.name COLLATE NOCASE`,
         args,
       }),
-      lastClosed(),
-      db.execute('SELECT id, started_by, started_at FROM stock_counts WHERE closed_at IS NULL LIMIT 1'),
+      lastFinished(),
+      todayCount(),
     ]);
 
     const shaped = rows.map((r) => ({
@@ -445,52 +406,46 @@ async function summary(req, res, next) {
         flagged_packs: sum('flagged_packs'),
       },
       latest_count: latest,
-      open_count: shapeCount(open.rows[0]),
+      today: todays,
     });
   } catch (err) { next(err); }
 }
 
-// GET /api/stock/counts -- closed counts, newest first, with their totals.
+// GET /api/stock/counts -- one row per day, newest first, with its totals.
+// Today's row (finished: false) has found / new / flagged so far and no Out.
 async function listCounts(req, res, next) {
   try {
     const pag = buildPagination(req.query || {});
-    const [{ rows }, total, open] = await Promise.all([
-      db.execute(`WITH ${STATE_CTES} SELECT * FROM (${COUNT_TOTALS_SELECT}) t ORDER BY t.id DESC ${limitSql(pag)}`),
-      db.execute('SELECT COUNT(*) AS n FROM stock_counts WHERE closed_at IS NOT NULL'),
-      db.execute(`SELECT c.id, c.started_by, c.started_at,
-                         (SELECT COUNT(*) FROM stock_count_scans s WHERE s.count_id = c.id) AS scanned
-                    FROM stock_counts c WHERE c.closed_at IS NULL LIMIT 1`),
+    const [{ rows }, total, day] = await Promise.all([
+      db.execute(`WITH ${STATE_CTES} SELECT * FROM (${COUNT_TOTALS_SELECT}) t ORDER BY t.count_date DESC ${limitSql(pag)}`),
+      db.execute('SELECT COUNT(*) AS n FROM stock_counts'),
+      istToday(),
     ]);
-    const o = open.rows[0];
-    res.json({
-      ...envelope(rows.map(shapeTotals), num(total.rows[0].n), pag),
-      open_count: o ? { ...shapeCount(o), scanned: num(o.scanned) } : null,
-    });
+    res.json({ ...envelope(rows.map(shapeTotals), num(total.rows[0].n), pag), today: day });
   } catch (err) { next(err); }
 }
 
 async function loadCountOr404(id, res) {
   if (id == null) { res.status(404).json({ message: COUNT_NOT_FOUND }); return null; }
-  const { rows } = await db.execute({ sql: 'SELECT id, started_by, started_at, closed_by, closed_at FROM stock_counts WHERE id = ?', args: [id] });
+  const { rows } = await db.execute({
+    sql: `SELECT ${COUNT_COLS}, (count_date < ${IST_TODAY}) AS finished FROM stock_counts WHERE id = ?`,
+    args: [id],
+  });
   if (!rows.length) { res.status(404).json({ message: COUNT_NOT_FOUND }); return null; }
-  return shapeCount(rows[0]);
+  return { ...shapeCount(rows[0]), finished: !!num(rows[0].finished) };
 }
 
-// GET /api/stock/counts/:id -- one count's totals. An open count has none yet.
+// GET /api/stock/counts/:id -- one day's totals (today's so far).
 async function getCount(req, res, next) {
   try {
     const count = await loadCountOr404(parseId(req.params.id), res);
     if (!count) return;
-    if (!count.closed_at) {
-      const n = (await db.execute({ sql: 'SELECT COUNT(*) AS n FROM stock_count_scans WHERE count_id = ?', args: [count.id] })).rows[0].n;
-      return res.json({ count: { ...count, scanned: num(n) }, open: true });
-    }
-    res.json({ count: await countTotals(count.id), open: false });
+    res.json({ count: await countTotals(count.id) });
   } catch (err) { next(err); }
 }
 
-// The packs behind one of a closed count's totals, each with the floor it was
-// seen on. `out`: last seen on the count before, never since.
+// The packs behind one of a day's totals, each with the floor it was seen on.
+// `out`: last seen on the day before, never since -- finished days only.
 const PACK_LISTS = {
   found: `SELECT s.label_key, s.floor_id AS seen_floor_id FROM stock_count_scans s WHERE s.count_id = (SELECT id FROM c)`,
   new: `SELECT s.label_key, s.floor_id AS seen_floor_id
@@ -511,9 +466,9 @@ async function countPacks(req, res, next) {
     if (!count) return;
     const list = String(req.query.list || 'out');
     if (!PACK_LISTS[list]) return res.status(400).json({ message: 'list must be found, new, out or flagged' });
-    if (!count.closed_at) return res.status(409).json({ message: 'This count is still open — its results appear once it is closed' });
+    if (list === 'out' && !count.finished) return res.status(409).json({ message: TODAY_IN_PROGRESS });
     const pag = buildPagination(req.query || {});
-    const ctes = `WITH ${STATE_CTES}, c AS (SELECT id, seq FROM cc WHERE id = ?), sel AS (${PACK_LISTS[list]})`;
+    const ctes = `WITH ${STATE_CTES}, c AS (SELECT id, seq FROM days WHERE id = ?), sel AS (${PACK_LISTS[list]})`;
     const [{ rows }, total] = await Promise.all([
       db.execute({
         sql: `${ctes}
@@ -534,49 +489,7 @@ async function countPacks(req, res, next) {
 // PORTAL -- Admin/Owner only (stockReports.routes.js gates these)
 // ===========================================================================
 
-// POST /api/stock/counts/:id/reopen -- only the latest count, for one closed
-// too early. Its scans are kept: the scanner carries on where he stopped.
-async function reopen(req, res, next) {
-  try {
-    const count = await loadCountOr404(parseId(req.params.id), res);
-    if (!count) return;
-    const tx = await db.transaction('write');
-    let done;
-    try {
-      const { rows } = await tx.execute({
-        sql: `UPDATE stock_counts SET closed_at = NULL, closed_by = NULL
-               WHERE id = ? AND closed_at IS NOT NULL AND id = (SELECT MAX(id) FROM stock_counts)
-               RETURNING id`,
-        args: [count.id],
-      });
-      done = rows.length > 0;
-      if (done) {
-        await logAction({
-          client: tx,
-          userId: req.user.id,
-          actionType: 'STOCK_COUNT_REOPEN',
-          description: `Reopened stock count #${count.id} (closed by ${count.closed_by})`,
-          entityType: 'stock_count',
-          entityId: count.id,
-        });
-        await tx.commit();
-      } else {
-        await tx.rollback();
-      }
-    } catch (e) {
-      await tx.rollback();
-      throw e;
-    }
-    if (!done) {
-      return res.status(409).json({
-        message: count.closed_at ? 'Only the latest count can be reopened' : 'This count is already open',
-      });
-    }
-    res.json({ count: { ...count, closed_at: null, closed_by: null } });
-  } catch (err) { next(err); }
-}
-
-// GET /api/stock/missed -- per closed count: found, missed, and who scanned.
+// GET /api/stock/missed -- per finished day: found, missed, and who scanned.
 async function missedByCount(req, res, next) {
   try {
     const pag = buildPagination(req.query || {});
@@ -585,11 +498,11 @@ async function missedByCount(req, res, next) {
                     mc AS (SELECT count_id, COUNT(*) AS n FROM missed GROUP BY count_id),
                     sc AS (SELECT count_id, COUNT(*) AS n, GROUP_CONCAT(DISTINCT scanned_by) AS operators
                              FROM stock_count_scans GROUP BY count_id)
-                  SELECT cc.id, cc.seq, cc.started_at, cc.closed_at, cc.closed_by, sc.operators,
+                  SELECT cc.id, cc.seq, cc.count_date, cc.started_by, cc.started_at, sc.operators,
                          COALESCE(sc.n, 0) AS found, COALESCE(mc.n, 0) AS missed
                     FROM cc LEFT JOIN mc ON mc.count_id = cc.id LEFT JOIN sc ON sc.count_id = cc.id
-                   ORDER BY cc.id DESC ${limitSql(pag)}`),
-      db.execute('SELECT COUNT(*) AS n FROM stock_counts WHERE closed_at IS NOT NULL'),
+                   ORDER BY cc.count_date DESC ${limitSql(pag)}`),
+      db.execute(`SELECT COUNT(*) AS n FROM stock_counts WHERE count_date < ${IST_TODAY}`),
       db.execute(`WITH ${STATE_CTES}, ${MISSED_CTES} SELECT COUNT(*) AS n FROM missed`),
     ]);
     const shaped = rows.map((r) => {
@@ -609,7 +522,8 @@ async function missedByCount(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// GET /api/stock/missed/:id -- the packs missed on one count, with keys.
+// GET /api/stock/missed/:id -- the packs missed on one day, with keys and the
+// day each turned up again.
 async function missedPacks(req, res, next) {
   try {
     const count = await loadCountOr404(parseId(req.params.id), res);
@@ -619,8 +533,9 @@ async function missedPacks(req, res, next) {
     const [{ rows }, total] = await Promise.all([
       db.execute({
         sql: `${ctes}
-              SELECT sel.label_key, sel.found_again_count_id, ${PACK_COLS}
+              SELECT sel.label_key, sel.found_again_count_id, fa.count_date AS found_again_date, ${PACK_COLS}
                 FROM sel ${PACK_JOINS('sel.label_key')}
+                JOIN days fa ON fa.id = sel.found_again_count_id
                ORDER BY prm.category COLLATE NOCASE, prm.item_name COLLATE NOCASE, k.batch_id, k.label_no
                ${limitSql(pag)}`,
         args: [count.id],
@@ -630,25 +545,27 @@ async function missedPacks(req, res, next) {
     res.json(envelope(rows.map((r) => ({
       label_key: num(r.label_key),
       found_again_count_id: num(r.found_again_count_id),
+      found_again_date: r.found_again_date,
       ...shapePack(r),
     })), num(total.rows[0].n), pag));
   } catch (err) { next(err); }
 }
 
 // GET /api/stock/cross-check?from&to -- per labelled article: pieces that went
-// Out on counts closed in the window, against what POs dispatched in the
-// window should have used. Default window: the last 7 days (IST).
+// Out on finished days in the window, against what POs dispatched in the
+// window should have used. Default window: the last 7 days (IST). A count's
+// day is already an IST date, the same format as dispatch_date.
 async function crossCheck(req, res, next) {
   try {
     const q = req.query || {};
     let { from, to } = q;
-    if (!to) to = (await db.execute(`SELECT ${IST_TODAY} AS d`)).rows[0].d;
+    if (!to) to = await istToday();
     if (!isValidDateString(to)) return res.status(400).json({ message: 'to must be a valid date (YYYY-MM-DD)' });
     if (!from) from = (await db.execute({ sql: "SELECT date(?, '-6 days') AS d", args: [to] })).rows[0].d;
     if (!isValidDateString(from)) return res.status(400).json({ message: 'from must be a valid date (YYYY-MM-DD)' });
     if (from > to) return res.status(400).json({ message: 'from cannot be after to' });
 
-    const inWindow = `${IST_DATE('c.closed_at')} >= ? AND ${IST_DATE('c.closed_at')} <= ?`;
+    const inWindow = 'c.count_date >= ? AND c.count_date <= ?';
     const [articles, outs, expected, unlinked, counts] = await Promise.all([
       // Every article with stickers. Corrugated and anything no SKU uses has no
       // expected figure (packagingExclusions.js keeps corrugated out of demand).
@@ -668,7 +585,7 @@ async function crossCheck(req, res, next) {
       }),
       db.execute({ sql: EXPECTED_USE_SQL, args: [from, to] }),
       db.execute({ sql: UNLINKED_LINES_SQL, args: [from, to] }),
-      db.execute({ sql: `SELECT COUNT(*) AS n FROM stock_counts c WHERE c.closed_at IS NOT NULL AND ${inWindow}`, args: [from, to] }),
+      db.execute({ sql: `SELECT COUNT(*) AS n FROM stock_counts c WHERE c.count_date < ${IST_TODAY} AND ${inWindow}`, args: [from, to] }),
     ]);
 
     const outBy = new Map(outs.rows.map((r) => [num(r.article_id), { packs: num(r.packs), pcs: num(r.pcs) }]));
@@ -694,7 +611,7 @@ async function crossCheck(req, res, next) {
     res.json({
       from,
       to,
-      counts_closed: num(counts.rows[0].n),
+      counts_finished: num(counts.rows[0].n),
       unlinked_lines: num(unlinked.rows[0].n),
       rows,
       total: rows.length,
@@ -721,22 +638,22 @@ async function keyHistory(req, res, next) {
 
     const [sightings, state, missed] = await Promise.all([
       db.execute({
-        sql: `SELECT s.count_id, c.closed_at, s.floor_id, f.name AS floor_name, s.scanned_by, s.scanned_at
+        sql: `SELECT s.count_id, c.count_date, s.floor_id, f.name AS floor_name, s.scanned_by, s.scanned_at
                 FROM stock_count_scans s JOIN stock_counts c ON c.id = s.count_id JOIN floors f ON f.id = s.floor_id
-               WHERE s.label_key = ? ORDER BY s.count_id`,
+               WHERE s.label_key = ? ORDER BY c.count_date`,
         args: [key],
       }),
       db.execute({
         sql: `WITH ${STATE_CTES}
-              SELECT st.status, oc.id AS out_count_id, oc.closed_at AS out_closed_at
+              SELECT st.status, oc.id AS out_count_id, oc.count_date AS out_date
                 FROM kstate st LEFT JOIN cc oc ON st.status = '${STATUS.OUT}' AND oc.seq = st.last_seq + 1
                WHERE st.label_key = ?`,
         args: [key],
       }),
       db.execute({
         sql: `WITH ${STATE_CTES}, ${MISSED_CTES}
-              SELECT m.count_id, cc.closed_at FROM missed m JOIN cc ON cc.id = m.count_id
-               WHERE m.label_key = ? ORDER BY m.count_id`,
+              SELECT m.count_id, cc.count_date FROM missed m JOIN cc ON cc.id = m.count_id
+               WHERE m.label_key = ? ORDER BY cc.count_date`,
         args: [key],
       }),
     ]);
@@ -747,26 +664,26 @@ async function keyHistory(req, res, next) {
       generated_at: head.generated_at,
       generated_by: head.generated_by,
       status: st.status,
-      out_since: st.out_count_id ? { count_id: num(st.out_count_id), closed_at: st.out_closed_at } : null,
+      out_since: st.out_count_id ? { count_id: num(st.out_count_id), count_date: st.out_date } : null,
       sightings: sightings.rows.map((r) => ({
         count_id: num(r.count_id),
-        closed_at: r.closed_at ?? null,
+        count_date: r.count_date,
         floor_id: num(r.floor_id),
         floor_name: r.floor_name,
         scanned_by: r.scanned_by,
         scanned_at: r.scanned_at,
         floor_mismatch: num(r.floor_id) !== num(head.sticker_floor_id),
       })),
-      missed_on: missed.rows.map((r) => ({ count_id: num(r.count_id), closed_at: r.closed_at })),
+      missed_on: missed.rows.map((r) => ({ count_id: num(r.count_id), count_date: r.count_date })),
     });
   } catch (err) { next(err); }
 }
 
 module.exports = {
   // station (stationAuth)
-  current, start, scan, close,
+  today, scan,
   // portal, everyone logged in
   summary, listCounts, getCount, countPacks,
   // portal, Admin/Owner
-  reopen, missedByCount, missedPacks, crossCheck, keyHistory,
+  missedByCount, missedPacks, crossCheck, keyHistory,
 };
