@@ -1,9 +1,10 @@
 import api from './axios';
 
-// Stock from the daily counts (migration 102) -- /api/stock, portal login.
-// Everyone logged in: summary, counts, a count's packs (never keys).
+// Stock from the daily counts (migrations 102, 103) -- /api/stock, portal
+// login. One count per IST day, finished at midnight -- nothing to reopen.
+// Everyone logged in: summary, counts, a day's packs (never keys).
 // Admin/Owner only (the server checks): missed scans, the cross-check, a
-// sticker's history, reopening the latest count.
+// sticker's history.
 
 export async function getStockSummary(params) {
   const { data } = await api.get('/stock/summary', { params });
@@ -23,11 +24,6 @@ export async function getStockCount(id) {
 // list: found | new | out | flagged
 export async function listStockCountPacks(id, params) {
   const { data } = await api.get(`/stock/counts/${id}/packs`, { params });
-  return data;
-}
-
-export async function reopenStockCount(id) {
-  const { data } = await api.post(`/stock/counts/${id}/reopen`);
   return data;
 }
 

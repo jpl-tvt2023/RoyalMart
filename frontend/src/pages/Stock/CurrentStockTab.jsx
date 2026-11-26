@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { getStockSummary } from '../../api/stock.api';
-import { formatDateTime } from '../../utils/formatters';
+import { formatDate } from '../../utils/formatters';
 import { articleText, fmt, toastMessage } from './stockHelpers';
 
 // Current stock: one row per article and floor. A pack sits on the floor it
 // was last scanned on (its sticker's floor if it has never been counted).
+// Packs scanned today are In Stock already -- an evening delivery shows the
+// moment it is scanned -- while Out moves only when a day finishes at midnight.
 // Pieces are pack size x packs, so a part-used pack counts in full until its
 // sticker stops being scanned.
 
@@ -43,9 +45,13 @@ export default function CurrentStockTab() {
         <div className="flex flex-wrap items-end justify-between gap-3 p-4 border-b border-gray-100">
           <p className="text-sm text-gray-600">
             {data?.latest_count
-              ? <>As of count #{data.latest_count.id}, closed {formatDateTime(data.latest_count.closed_at)} by {data.latest_count.closed_by}.</>
-              : 'No count has been closed yet — every stickered pack shows as Not yet counted.'}
-            {data?.open_count && <span className="ml-1 text-amber-700">Count #{data.open_count.id} is in progress; it counts once it is closed.</span>}
+              ? <>Last full count: {formatDate(data.latest_count.count_date)}.</>
+              : 'No day has finished yet — Out shows from the day after the first count.'}
+            {data?.today && (
+              <span className="ml-1 text-gray-500">
+                {fmt(data.today.scanned)} pack{data.today.scanned !== 1 ? 's' : ''} scanned so far today (already in stock here).
+              </span>
+            )}
           </p>
           <label className="block w-48">
             <span className="block text-xs font-medium text-gray-600 mb-1">Floor</span>

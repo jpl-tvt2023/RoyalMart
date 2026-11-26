@@ -1,28 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
-  Camera, ScanLine, Play, CircleCheck, TriangleAlert, CircleX, Info, CloudOff, Loader2, Flag,
+  Camera, ScanLine, CircleCheck, TriangleAlert, CircleX, Info, CloudOff, Loader2, Moon,
 } from 'lucide-react';
 import Button from '../../components/ui/Button';
-import Modal from '../../components/ui/Modal';
 import CameraScanner from './CameraScanner';
 import { inputCls, beep, unlockAudio } from './stationHelpers';
-import { getCurrentCount, startStockCount, sendScans, closeStockCount } from '../../api/station.api';
+import { getTodayCount, sendScans } from '../../api/station.api';
 import { keyError, articleLabel, packSizeLabel } from '../../utils/barcodeStation';
-import { enqueue, nextBatch, removeSent, dropCount, loadQueue, saveQueue } from '../../utils/scanQueue';
-import { formatDateTime } from '../../utils/formatters';
+import { enqueue, nextBatch, removeSent, loadQueue, saveQueue } from '../../utils/scanQueue';
+import { formatDate, formatDateTime } from '../../utils/formatters';
 
-// The daily stock count on the public station (migration 102).
+// The daily stock count on the public station (migrations 102, 103).
 //
-// Start a count, pick the floor you are on, scan every pack -- with a scanner
-// gun (it types into the scan box and presses Enter) or the phone's camera --
-// then close it. Closing decides: a pack seen on the last count and not on
-// this one is Out.
+// THE COUNT IS THE DAY. There is no Start and no Close: pick the floor you are
+// on and scan every pack -- with a scanner gun (it types into the scan box and
+// presses Enter) or the phone's camera. The day's first scan creates today's
+// count, every scan that day joins it (evening deliveries too), and at
+// midnight IST the day is finished: a pack seen before and not scanned today
+// is Out from tomorrow.
 //
 // Every scan goes through a queue kept in localStorage (utils/scanQueue.js)
 // and is sent from there, so nothing is lost when the Wi-Fi drops or the page
 // reloads. Re-sending is harmless: the server keeps one scan per sticker per
-// count.
+// day.
 //
 // The card says counted / already counted / not our sticker, and turns AMBER
 // when the sticker belongs to another floor. It never says a pack had been
@@ -63,7 +64,7 @@ function cardFor(result, floorName) {
   }
   const p = result.pack;
   const line = `${p.vendor_name} · ${articleLabel(p)} · pack of ${packSizeLabel(p)} · label ${p.label_no} of ${p.label_count}`;
-  if (result.status === 'already_counted') return { kind: 'info', title: 'Already counted', detail: line };
+  if (result.status === 'already_counted') return { kind: 'info', title: 'Already counted today', detail: line };
   if (result.floor_mismatch) {
     return { kind: 'warn', title: `Counted — but its sticker says ${p.sticker_floor_name}`, detail: `${line}. You are on ${floorName}.` };
   }
@@ -71,7 +72,7 @@ function cardFor(result, floorName) {
 }
 
 export default function StockCountPanel({ operator, floors }) {
-  const [data, setData] = useState(null); // { count, progress, last_closed }
+  const [data, setData] = useState(null); // { today, count, progress, last_finished }
   const [loading, setLoading] = useState(true);
   const [floorId, setFloorId] = useState(readFloor);
   const [keyInput, setKeyInput] = useState('');
@@ -80,10 +81,6 @@ export default function StockCountPanel({ operator, floors }) {
   const [pending, setPending] = useState(() => loadQueue().length);
   const [offline, setOffline] = useState(false);
   const [camera, setCamera] = useState(false);
-  const [starting, setStarting] = useState(false);
-  const [confirmClose, setConfirmClose] = useState(false);
-  const [closing, setClosing] = useState(false);
-  const [closed, setClosed] = useState(null);
   const [allArticles, setAllArticles] = useState(false);
 
   const queueRef = useRef(null);
@@ -102,7 +99,7 @@ export default function StockCountPanel({ operator, floors }) {
     setPending(next.length);
   };
 
-  const load = useCallback(() => getCurrentCount()
+  const load = useCallback(() => getTodayCount()
     .then((d) => { setData(d); lastProgressRef.current = Date.now(); })
     .catch((err) => { if (err.response?.status !== 401) toast.error(err.response?.data?.message || 'Could not load the stock count'); })
     .finally(() => setLoading(false)), []);
@@ -123,29 +120,29 @@ export default function StockCountPanel({ operator, floors }) {
     sendingRef.current = true;
     let again = false;
     try {
-      const res = await sendScans(batch.count_id, batch);
+      const res = await sendScans(batch);
       setQueue(removeSent(queueRef.current, batch));
       setOffline(false);
       const name = res.floor?.name || 'this floor';
-      const cards = res.results.map((r) => ({ ...cardFor(r, name), id: `${batch.count_id}:${r.key}:${Date.now()}` }));
+      const stamp = Date.now();
+      const cards = res.results.map((r) => ({ ...cardFor(r, name), id: `${r.key}:${stamp}` }));
       if (cards.length) {
         setCard(cards[cards.length - 1]);
         setRecent((prev) => [...cards.slice().reverse(), ...prev].slice(0, RECENT_MAX));
         beep(LOUDEST.find((k) => cards.some((c) => c.kind === k)));
       }
-      setData((d) => (d?.count?.id === batch.count_id && d.progress
-        ? { ...d, progress: { ...d.progress, scanned: res.scanned } } : d));
+      // The day's first scan creates today's count -- show it at once.
+      setData((d) => (d ? {
+        ...d,
+        count: res.count || d.count,
+        progress: d.progress ? { ...d.progress, scanned: res.scanned } : d.progress,
+      } : d));
       refreshSoon();
       again = queueRef.current.length > 0;
     } catch (err) {
       const status = err.response?.status;
       if (!err.response) {
         setOffline(true); // retried on the timer
-      } else if (status === 409 || status === 404) {
-        const dropped = queueRef.current.filter((q) => q.count_id === batch.count_id).length;
-        setQueue(dropCount(queueRef.current, batch.count_id));
-        toast.error(`${err.response.data?.message || 'That count is closed'} — ${dropped} unsent scan${dropped !== 1 ? 's' : ''} dropped`);
-        load();
       } else if (status === 400) {
         setQueue(removeSent(queueRef.current, batch));
         toast.error(err.response.data?.message || 'Some scans were refused');
@@ -169,19 +166,17 @@ export default function StockCountPanel({ operator, floors }) {
     return () => { clearInterval(timer); clearTimeout(progressTimerRef.current); };
   }, [load]);
 
-  // On the count's id, not the object: progress reloads replace the object
-  // every few seconds, and must not pull the cursor out of the floor picker.
-  const countId = count?.id;
+  // Once, when the panel is ready -- progress reloads every few seconds must
+  // not pull the cursor out of the floor picker.
   useEffect(() => {
-    if (countId && finePointer()) inputRef.current?.focus();
-  }, [countId]);
+    if (!loading && finePointer()) inputRef.current?.focus();
+  }, [loading]);
 
   // A gun types like a keyboard. If the cursor has wandered off (a click on the
   // page, the camera button), its digits would land nowhere, so a digit typed
   // while no field is focused moves the cursor back to the scan box first --
   // the keystroke then lands in it.
   useEffect(() => {
-    if (!countId || confirmClose) return undefined;
     const onKeyDown = (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey || !/^[0-9]$/.test(e.key)) return;
       const el = document.activeElement;
@@ -190,12 +185,11 @@ export default function StockCountPanel({ operator, floors }) {
     };
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [countId, confirmClose]);
+  }, []);
 
   const handleKey = (raw) => {
     const key = String(raw || '').trim();
     if (!key) return;
-    if (!count) { toast.error('Start a count first'); return; }
     if (!floor) {
       setCard({ kind: 'error', title: 'Pick your floor first', detail: 'Choose the floor you are scanning on, then scan again.' });
       beep('error');
@@ -207,7 +201,7 @@ export default function StockCountPanel({ operator, floors }) {
       beep('error');
       return;
     }
-    const { queue, added } = enqueue(queueRef.current, { count_id: count.id, floor_id: floor.id, operator, key });
+    const { queue, added } = enqueue(queueRef.current, { floor_id: floor.id, operator, key });
     if (!added) {
       setCard({ kind: 'info', title: 'Already scanned', detail: `Key ${key} is waiting to be sent.` });
       beep('info');
@@ -220,6 +214,7 @@ export default function StockCountPanel({ operator, floors }) {
 
   const onSubmitKey = (e) => {
     e.preventDefault();
+    unlockAudio(); // the first Enter is a user gesture: sound can start
     const v = keyInput;
     setKeyInput('');
     handleKey(v);
@@ -227,88 +222,32 @@ export default function StockCountPanel({ operator, floors }) {
   };
 
   const pickFloor = (v) => {
+    unlockAudio();
     const id = v ? Number(v) : '';
     setFloorId(id);
     writeFloor(id);
-  };
-
-  const start = async () => {
-    unlockAudio();
-    setStarting(true);
-    setClosed(null);
-    try {
-      await startStockCount(operator);
-      toast.success('Count started — pick your floor and scan');
-    } catch (err) {
-      if (err.response?.status === 409) toast(err.response.data.message);
-      else if (err.response?.status !== 401) toast.error(err.response?.data?.message || 'Could not start the count');
-    } finally {
-      setStarting(false);
-      setCard(null);
-      setRecent([]);
-      load();
-    }
-  };
-
-  const doClose = async () => {
-    setClosing(true);
-    try {
-      const res = await closeStockCount(count.id, operator);
-      setClosed(res.count);
-      setConfirmClose(false);
-      setCamera(false);
-      setCard(null);
-      setRecent([]);
-      toast.success(`Count #${res.count.id} closed`);
-    } catch (err) {
-      if (err.response?.status === 409) setConfirmClose(false);
-      if (err.response?.status !== 401) toast.error(err.response?.data?.message || 'Could not close the count');
-    } finally {
-      setClosing(false);
-      load();
-    }
   };
 
   if (loading) {
     return <section className="bg-white rounded-xl border border-gray-200 p-6 text-sm text-gray-500">Loading the stock count…</section>;
   }
 
-  // ---- No count open ---------------------------------------------------
-  if (!count) {
-    return (
-      <div className="space-y-4">
-        {closed && <ClosedSummary count={closed} />}
-        <section className="bg-white rounded-xl border border-gray-200 p-5 space-y-3">
-          <h2 className="text-base font-semibold text-[#003049]">Stock count</h2>
-          <p className="text-sm text-gray-600">
-            {data?.last_closed
-              ? `The last count (#${data.last_closed.id}) was closed ${formatDateTime(data.last_closed.closed_at)} by ${data.last_closed.closed_by}.`
-              : 'No count has been done yet. The first count you close becomes the starting point for every count after it.'}
-          </p>
-          <Button size="lg" onClick={start} loading={starting} className="w-full sm:w-auto min-h-[44px]">
-            <Play size={18} /> Start today’s count
-          </Button>
-          {pending > 0 && (
-            <p className="text-sm text-amber-700">{pending} scan{pending !== 1 ? 's' : ''} from an earlier count still waiting to be sent.</p>
-          )}
-        </section>
-      </div>
-    );
-  }
-
-  // ---- A count is open -------------------------------------------------
-  const p = data.progress || { scanned: 0, expected: 0, found: 0, to_go: 0, by_floor: [], by_article: [] };
+  const p = data?.progress || { scanned: 0, expected: 0, found: 0, to_go: 0, by_floor: [], by_article: [] };
   const articlesToGo = p.by_article.filter((a) => a.to_go > 0);
   const style = card ? CARD_STYLE[card.kind] : null;
   const CardIcon = style?.Icon;
-  const unscannedFloors = p.by_floor.filter((f) => f.expected > 0 && f.scanned_here === 0);
+  const todayLabel = data?.today ? formatDate(data.today) : 'Today';
 
   return (
     <div className="space-y-4">
       <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-base font-semibold text-[#003049]">Count #{count.id}</h2>
-          <p className="text-xs text-gray-500">Started {formatDateTime(count.started_at)} by {count.started_by}</p>
+          <h2 className="text-base font-semibold text-[#003049]">Today’s count · {todayLabel}</h2>
+          <p className="text-xs text-gray-500">
+            {count
+              ? `Started ${formatDateTime(count.started_at)} by ${count.started_by}`
+              : 'Scan any pack to start today’s count'}
+          </p>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto] sm:items-end">
@@ -370,12 +309,20 @@ export default function StockCountPanel({ operator, floors }) {
               : `${pending} waiting to send…`}
           </div>
         )}
+
+        <p className="flex items-start gap-2 text-xs text-gray-500">
+          <Moon size={14} className="mt-0.5 shrink-0" />
+          <span>
+            Scan any time — goods that arrive in the evening join today’s count. The count finishes at midnight:
+            a pack not scanned today shows as Out tomorrow.
+          </span>
+        </p>
       </section>
 
       {/* ---- Progress ---- */}
       <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
         <div className="grid grid-cols-3 gap-2 text-center">
-          <Stat label="Scanned" value={p.scanned} />
+          <Stat label="Scanned today" value={p.scanned} />
           <Stat label="Expected" value={p.expected} hint="in stock or new" />
           <Stat label="To go" value={p.to_go} strong={p.to_go > 0} />
         </div>
@@ -394,7 +341,14 @@ export default function StockCountPanel({ operator, floors }) {
               <tbody>
                 {p.by_floor.map((f) => (
                   <tr key={f.floor_id} className={`border-b border-gray-100 ${floor?.id === f.floor_id ? 'bg-[#fdf0d5]/60' : ''}`}>
-                    <td className="px-3 py-2 font-medium text-[#003049]">{f.floor_name}</td>
+                    <td className="px-3 py-2">
+                      <span className="font-medium text-[#003049]">{f.floor_name}</span>
+                      {f.expected > 0 && f.scanned_here === 0 && (
+                        <span className="ml-2 inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800">
+                          nothing scanned yet
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-right tabular-nums">{f.expected}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{f.found}</td>
                     <td className={`px-3 py-2 text-right tabular-nums ${f.to_go > 0 ? 'font-semibold text-[#c1121f]' : 'text-green-700'}`}>{f.to_go}</td>
@@ -407,7 +361,7 @@ export default function StockCountPanel({ operator, floors }) {
 
         {articlesToGo.length > 0 && (
           <div>
-            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Still to find</p>
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Still to find today</p>
             <ul className="divide-y divide-gray-100 text-sm">
               {(allArticles ? articlesToGo : articlesToGo.slice(0, ARTICLES_SHOWN)).map((a) => (
                 <li key={a.article_id} className="flex justify-between gap-3 py-1.5">
@@ -422,6 +376,10 @@ export default function StockCountPanel({ operator, floors }) {
               </button>
             )}
           </div>
+        )}
+
+        {data?.last_finished && (
+          <p className="text-xs text-gray-500">Last finished count: {formatDate(data.last_finished.count_date)}.</p>
         )}
       </section>
 
@@ -441,43 +399,6 @@ export default function StockCountPanel({ operator, floors }) {
           </ul>
         </section>
       )}
-
-      <section className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-gray-600">
-          {pending > 0 ? 'Wait for every scan to be sent before closing.' : 'Done with every floor? Close the count to update the stock.'}
-        </p>
-        <Button variant="danger" onClick={() => setConfirmClose(true)} disabled={pending > 0 || !p.scanned} className="min-h-[44px]">
-          <Flag size={16} /> Close count
-        </Button>
-      </section>
-
-      <Modal isOpen={confirmClose} onClose={() => !closing && setConfirmClose(false)} title={`Close count #${count.id}?`} size="sm">
-        <div className="space-y-3 text-sm text-gray-700">
-          <p>
-            <span className="font-semibold">{p.scanned}</span> scanned.{' '}
-            {p.to_go > 0
-              ? <>Packs that were in stock and are <span className="font-semibold">not scanned now will be marked Out</span>.</>
-              : 'Every expected pack has been found.'}
-          </p>
-          <ul className="rounded-lg border border-gray-200 divide-y divide-gray-100">
-            {p.by_floor.map((f) => (
-              <li key={f.floor_id} className="flex justify-between px-3 py-1.5">
-                <span>{f.floor_name}</span>
-                <span className={`tabular-nums ${f.to_go > 0 ? 'text-[#c1121f] font-medium' : 'text-green-700'}`}>{f.found} of {f.expected}</span>
-              </li>
-            ))}
-          </ul>
-          {unscannedFloors.length > 0 && (
-            <p className="rounded-lg bg-amber-50 px-3 py-2 text-amber-800">
-              Nothing has been scanned on {unscannedFloors.map((f) => f.floor_name).join(', ')} yet. Did you mean to skip {unscannedFloors.length === 1 ? 'it' : 'them'}?
-            </p>
-          )}
-        </div>
-        <div className="flex gap-3 justify-end mt-5">
-          <Button variant="ghost" onClick={() => setConfirmClose(false)} disabled={closing}>Keep scanning</Button>
-          <Button variant="danger" onClick={doClose} loading={closing}>Close count</Button>
-        </div>
-      </Modal>
     </div>
   );
 }
@@ -489,17 +410,5 @@ function Stat({ label, value, hint, strong }) {
       <p className="text-xs text-gray-600">{label}</p>
       {hint && <p className="text-[11px] text-gray-400">{hint}</p>}
     </div>
-  );
-}
-
-function ClosedSummary({ count }) {
-  return (
-    <section className="rounded-xl border-2 border-green-300 bg-green-50 p-4 text-green-900">
-      <p className="text-base font-semibold">Count #{count.id} closed</p>
-      <p className="text-sm mt-1">
-        {count.found} counted · {count.new_packs} new · {count.out_packs} not found (marked Out)
-        {count.flagged > 0 && ` · ${count.flagged} on the wrong floor`}
-      </p>
-    </section>
   );
 }

@@ -6,20 +6,22 @@ import CountsTab from './CountsTab';
 import MissedScansTab from './MissedScansTab';
 import CrossCheckTab from './CrossCheckTab';
 
-// Stock from the daily counts on the Barcode Station (migration 102).
+// Stock from the daily counts on the Barcode Station (migrations 102, 103).
 //
-// Nothing records goods leaving, so stock is read off the counts: a pack seen
-// on an earlier count and missing from a closed one is Out at once; one that
-// turns up again goes back into stock, and the gap is a MISSED SCAN.
+// Nothing records goods leaving, so stock is read off the counts. The count is
+// the IST day: every scan that day joins it, and midnight finishes it. A pack
+// seen before and missing from a finished day is Out at once. One that turns
+// up again goes back into stock, and the gap is a MISSED SCAN. A pack scanned
+// today is In Stock straight away.
 //
 // Everyone logged in sees the stock and each count's results. Missed scans
 // (the scanner's mistakes) and the cross-check against dispatches are
 // Admin/Owner only -- hidden here, and refused by the server for anyone else.
 
 const TABS = [
-  { key: 'current', label: 'Current stock', subtitle: 'What the last count found, by article and floor', admin: false },
-  { key: 'counts', label: 'Counts', subtitle: 'Every closed count: what was found, what is new, what went Out', admin: false },
-  { key: 'missed', label: 'Missed scans', subtitle: 'Packs a count missed that turned up again later — Admin/Owner only', admin: true },
+  { key: 'current', label: 'Current stock', subtitle: 'What the counts found, by article and floor — today’s scans included', admin: false },
+  { key: 'counts', label: 'Counts', subtitle: 'One count per day: what was found, what is new, what went Out', admin: false },
+  { key: 'missed', label: 'Missed scans', subtitle: 'Packs a day missed that turned up again later — Admin/Owner only', admin: true },
   { key: 'cross', label: 'Cross-check', subtitle: 'Pieces Out against what dispatched POs should have used — Admin/Owner only', admin: true },
 ];
 
@@ -53,7 +55,7 @@ export default function StockPage() {
 
       {/* Keyed so a tab switch remounts rather than reusing the last tab's rows. */}
       {current.key === 'current' && <CurrentStockTab key="current" />}
-      {current.key === 'counts' && <CountsTab key="counts" isAdmin={isAdmin} />}
+      {current.key === 'counts' && <CountsTab key="counts" />}
       {current.key === 'missed' && isAdmin && <MissedScansTab key="missed" />}
       {current.key === 'cross' && isAdmin && <CrossCheckTab key="cross" />}
     </AppShell>
