@@ -149,7 +149,8 @@ async function todayCount() {
 
 // What is left to find today. Expected = every key that was not Out as of the
 // last finished day (In Stock or Not yet counted), on the floor it was last
-// seen on (its sticker's floor if it has never been counted). A pack that was
+// seen on -- today's floor once it is found, its sticker's floor if it has
+// never been counted. A pack that was
 // Out is not expected -- if one turns up it is simply counted, and the
 // expected figure does not move, so the station cannot tell it was Out.
 // countId is today's count, or null before the day's first scan.
