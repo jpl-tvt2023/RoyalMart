@@ -72,6 +72,22 @@ export function keyError(value) {
   return null;
 }
 
+// Stock counts (migration 102): scans go to the server in small groups.
+export const SCAN_BATCH_MAX = 200;
+
+export function scanBatchError(keys) {
+  if (!Array.isArray(keys) || keys.length === 0) return 'Scan at least one key';
+  if (keys.length > SCAN_BATCH_MAX) return `Send at most ${SCAN_BATCH_MAX} keys at a time`;
+  if (keys.some((k) => keyError(k))) return 'Every key must be 8 digits';
+  return null;
+}
+
+// One scan request: the floor the scanner is on, then the keys.
+export function scanFieldsError(f) {
+  const v = f || {};
+  return pickError(v.floor_id, 'Floor') || scanBatchError(v.keys);
+}
+
 export function pinError(value) {
   if (isBlank(value)) return 'PIN is required';
   if (!PIN_RE.test(String(value).trim())) return 'PIN must be 4 to 8 digits';

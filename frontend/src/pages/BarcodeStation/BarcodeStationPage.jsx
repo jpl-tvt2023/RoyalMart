@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
-  Lock, Search, X, Pencil, Trash2, Printer, Eye, UserRound, Plus, Sparkles, ShieldCheck,
+  Lock, Search, X, Pencil, Trash2, Printer, Eye, UserRound, Plus, Sparkles, ShieldCheck, Tag, ClipboardCheck,
 } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import Modal from '../../components/ui/Modal';
@@ -12,6 +12,7 @@ import BatchEditModal, { BatchFields } from './BatchEditModal';
 import KeysModal from './KeysModal';
 import PrintLabelsModal from './PrintLabelsModal';
 import PrintPortal from './PrintPortal';
+import StockCountPanel from './StockCountPanel';
 import { fieldsOf, inputCls, openPrintSheet } from './stationHelpers';
 import {
   getStationToken, getOperator, setOperator, onStationSignedOut, endStationSession,
@@ -46,6 +47,20 @@ import { sortByText } from '../../utils/sort';
 
 const PAGE_SIZE_KEY = 'barcodeStation.batches';
 const defaultFilters = () => ({ vendor_id: '', floor_id: '', date_from: '', date_to: '' });
+
+// Two jobs on one station: labelling incoming stock, and the daily stock count
+// (migration 102). Remembered per device -- the counting phone stays on Count.
+const MODE_KEY = 'roms:barcodeStation:mode';
+const MODES = [
+  { key: 'label', label: 'Label stock', Icon: Tag },
+  { key: 'count', label: 'Stock count', Icon: ClipboardCheck },
+];
+function readMode() {
+  try { return localStorage.getItem(MODE_KEY) === 'count' ? 'count' : 'label'; } catch { return 'label'; }
+}
+function writeMode(mode) {
+  try { localStorage.setItem(MODE_KEY, mode); } catch { /* storage unavailable */ }
+}
 
 export default function BarcodeStationPage() {
   const [signedIn, setSignedIn] = useState(() => !!getStationToken());
@@ -93,6 +108,8 @@ export default function BarcodeStationPage() {
 
 function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
   const [options, setOptions] = useState(null);
+  const [mode, setModeState] = useState(readMode);
+  const setMode = (m) => { setModeState(m); writeMode(m); };
 
   const [entry, setEntry] = useState(() => fieldsOf(null));
   const [entryError, setEntryError] = useState('');
@@ -277,9 +294,31 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
           <img src="/logo-wordmark.png" alt="Royal Mart" className="h-9 w-auto object-contain rounded" />
           <div className="mr-auto">
             <h1 className="text-lg font-bold text-[#003049] leading-tight">Barcode Station</h1>
-            <p className="text-xs text-gray-500">Label incoming stock</p>
+            <p className="text-xs text-gray-500">{mode === 'count' ? 'Daily stock count' : 'Label incoming stock'}</p>
           </div>
 
+          {/* Full width on a phone (its own row), inline from sm up. */}
+          <div className="order-last w-full sm:order-none sm:w-auto flex rounded-lg bg-[#003049]/5 p-1" role="tablist">
+            {MODES.map((m) => {
+              const ModeIcon = m.Icon;
+              return (
+                <button
+                  key={m.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === m.key}
+                  onClick={() => setMode(m.key)}
+                  className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 rounded-md px-3 min-h-[40px] text-sm font-medium transition-colors ${
+                    mode === m.key ? 'bg-white text-[#c1121f] shadow-sm' : 'text-[#003049] hover:bg-white/60'
+                  }`}
+                >
+                  <ModeIcon size={15} /> {m.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {mode === 'label' && (
           <form onSubmit={searchKey} className="relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
@@ -290,6 +329,7 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
               className="w-56 pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30"
             />
           </form>
+          )}
 
           <button
             type="button"
@@ -314,6 +354,9 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-5 space-y-5">
+        {mode === 'count' && <StockCountPanel operator={operator} floors={floorsSorted} />}
+
+        {mode === 'label' && (<>
         {/* ---- New entry ---- */}
         <section className="bg-white rounded-xl border border-gray-200 p-4">
           <h2 className="text-sm font-semibold text-[#003049] mb-3 flex items-center gap-2">
@@ -474,6 +517,7 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
             onPageSizeChange={(s) => { setPageSize(s); persistPageSize(PAGE_SIZE_KEY, s); setPage(1); load({ page: 1, pageSize: s }); }}
           />
         </section>
+        </>)}
       </main>
 
       {editing && (

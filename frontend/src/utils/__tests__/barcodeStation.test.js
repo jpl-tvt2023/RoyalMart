@@ -3,6 +3,7 @@ import JsBarcode from 'jsbarcode';
 import {
   batchFieldsError, operatorError, keyError, pinError, labelSizeError, wholeNumberError, printModeError,
   KEY_RE, PIN_RE, LABEL_COUNT_MAX, PACK_SIZE_MAX, PRINT_MODES, articleLabel, keyCountLabel, printCountLabel,
+  scanBatchError, scanFieldsError, SCAN_BATCH_MAX,
 } from '../barcodeStation';
 import { encodeKey } from '../../pages/BarcodeStation/stationHelpers';
 
@@ -98,5 +99,28 @@ describe('Code128 encoding of a key', () => {
     expect(bits.startsWith('11010011100')).toBe(true);  // Start C
     expect(bits.endsWith('1100011101011')).toBe(true);  // Stop
     expect(/^[01]+$/.test(bits)).toBe(true);
+  });
+});
+
+// Stock counts (migration 102). Same messages as backend tests/stockCount.test.js.
+describe('scan request rules', () => {
+  test('the batch limit matches the server', () => {
+    expect(SCAN_BATCH_MAX).toBe(200);
+  });
+
+  test('scanBatchError', () => {
+    expect(scanBatchError(['48213907'])).toBeNull();
+    expect(scanBatchError([])).toBe('Scan at least one key');
+    expect(scanBatchError(undefined)).toBe('Scan at least one key');
+    expect(scanBatchError(Array(201).fill('48213907'))).toBe('Send at most 200 keys at a time');
+    expect(scanBatchError(['48213907', '1234'])).toBe('Every key must be 8 digits');
+    expect(scanBatchError(['04821390'])).toBe('Every key must be 8 digits');
+  });
+
+  test('scanFieldsError checks the floor first, then the keys', () => {
+    expect(scanFieldsError({ floor_id: 2, keys: ['48213907'] })).toBeNull();
+    expect(scanFieldsError({ keys: [] })).toBe('Floor is required');
+    expect(scanFieldsError({ floor_id: '', keys: ['48213907'] })).toBe('Floor is required');
+    expect(scanFieldsError({ floor_id: '2', keys: [] })).toBe('Scan at least one key');
   });
 });

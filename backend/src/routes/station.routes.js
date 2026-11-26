@@ -2,6 +2,7 @@ const router = require('express').Router();
 const { stationAuth } = require('../middleware/stationAuth');
 const { stationPinLimiter } = require('../middleware/rateLimit');
 const c = require('../controllers/barcodeStation.controller');
+const counts = require('../controllers/stockCount.controller');
 
 // The public Barcode Station (migration 098). NOT behind `auth`: warehouse
 // staff use it without a portal login. POST /session trades the shared PIN for
@@ -27,5 +28,14 @@ router.post('/batches/:id/print',     c.print);
 router.post('/batches/:id/generate',  c.generate);
 router.patch('/batches/:id',          c.update);
 router.delete('/batches/:id',         c.remove);
+
+// Daily stock counts (migration 102). The station starts, scans and closes a
+// count -- the results, missed scans and the cross-check are the portal's
+// (/api/stock, stockReports.routes.js). No route here says whether a pack was
+// Out: missed scans are Admin/Owner only.
+router.get('/counts/current',         counts.current);
+router.post('/counts',                counts.start);
+router.post('/counts/:id/scans',      counts.scan);
+router.post('/counts/:id/close',      counts.close);
 
 module.exports = router;

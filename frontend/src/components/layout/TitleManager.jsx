@@ -31,6 +31,7 @@ const TITLES = [
   ['/outbound/purchase-orders', 'Outbound Purchase Orders'],
   ['/outbound/stitching', 'Stitching'],
   ['/outbound/vendors', 'Outbound Vendors'],
+  ['/stock', 'Stock'],
 ];
 
 function resolveTitle(pathname) {

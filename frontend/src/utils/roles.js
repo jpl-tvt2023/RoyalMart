@@ -112,6 +112,13 @@ export const NAV = [
         description: 'Stage-wise tracking, Processing through to our warehouses',
         roles: ALL_ROLES,
       },
+      {
+        label: 'Stock',
+        path: '/stock',
+        icon: Boxes,
+        description: 'Stickered stock from the daily counts',
+        roles: ALL_ROLES,
+      },
     ],
   },
   {
