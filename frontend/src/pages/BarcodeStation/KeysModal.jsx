@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import { Download, Printer, Search } from 'lucide-react';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
-import { getLabelBatchKeys } from '../../api/station.api';
+import { getLabelBatchKeysAdmin } from '../../api/labelBatches.api';
 import { articleLabel, packSizeLabel, keyCountLabel } from '../../utils/barcodeStation';
 import { formatDateTime } from '../../utils/formatters';
 import { inputCls, openPrintSheet } from './stationHelpers';
@@ -22,9 +22,11 @@ function downloadRows(filename, columns, rows) {
   XLSX.writeFile(wb, `${filename}-${stamp}.xlsx`);
 }
 
-// Every key of one batch: Label # -> Key. A filter box finds a label by its
-// number or key, and a range prints just those stickers again (a damaged roll,
-// a box that lost its label). `highlightKey` marks the key a search found.
+// ADMIN ONLY. Every key of one batch: Label # -> Key, from the Admin API
+// (labelBatches.api.js -- the station API has no route that shows keys). A
+// filter box finds a label by its number or key, and a range opens the print
+// preview for just those stickers (a damaged roll, a box that lost its label).
+// `highlightKey` marks the key a search found.
 export default function KeysModal({ batch, highlightKey, onClose }) {
   const [keys, setKeys] = useState(null);
   const [filter, setFilter] = useState('');
@@ -33,7 +35,7 @@ export default function KeysModal({ batch, highlightKey, onClose }) {
 
   useEffect(() => {
     let cancelled = false;
-    getLabelBatchKeys(batch.id)
+    getLabelBatchKeysAdmin(batch.id)
       .then((data) => { if (!cancelled) setKeys(data.keys); })
       .catch((err) => {
         if (cancelled) return;

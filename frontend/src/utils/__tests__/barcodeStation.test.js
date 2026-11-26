@@ -1,8 +1,8 @@
 import { describe, test, expect } from 'vitest';
 import JsBarcode from 'jsbarcode';
 import {
-  batchFieldsError, operatorError, keyError, pinError, labelSizeError, wholeNumberError, deleteReasonError,
-  KEY_RE, PIN_RE, LABEL_COUNT_MAX, PACK_SIZE_MAX, articleLabel, keyCountLabel,
+  batchFieldsError, operatorError, keyError, pinError, labelSizeError, wholeNumberError, printModeError,
+  KEY_RE, PIN_RE, LABEL_COUNT_MAX, PACK_SIZE_MAX, PRINT_MODES, articleLabel, keyCountLabel, printCountLabel,
 } from '../barcodeStation';
 import { encodeKey } from '../../pages/BarcodeStation/stationHelpers';
 
@@ -50,14 +50,11 @@ describe('operator, key and PIN', () => {
     expect(operatorError('Ramesh Kumar')).toBeNull();
   });
 
-  test('delete reason: required once generated, optional for a draft (099)', () => {
-    expect(deleteReasonError('', true)).toBe('A reason is required to delete an entry whose keys are generated');
-    expect(deleteReasonError('   ', true)).toBe('A reason is required to delete an entry whose keys are generated');
-    expect(deleteReasonError(null, true)).toBe('A reason is required to delete an entry whose keys are generated');
-    expect(deleteReasonError('Wrong vendor', true)).toBeNull();
-    expect(deleteReasonError('', false)).toBeNull();
-    expect(deleteReasonError('x'.repeat(301), false)).toBe('Reason cannot be longer than 300 characters');
-    expect(deleteReasonError('x'.repeat(300), true)).toBeNull();
+  test('print mode: dialog or direct (migration 100)', () => {
+    expect(PRINT_MODES).toEqual(['dialog', 'direct']);
+    expect(printModeError('dialog')).toBeNull();
+    expect(printModeError('direct')).toBeNull();
+    for (const bad of ['fax', '', null, 'Direct']) expect(printModeError(bad)).toBe('Print mode must be dialog or direct');
   });
 
   test('key', () => {
@@ -89,6 +86,8 @@ describe('labels', () => {
     expect(articleLabel({ category: 'Barcode', item_name: 'EAN', variant: null })).toBe('Barcode · EAN');
     expect(keyCountLabel(180)).toBe('180 keys');
     expect(keyCountLabel(1)).toBe('1 key');
+    expect(printCountLabel(0)).toBe('not printed yet');
+    expect(printCountLabel(2)).toBe('printed 2×');
   });
 });
 

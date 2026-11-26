@@ -14,7 +14,10 @@ export const KEY_RE = /^[1-9]\d{7}$/;
 export const PACK_SIZE_MAX = 1000000;
 export const LABEL_COUNT_MAX = 2000;
 export const OPERATOR_MAX = 60;
-export const DELETE_REASON_MAX = 300;
+
+// How the station prints (migration 100): `dialog` through the browser's print
+// dialog, `direct` for kiosk PCs (Chrome/Edge with --kiosk-printing).
+export const PRINT_MODES = ['dialog', 'direct'];
 
 export const PIN_RE = /^\d{4,8}$/;
 
@@ -59,13 +62,8 @@ export function operatorError(value) {
   return null;
 }
 
-// Required once the entry's keys exist (its stickers may be on boxes),
-// optional for a draft (099).
-export function deleteReasonError(value, isGenerated) {
-  const reason = value == null ? '' : String(value).trim();
-  if (isGenerated && !reason) return 'A reason is required to delete an entry whose keys are generated';
-  if (reason.length > DELETE_REASON_MAX) return `Reason cannot be longer than ${DELETE_REASON_MAX} characters`;
-  return null;
+export function printModeError(value) {
+  return PRINT_MODES.includes(value) ? null : 'Print mode must be dialog or direct';
 }
 
 export function keyError(value) {
@@ -101,3 +99,6 @@ export const packSizeLabel = (b) => (b ? `${b.pack_size}${b.unit_metric ? ` ${b.
 
 // "180 keys" / "1 key"
 export const keyCountLabel = (n) => `${n} key${Number(n) === 1 ? '' : 's'}`;
+
+// "printed 2×" / "not printed yet"
+export const printCountLabel = (n) => (Number(n) > 0 ? `printed ${n}×` : 'not printed yet');

@@ -57,15 +57,26 @@ async function cleanStation() {
 async function resetSettings() {
   await db.execute(`UPDATE barcode_station_settings
                        SET pin_hash = NULL, pin_version = 0, failed_attempts = 0, locked_until = NULL,
-                           label_width_mm = 152, label_height_mm = 51
+                           label_width_mm = 152, label_height_mm = 51, print_mode = 'dialog'
                      WHERE id = 1`);
 }
+
+// The Admin side (labelBatches.routes.js): portal login, Admin/Owner only.
+const asEmployee = (req) => req.set('Authorization', `Bearer ${employeeToken}`);
+const stationPrint = (id, body) => asStation(request(app).post(`/api/station/batches/${id}/print`)).send(body);
+const printsOf = async (batchId) => (await db.execute({
+  sql: `SELECT user_id, description FROM audit_logs
+         WHERE entity_type = 'label_batch' AND entity_id = ? AND action_type = 'LABEL_BATCH_PRINT' ORDER BY id`,
+  args: [batchId],
+})).rows;
 
 const insertId = async (sql, args) => Number((await db.execute({ sql, args })).rows[0].id);
 
 beforeAll(async () => {
   const login = await request(app).post('/api/auth/login').send({ username: 'admin', password: 'RoyalMart#Admin' });
   adminToken = login.body.accessToken;
+  fx.adminId = Number(login.body.user.id);
+  fx.adminName = login.body.user.name;
 
   // An Employee, for the Admin-only checks.
   const empUser = `bs-emp-${uid()}`;
@@ -355,10 +366,11 @@ describe('Barcode Station — drafts', () => {
     expect(noOperator.status).toBe(400);
     expect(noOperator.body.message).toBe('Operator name is required');
 
-    const res = await asStation(request(app).delete(`/api/station/batches/${draft.id}`)).send({ operator: OPERATOR });
+    const res = await asStation(request(app).delete(`/api/station/batches/${draft.id}`)).send({ operator: 'Suresh' });
     expect(res.status).toBe(200);
-    const { rows } = await db.execute({ sql: 'SELECT deleted_at FROM label_batches WHERE id = ?', args: [draft.id] });
+    const { rows } = await db.execute({ sql: 'SELECT deleted_at, deleted_by FROM label_batches WHERE id = ?', args: [draft.id] });
     expect(rows[0].deleted_at).toBeTruthy();
+    expect(rows[0].deleted_by).toBe('Suresh');
 
     const list = await asStation(request(app).get('/api/station/batches'));
     expect(list.body.rows.map(r => r.id)).not.toContain(draft.id);
@@ -444,77 +456,33 @@ describe('Barcode Station — Generate', () => {
     expect(await keysOf(draft.id)).toHaveLength(10);
   });
 
-  test('once generated, a batch cannot be generated again or edited', async () => {
+  test('once generated, a batch is final: it cannot be generated again, edited or deleted', async () => {
     const draft = (await createDraft()).body;
     expect((await generate(draft.id)).status).toBe(200);
 
+    const final = 'Keys have already been generated for this batch — it can no longer be changed';
     const again = await generate(draft.id);
     expect(again.status).toBe(409);
-    expect(again.body.message).toBe('Keys have already been generated for this batch — it can no longer be changed');
-    expect((await asStation(request(app).patch(`/api/station/batches/${draft.id}`)).send({ pack_size: 1, operator: OPERATOR })).status).toBe(409);
+    expect(again.body.message).toBe(final);
+    const edit = await asStation(request(app).patch(`/api/station/batches/${draft.id}`)).send({ pack_size: 1, operator: OPERATOR });
+    expect(edit.status).toBe(409);
+    const del = await asStation(request(app).delete(`/api/station/batches/${draft.id}`)).send({ operator: OPERATOR });
+    expect(del.status).toBe(409);
+    expect(del.body.message).toBe(final);
+
+    const { rows } = await db.execute({ sql: 'SELECT deleted_at, pack_size FROM label_batches WHERE id = ?', args: [draft.id] });
+    expect(rows[0]).toMatchObject({ deleted_at: null, pack_size: 300 });
     expect(await keysOf(draft.id)).toHaveLength(5);
   });
 
-  test('a generated batch can be deleted with a reason, and its keys are retired, not freed (099)', async () => {
-    const draft = (await createDraft({ label_count: 6 })).body;
+  test('the schema itself refuses to delete a generated batch (101)', async () => {
+    const draft = (await createDraft()).body;
     expect((await generate(draft.id)).status).toBe(200);
-    const keys = await keysOf(draft.id);
-    const del = (body) => asStation(request(app).delete(`/api/station/batches/${draft.id}`)).send(body);
-
-    const noReason = await del({ operator: OPERATOR });
-    expect(noReason.status).toBe(400);
-    expect(noReason.body.message).toBe('A reason is required to delete an entry whose keys are generated');
-    const blank = await del({ operator: OPERATOR, reason: '   ' });
-    expect(blank.body.message).toBe('A reason is required to delete an entry whose keys are generated');
-    const tooLong = await del({ operator: OPERATOR, reason: 'x'.repeat(301) });
-    expect(tooLong.status).toBe(400);
-    expect(tooLong.body.message).toBe('Reason cannot be longer than 300 characters');
-
-    const ok = await del({ operator: 'Suresh', reason: '  Wrong vendor picked  ' });
-    expect(ok.status).toBe(200);
-
-    const { rows } = await db.execute({
-      sql: 'SELECT deleted_at, deleted_by, delete_reason, generated_at FROM label_batches WHERE id = ?',
-      args: [draft.id],
-    });
-    expect(rows[0].deleted_at).toBeTruthy();
-    expect(rows[0].generated_at).toBeTruthy();
-    expect(rows[0]).toMatchObject({ deleted_by: 'Suresh', delete_reason: 'Wrong vendor picked' });
-
-    // The keys stay taken -- same rows, same batch -- so they can never be reused.
-    expect(await keysOf(draft.id)).toEqual(keys);
-
-    const list = await asStation(request(app).get('/api/station/batches'));
-    expect(list.body.rows.map(r => r.id)).not.toContain(draft.id);
-
-    const scan = await asStation(request(app).get(`/api/station/keys/${keys[2].label_key}`));
-    expect(scan.status).toBe(410);
-    expect(scan.body.message).toBe(`Key ${keys[2].label_key} belongs to batch #${draft.id}, which was deleted — its sticker is no longer valid`);
-
-    expect((await asStation(request(app).get(`/api/station/batches/${draft.id}/keys`))).status).toBe(404);
-    expect((await generate(draft.id)).status).toBe(404);
-    expect((await asStation(request(app).patch(`/api/station/batches/${draft.id}`)).send({ pack_size: 1, operator: OPERATOR })).status).toBe(404);
-    expect((await del({ operator: OPERATOR, reason: 'again' })).status).toBe(404);
-
-    const audit = await db.execute({
-      sql: `SELECT description FROM audit_logs WHERE entity_type = 'label_batch' AND entity_id = ? AND action_type = 'LABEL_BATCH_DELETE'`,
-      args: [draft.id],
-    });
-    expect(audit.rows).toHaveLength(1);
-    expect(audit.rows[0].description).toMatch(/^Suresh deleted generated label batch #\d+ .* 6 keys retired\. Reason: Wrong vendor picked$/);
-  });
-
-  test('a draft still deletes without a reason, and a reason given is kept', async () => {
-    const plain = (await createDraft()).body;
-    expect((await asStation(request(app).delete(`/api/station/batches/${plain.id}`)).send({ operator: OPERATOR })).status).toBe(200);
-
-    const withReason = (await createDraft()).body;
-    expect((await asStation(request(app).delete(`/api/station/batches/${withReason.id}`)).send({ operator: OPERATOR, reason: 'Duplicate' })).status).toBe(200);
-    const { rows } = await db.execute({
-      sql: 'SELECT id, deleted_by, delete_reason FROM label_batches WHERE id IN (?, ?) ORDER BY id',
-      args: [plain.id, withReason.id],
-    });
-    expect(rows.map(r => [r.deleted_by, r.delete_reason])).toEqual([[OPERATOR, null], [OPERATOR, 'Duplicate']]);
+    await expect(db.execute({ sql: `UPDATE label_batches SET deleted_at = datetime('now') WHERE id = ?`, args: [draft.id] }))
+      .rejects.toThrow(/CHECK constraint failed/);
+    const cols = (await db.execute('PRAGMA table_info(label_batches)')).rows.map(r => r.name);
+    expect(cols).toContain('deleted_by');
+    expect(cols).not.toContain('delete_reason');
   });
 
   test('two Generate clicks at once write one set of keys', async () => {
@@ -556,24 +524,31 @@ describe('Barcode Station — keys, lookup and list', () => {
     draft = (await createDraft({ label_count: 3 })).body;
   });
 
-  test('every key of a batch, in label order, with the batch for the print sheet', async () => {
-    const res = await asStation(request(app).get(`/api/station/batches/${batch.id}/keys`));
+  test('an Admin sees every key of a batch, in label order, with the batch and sticker size', async () => {
+    const res = await asAdmin(request(app).get(`/api/label-batches/${batch.id}/keys`));
     expect(res.status).toBe(200);
     expect(res.body.batch).toMatchObject({ id: batch.id, vendor_name: fx.vendorName, floor_id: fx.floorId, unit_metric: 'pcs' });
     expect(res.body.keys).toHaveLength(60);
     expect(res.body.keys.map(k => k.label_no)).toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
+    expect(res.body.label).toEqual({ width_mm: 152, height_mm: 51 });
   });
 
   test('a slice of labels, for a reprint', async () => {
-    const res = await asStation(request(app).get(`/api/station/batches/${batch.id}/keys`)).query({ from: 37, to: 40 });
+    const res = await asAdmin(request(app).get(`/api/label-batches/${batch.id}/keys`)).query({ from: 37, to: 40 });
     expect(res.status).toBe(200);
     expect(res.body.keys.map(k => k.label_no)).toEqual([37, 38, 39, 40]);
     for (const q of [{ from: 0 }, { to: 61 }, { from: 10, to: 5 }, { from: 'x' }]) {
-      const bad = await asStation(request(app).get(`/api/station/batches/${batch.id}/keys`)).query(q);
+      const bad = await asAdmin(request(app).get(`/api/label-batches/${batch.id}/keys`)).query(q);
       expect(bad.status).toBe(400);
       expect(bad.body.message).toBe('Labels must be a range within 1 to 60');
     }
-    expect((await asStation(request(app).get(`/api/station/batches/${draft.id}/keys`))).status).toBe(409);
+    expect((await asAdmin(request(app).get(`/api/label-batches/${draft.id}/keys`))).status).toBe(409);
+  });
+
+  test('the station has no route that shows keys', async () => {
+    const res = await asStation(request(app).get(`/api/station/batches/${batch.id}/keys`));
+    expect(res.status).toBe(404);
+    expect(res.body).not.toHaveProperty('keys');
   });
 
   test('any key leads back to its entry and label number', async () => {
@@ -598,17 +573,28 @@ describe('Barcode Station — keys, lookup and list', () => {
     }
   });
 
-  test('the list: the envelope, drafts first, a key preview on generated rows', async () => {
+  test('the station list: the envelope, drafts first, and no keys anywhere in it', async () => {
     const res = await asStation(request(app).get('/api/station/batches')).query({ page: 1, page_size: 25 });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ total: 2, page: 1, page_size: 25 });
     expect(res.body.rows.map(r => r.id)).toEqual([draft.id, batch.id]);
-    const keys = await keysOf(batch.id);
-    expect(res.body.rows[1].key_preview).toEqual(keys.slice(0, 3).map(k => k.label_key));
-    expect(res.body.rows[0].key_preview).toEqual([]);
+    expect(res.body.rows[1]).toMatchObject({ key_count: 60, print_count: 0, is_generated: true });
+    for (const row of res.body.rows) expect(row).not.toHaveProperty('key_preview');
+    // Not one of the batch's keys appears anywhere in the response.
+    const body = JSON.stringify(res.body);
+    for (const k of await keysOf(batch.id)) expect(body).not.toContain(String(k.label_key));
 
     const one = await asStation(request(app).get('/api/station/batches')).query({ id: batch.id });
     expect(one.body.rows.map(r => r.id)).toEqual([batch.id]);
+  });
+
+  test("the Admin's list carries a key preview on generated rows", async () => {
+    const res = await asAdmin(request(app).get('/api/label-batches')).query({ page: 1, page_size: 25 });
+    expect(res.status).toBe(200);
+    expect(res.body.rows.map(r => r.id)).toEqual([draft.id, batch.id]);
+    const keys = await keysOf(batch.id);
+    expect(res.body.rows[1].key_preview).toEqual(keys.slice(0, 3).map(k => k.label_key));
+    expect(res.body.rows[0].key_preview).toEqual([]);
   });
 
   test('the date filter works on the IST day the keys were generated', async () => {
@@ -618,6 +604,127 @@ describe('Barcode Station — keys, lookup and list', () => {
     expect(res.body.rows.map(r => r.id)).toEqual([batch.id]);
     const bad = await asStation(request(app).get('/api/station/batches')).query({ date_from: '25-11-2026' });
     expect(bad.status).toBe(400);
+  });
+});
+
+describe('Barcode Station — printing', () => {
+  let batch;
+  beforeAll(async () => {
+    await cleanStation();
+    batch = (await createDraft({ label_count: 12 })).body;
+    await generate(batch.id);
+  });
+
+  test('the station prints any generated batch, every print is logged with the operator', async () => {
+    const res = await stationPrint(batch.id, { operator: 'Ramesh' });
+    expect(res.status).toBe(200);
+    expect(res.body.keys).toHaveLength(12);
+    expect(res.body.keys.map(k => k.label_no)).toEqual(Array.from({ length: 12 }, (_, i) => i + 1));
+    expect(res.body.keys.map(k => k.label_key)).toEqual((await keysOf(batch.id)).map(k => k.label_key));
+    expect(res.body.label).toEqual({ width_mm: 152, height_mm: 51 });
+    expect(res.body.batch).toMatchObject({ id: batch.id, print_count: 1 });
+
+    // A reprint of a range -- allowed any number of times, each one logged.
+    const again = await stationPrint(batch.id, { operator: 'Suresh', from: 4, to: 6 });
+    expect(again.status).toBe(200);
+    expect(again.body.keys.map(k => k.label_no)).toEqual([4, 5, 6]);
+
+    const stationUser = await barcodeStationUser();
+    const logged = await printsOf(batch.id);
+    expect(logged).toHaveLength(2);
+    expect(logged.every(r => Number(r.user_id) === stationUser.id)).toBe(true);
+    expect(logged[0].description).toMatch(/^Ramesh printed all 12 labels of label batch #\d+ /);
+    expect(logged[1].description).toMatch(/^Suresh printed labels 4–6 of 12 of label batch #\d+ /);
+
+    const list = await asStation(request(app).get('/api/station/batches')).query({ id: batch.id });
+    expect(list.body.rows[0].print_count).toBe(2);
+  });
+
+  test('a print needs an operator, a generated batch and a valid range', async () => {
+    const noOperator = await stationPrint(batch.id, {});
+    expect(noOperator.status).toBe(400);
+    expect(noOperator.body.message).toBe('Operator name is required');
+
+    const draft = (await createDraft()).body;
+    const notYet = await stationPrint(draft.id, { operator: OPERATOR });
+    expect(notYet.status).toBe(409);
+    expect(notYet.body.message).toBe('Generate the keys for this batch first');
+
+    const badRange = await stationPrint(batch.id, { operator: OPERATOR, from: 5, to: 13 });
+    expect(badRange.status).toBe(400);
+    expect(badRange.body.message).toBe('Labels must be a range within 1 to 12');
+
+    expect((await stationPrint(999999, { operator: OPERATOR })).status).toBe(404);
+    // None of the refused attempts was logged as a print.
+    expect(await printsOf(draft.id)).toHaveLength(0);
+  });
+
+  test("an Admin's print is logged under the Admin", async () => {
+    const before = (await printsOf(batch.id)).length;
+    const res = await asAdmin(request(app).post(`/api/label-batches/${batch.id}/print`)).send({ from: 1, to: 2 });
+    expect(res.status).toBe(200);
+    expect(res.body.keys).toHaveLength(2);
+    const logged = await printsOf(batch.id);
+    expect(logged).toHaveLength(before + 1);
+    expect(Number(logged[logged.length - 1].user_id)).toBe(fx.adminId);
+    expect(logged[logged.length - 1].description).toMatch(new RegExp(`^${fx.adminName} printed labels 1–2 of 12 `));
+  });
+});
+
+describe('Barcode Station — the Admin router', () => {
+  let batch;
+  beforeAll(async () => {
+    await cleanStation();
+    batch = (await createDraft({ label_count: 3 })).body;
+    await generate(batch.id);
+  });
+
+  test('only a portal Admin/Owner gets in: Employee 403, station token 401, nobody 401', async () => {
+    const calls = [
+      () => request(app).get('/api/label-batches'),
+      () => request(app).get(`/api/label-batches/${batch.id}/keys`),
+      () => request(app).post(`/api/label-batches/${batch.id}/print`),
+    ];
+    for (const call of calls) {
+      expect((await asAdmin(call())).status).toBe(200);
+      expect((await asEmployee(call())).status).toBe(403);
+      expect((await asStation(call())).status).toBe(401);
+      expect((await call()).status).toBe(401);
+    }
+  });
+
+  test('a refused caller is never logged as having printed', async () => {
+    const before = (await printsOf(batch.id)).length;
+    await asEmployee(request(app).post(`/api/label-batches/${batch.id}/print`)).send({});
+    await asStation(request(app).post(`/api/label-batches/${batch.id}/print`)).send({});
+    expect(await printsOf(batch.id)).toHaveLength(before);
+  });
+});
+
+describe('Barcode Station — print mode', () => {
+  afterAll(() => setSettings({ print_mode: 'dialog' }));
+
+  test("defaults to the print dialog, Admin switches it, the station reads it", async () => {
+    const read = await asAdmin(request(app).get('/api/configurations/barcode-station'));
+    expect(read.body.print_mode).toBe('dialog');
+    expect((await asStation(request(app).get('/api/station/options'))).body.print_mode).toBe('dialog');
+
+    const set = await setSettings({ print_mode: 'direct' });
+    expect(set.status).toBe(200);
+    expect(set.body.print_mode).toBe('direct');
+    expect((await asStation(request(app).get('/api/station/options'))).body.print_mode).toBe('direct');
+
+    const { rows } = await db.execute(`SELECT description, changes FROM audit_logs
+                                         WHERE action_type = 'BARCODE_STATION_SETTINGS_UPDATE' ORDER BY id DESC LIMIT 1`);
+    expect(rows[0].description).toMatch(/set printing to direct/);
+    expect(JSON.parse(rows[0].changes)).toEqual([{ field: 'print_mode', old: 'dialog', new: 'direct' }]);
+  });
+
+  test('only dialog or direct, and only Admin/Owner may change it', async () => {
+    const bad = await setSettings({ print_mode: 'fax' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.message).toBe('Print mode must be dialog or direct');
+    expect((await setSettings({ print_mode: 'dialog' }, employeeToken)).status).toBe(403);
   });
 });
 

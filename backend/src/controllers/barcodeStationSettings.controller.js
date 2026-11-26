@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
-const { pinError, labelSizeError } = require('../services/barcodeStation.service');
+const { pinError, labelSizeError, printModeError } = require('../services/barcodeStation.service');
 
 // Admin -> Purchase Config -> Barcode Station (migration 098). Admin/Owner only.
 //
@@ -10,6 +10,9 @@ const { pinError, labelSizeError } = require('../services/barcodeStation.service
 // token carries the version it was issued under, so every device is asked for
 // the (new) PIN on its next request. Both also clear the brute-force lock, as
 // does "clear lock" on its own.
+//
+// print_mode (migration 100) is how the station prints: 'dialog' (the
+// browser's print dialog) or 'direct' (kiosk PCs, no dialog, no preview).
 
 const BCRYPT_COST = 12;
 
@@ -17,7 +20,7 @@ async function readSettings() {
   const { rows } = await db.execute(
     `SELECT s.pin_hash IS NOT NULL AS pin_set, s.pin_version, s.failed_attempts, s.locked_until,
             (s.locked_until IS NOT NULL AND s.locked_until > datetime('now')) AS locked,
-            s.label_width_mm, s.label_height_mm, s.updated_at, u.name AS updated_by_name
+            s.label_width_mm, s.label_height_mm, s.print_mode, s.updated_at, u.name AS updated_by_name
        FROM barcode_station_settings s
        LEFT JOIN users u ON u.id = s.updated_by
       WHERE s.id = 1`
@@ -31,6 +34,7 @@ async function readSettings() {
     locked_until: r.locked_until,
     label_width_mm: Number(r.label_width_mm),
     label_height_mm: Number(r.label_height_mm),
+    print_mode: r.print_mode,
     updated_at: r.updated_at,
     updated_by_name: r.updated_by_name,
   };
@@ -44,7 +48,7 @@ async function get(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// PUT { pin?, label_width_mm?, label_height_mm?, sign_out_all?, clear_lock? }
+// PUT { pin?, label_width_mm?, label_height_mm?, print_mode?, sign_out_all?, clear_lock? }
 async function update(req, res, next) {
   try {
     const body = req.body || {};
@@ -79,15 +83,30 @@ async function update(req, res, next) {
       const err = labelSizeError(width, height);
       if (err) return res.status(400).json({ message: err });
       const size = { label_width_mm: Number(width), label_height_mm: Number(height) };
-      changes = diffFields(current, size, ['label_width_mm', 'label_height_mm']);
-      if (changes.length) {
+      const sizeChanges = diffFields(current, size, ['label_width_mm', 'label_height_mm']);
+      if (sizeChanges.length) {
         sets.push('label_width_mm = ?', 'label_height_mm = ?');
         args.push(size.label_width_mm, size.label_height_mm);
         actions.push(`set the sticker size to ${size.label_width_mm} × ${size.label_height_mm} mm`);
+        changes = changes.concat(sizeChanges);
+      }
+    }
+    if (has('print_mode')) {
+      const err = printModeError(body.print_mode);
+      if (err) return res.status(400).json({ message: err });
+      const modeChanges = diffFields(current, { print_mode: body.print_mode }, ['print_mode']);
+      if (modeChanges.length) {
+        sets.push('print_mode = ?');
+        args.push(body.print_mode);
+        actions.push(body.print_mode === 'direct'
+          ? 'set printing to direct (kiosk PCs, no print dialog)'
+          : 'set printing to the print dialog');
+        changes = changes.concat(modeChanges);
       }
     }
     if (!sets.length) {
-      if (has('label_width_mm') || has('label_height_mm')) return res.json(current);
+      // A size or mode saved unchanged is not an error -- just nothing to write.
+      if (has('label_width_mm') || has('label_height_mm') || has('print_mode')) return res.json(current);
       return res.status(400).json({ message: 'Nothing to update' });
     }
 
