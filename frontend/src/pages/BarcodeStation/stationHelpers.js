@@ -64,6 +64,69 @@ export function layoutFor(widthMm, heightMm, modules) {
   };
 }
 
+// ---- Stock counts (migration 102) ------------------------------------------
+
+// Scan feedback by ear -- the person scanning watches the boxes, not the
+// screen. Web Audio tones, no sound files. Phones only allow sound after a tap,
+// so unlockAudio() runs on the Start / camera buttons.
+let audioCtx = null;
+function audio() {
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    audioCtx = new Ctx();
+  }
+  return audioCtx;
+}
+export function unlockAudio() {
+  try { audio()?.resume(); } catch { /* no sound on this device */ }
+}
+const TONES = {
+  ok: [{ f: 1046, d: 0.09 }],                          // counted
+  warn: [{ f: 660, d: 0.12 }, { f: 660, d: 0.12 }],    // counted, wrong floor
+  info: [{ f: 520, d: 0.06 }],                         // already counted
+  error: [{ f: 196, d: 0.35, type: 'square' }],        // unknown key
+};
+export function beep(kind) {
+  try {
+    const ctx = audio();
+    if (!ctx) return;
+    let t = ctx.currentTime;
+    for (const tone of TONES[kind] || TONES.ok) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = tone.type || 'sine';
+      osc.frequency.value = tone.f;
+      gain.gain.value = 0.08;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + tone.d);
+      t += tone.d + 0.05;
+    }
+  } catch { /* no sound on this device */ }
+}
+
+// What to tell the person when the camera will not start.
+export function cameraErrorMessage(err) {
+  if (typeof window !== 'undefined' && !window.isSecureContext) {
+    return 'The camera only works on the secure https:// link of this page.';
+  }
+  switch (err?.name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'Camera access is blocked. Allow the camera for this site in your browser settings, then tap the camera button again.';
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return 'No camera was found on this device.';
+    case 'NotReadableError':
+    case 'AbortError':
+      return 'The camera is busy in another app. Close that app, then try again.';
+    default:
+      return 'The camera could not be started on this browser.';
+  }
+}
+
 // A print job from a print response: each key with its barcode modules, plus
 // the sticker size. `encode` comes from loadKeyEncoder.
 export const toPrintJob = (data, encode) => ({

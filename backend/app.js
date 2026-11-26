@@ -53,6 +53,8 @@ app.use('/api/integration',  require('./src/routes/integration.routes'));
 app.use('/api/station',      require('./src/routes/station.routes'));
 // ...and its Admin side: the only place barcode keys can be viewed (Admin/Owner).
 app.use('/api/label-batches', require('./src/routes/labelBatches.routes'));
+// Stock from the daily counts (102): results for everyone, the rest Admin/Owner.
+app.use('/api/stock',        require('./src/routes/stockReports.routes'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 

@@ -86,6 +86,23 @@ function keyError(value) {
   return null;
 }
 
+// Stock counts (migration 102): the station sends scans in small groups, so a
+// queue that built up while the Wi-Fi was down drains in a few requests.
+const SCAN_BATCH_MAX = 200;
+
+function scanBatchError(keys) {
+  if (!Array.isArray(keys) || keys.length === 0) return 'Scan at least one key';
+  if (keys.length > SCAN_BATCH_MAX) return `Send at most ${SCAN_BATCH_MAX} keys at a time`;
+  if (keys.some((k) => keyError(k))) return 'Every key must be 8 digits';
+  return null;
+}
+
+// One scan request: the floor the scanner is on, then the keys.
+function scanFieldsError(f) {
+  const v = f || {};
+  return pickError(v.floor_id, 'Floor') || scanBatchError(v.keys);
+}
+
 function pinError(value) {
   if (isBlank(value)) return 'PIN is required';
   if (!PIN_RE.test(String(value).trim())) return 'PIN must be 4 to 8 digits';
@@ -105,6 +122,7 @@ function labelSizeError(width, height) {
 
 module.exports = {
   KEY_MIN, KEY_MAX, KEY_RE, PACK_SIZE_MAX, LABEL_COUNT_MAX, OPERATOR_MAX, PRINT_MODES, PIN_RE,
-  LABEL_WIDTH_MIN, LABEL_WIDTH_MAX, LABEL_HEIGHT_MIN, LABEL_HEIGHT_MAX,
+  LABEL_WIDTH_MIN, LABEL_WIDTH_MAX, LABEL_HEIGHT_MIN, LABEL_HEIGHT_MAX, SCAN_BATCH_MAX,
   wholeNumberError, batchFieldsError, normOperator, operatorError, printModeError, keyError, pinError, labelSizeError,
+  scanBatchError, scanFieldsError,
 };

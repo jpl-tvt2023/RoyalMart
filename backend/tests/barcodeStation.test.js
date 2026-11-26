@@ -50,6 +50,9 @@ const keysOf = async (batchId) => (await db.execute({
 })).rows.map(r => ({ label_key: Number(r.label_key), label_no: Number(r.label_no), batch_id: Number(r.batch_id) }));
 
 async function cleanStation() {
+  // Stock-count scans point at label_keys (migration 102), so they go first.
+  await db.execute('DELETE FROM stock_count_scans');
+  await db.execute('DELETE FROM stock_counts');
   await db.execute('DELETE FROM label_keys');
   await db.execute('DELETE FROM label_batches');
 }

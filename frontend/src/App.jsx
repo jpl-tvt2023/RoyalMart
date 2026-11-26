@@ -27,6 +27,7 @@ import OutboundPODetail from './pages/OutboundPOs/OutboundPODetail';
 import PackagingList from './pages/packaging/PackagingList';
 import BarcodeStationPage from './pages/BarcodeStation/BarcodeStationPage';
 import LabelPrintPage from './pages/BarcodeStation/LabelPrintPage';
+import StockPage from './pages/Stock/StockPage';
 import { ALL_ROLES, ADMIN_ONLY } from './utils/roles';
 
 export default function App() {
@@ -131,6 +132,11 @@ export default function App() {
           } />
           <Route path="/outbound/vendors" element={
             <ProtectedRoute roles={ALL_ROLES}><OutboundVendorsPage /></ProtectedRoute>
+          } />
+          {/* Stock from the daily counts (102). Everyone sees stock and counts;
+              the page hides the Admin/Owner tabs and the server enforces them. */}
+          <Route path="/stock" element={
+            <ProtectedRoute roles={ALL_ROLES}><StockPage /></ProtectedRoute>
           } />
 
           {/* Legacy routes redirect to current ones */}

@@ -27,9 +27,9 @@ const {
 // renders off-screen straight to the printer. Viewing keys -- the list's key
 // preview, a batch's key sheet -- is the Admin router's alone.
 
-// India has no daylight saving, so a fixed offset turns the stored UTC
-// generated_at into the IST calendar day the operator saw.
-const IST_DATE = (col) => `date(${col}, '+5 hours', '+30 minutes')`;
+// The stored UTC generated_at as the IST calendar day the operator saw --
+// shared with the stock counts (migration 102).
+const { IST_DATE } = require('../services/stockCount.service');
 
 const ALREADY_GENERATED = 'Keys have already been generated for this batch — it can no longer be changed';
 const BATCH_NOT_FOUND = 'Label batch not found';

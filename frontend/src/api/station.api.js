@@ -113,3 +113,31 @@ export async function findLabelKey(key) {
   const { data } = await station.get(`/keys/${encodeURIComponent(key)}`);
   return data;
 }
+
+// ---- Stock counts (migration 102) -----------------------------------------
+// The station never learns whether a pack was Out -- missed scans are
+// Admin/Owner only, in the portal (stock.api.js).
+
+// { count, progress, last_closed } -- count is null when none is open.
+export async function getCurrentCount() {
+  const { data } = await station.get('/counts/current');
+  return data;
+}
+
+export async function startStockCount(operator) {
+  const { data } = await station.post('/counts', { operator });
+  return data;
+}
+
+// { results: [{ key, status, pack?, floor_mismatch? }], scanned, floor }
+// status: counted | already_counted | unknown. Re-sending is harmless.
+export async function sendScans(countId, { operator, floor_id, keys }) {
+  const { data } = await station.post(`/counts/${countId}/scans`, { operator, floor_id, keys });
+  return data;
+}
+
+// { count: { found, new_packs, out_packs, flagged, ... } }
+export async function closeStockCount(countId, operator) {
+  const { data } = await station.post(`/counts/${countId}/close`, { operator });
+  return data;
+}
