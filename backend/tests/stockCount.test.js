@@ -245,8 +245,10 @@ describe('Stock counts — day 1 (the baseline)', () => {
     expect(p).toMatchObject({ scanned: 3, expected: 5, found: 3, to_go: 2 });
     const f1 = p.by_floor.find((f) => f.floor_id === fx.floor1);
     const f2 = p.by_floor.find((f) => f.floor_id === fx.floor2);
-    expect(f1).toMatchObject({ expected: 3, found: 2, scanned_here: 3, to_go: 1 });
-    expect(f2).toMatchObject({ expected: 2, found: 1, scanned_here: 0, to_go: 1 });
+    // A pack found today counts on the floor it was found on: carton 0 (sticker
+    // floor 2) was scanned on floor 1.
+    expect(f1).toMatchObject({ expected: 4, found: 3, scanned_here: 3, to_go: 1 });
+    expect(f2).toMatchObject({ expected: 1, found: 0, scanned_here: 0, to_go: 1 });
     expect(p.by_article.find((a) => a.article_id === fx.boxId)).toMatchObject({ expected: 3, found: 2 });
   });
 
