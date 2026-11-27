@@ -5,12 +5,13 @@ import { labelPageHeight } from '../../utils/barcodeStation';
 
 export const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30';
 
-// The five operator fields of a batch, as form state.
+// A batch's operator fields, as form state: Vendor, Stitching / Packing
+// (optional, 105), Article, Pack Size, Number of Barcodes. No floor (106).
 export const fieldsOf = (b) => ({
   outbound_vendor_id: b?.outbound_vendor_id ?? '',
+  stitching_party_id: b?.stitching_party_id ?? '',
   article_id: b?.article_id ?? '',
   pack_size: b?.pack_size ?? '',
-  floor_id: b?.floor_id ?? '',
   label_count: b?.label_count ?? '',
 });
 

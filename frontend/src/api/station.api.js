@@ -126,11 +126,12 @@ export async function getTodayCount() {
   return data;
 }
 
-// { results: [{ key, status, pack?, moved_from? }], scanned, floor, count }
-// status: counted | moved | already_counted | unknown. The scan puts the pack
-// on `floor`: moved_from names the floor it was on before, when that was
-// another one (a same-day rescan elsewhere answers `moved`). Re-sending is
-// harmless. The server puts the scans into TODAY's count.
+// { results: [{ key, status, pack?, moved_from?, counted_on? }], scanned, floor, count }
+// status: counted | already_counted | unknown. ONE SCAN PER PACK PER DAY: the
+// first puts the pack on `floor` (moved_from names its last floor on an
+// earlier day, when that was another one), and every later scan that day is
+// rejected as already_counted (counted_on names the floor it was counted on).
+// Re-sending is harmless. The server puts the scans into TODAY's count.
 export async function sendScans({ operator, floor_id, keys }) {
   const { data } = await station.post('/counts/today/scans', { operator, floor_id, keys });
   return data;

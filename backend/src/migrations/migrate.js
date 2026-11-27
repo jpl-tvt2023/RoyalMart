@@ -13,6 +13,14 @@ function splitSQL(sql) {
   return sql.split(';').map(s => s.trim()).filter(Boolean);
 }
 
+// Optional --until=<filename prefix>: apply pending files up to and including
+// the first one whose name starts with it, then stop. For a release whose
+// files must straddle a deploy -- some before it, some after:
+//   node src/migrations/migrate.js --until=105
+// Without it, every pending file is applied, as always.
+const untilArg = process.argv.find(a => a.startsWith('--until='));
+const UNTIL = untilArg ? untilArg.slice('--until='.length).trim() : null;
+
 async function migrate() {
   try {
     // Enforce FKs during migrations (no-op inside a transaction, so set it first).
@@ -29,9 +37,16 @@ async function migrate() {
     const appliedSet = new Set(applied.map(r => String(r.filename)));
 
     const dir = path.join(__dirname);
-    const files = fs.readdirSync(dir)
+    let files = fs.readdirSync(dir)
       .filter(f => f.endsWith('.sql'))
       .sort();
+
+    if (UNTIL !== null) {
+      const stop = UNTIL ? files.findIndex(f => f.startsWith(UNTIL)) : -1;
+      if (stop === -1) throw new Error(`--until=${UNTIL} matches no migration file`);
+      console.log(`  --until: stopping after ${files[stop]}`);
+      files = files.slice(0, stop + 1);
+    }
 
     for (const file of files) {
       if (appliedSet.has(file)) {

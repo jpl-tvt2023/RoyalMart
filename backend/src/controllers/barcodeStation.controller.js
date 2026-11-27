@@ -59,11 +59,10 @@ const FAIL_SQL = `
 const PRINT_ACTION = 'LABEL_BATCH_PRINT';
 
 const BATCH_SELECT = `
-  SELECT b.id, b.outbound_vendor_id, b.article_id, b.floor_id, b.pack_size, b.label_count,
+  SELECT b.id, b.outbound_vendor_id, b.stitching_party_id, b.article_id, b.pack_size, b.label_count,
          b.entered_by, b.generated_at, b.generated_by, b.created_at, b.updated_at, b.deleted_at,
-         v.name AS vendor_name,
+         v.name AS vendor_name, sp.name AS stitching_party_name,
          prm.category, prm.item_name, NULLIF(prm.variant, '') AS variant, prm.unit_metric,
-         f.name AS floor_name,
          (SELECT COUNT(*) FROM label_keys k WHERE k.batch_id = b.id) AS key_count,
          (SELECT COUNT(*) FROM audit_logs a
            WHERE a.entity_type = 'label_batch' AND a.entity_id = b.id
@@ -71,7 +70,7 @@ const BATCH_SELECT = `
     FROM label_batches b
     JOIN outbound_vendors v        ON v.id = b.outbound_vendor_id
     JOIN packaging_raw_materials prm ON prm.id = b.article_id
-    JOIN floors f                  ON f.id = b.floor_id`;
+    LEFT JOIN stitching_parties sp ON sp.id = b.stitching_party_id`;
 
 const articleLabel = (r) => `${r.category} · ${r.item_name}${r.variant ? ` · ${r.variant}` : ''}`;
 
@@ -80,8 +79,8 @@ function shapeBatch(r) {
     ...r,
     id: Number(r.id),
     outbound_vendor_id: Number(r.outbound_vendor_id),
+    stitching_party_id: r.stitching_party_id == null ? null : Number(r.stitching_party_id),
     article_id: Number(r.article_id),
-    floor_id: Number(r.floor_id),
     pack_size: Number(r.pack_size),
     label_count: Number(r.label_count),
     key_count: Number(r.key_count),
@@ -97,22 +96,31 @@ async function fetchBatch(id, client = db) {
 
 const parseId = (v) => (/^\d+$/.test(String(v)) ? Number(v) : null);
 
-// The five operator fields, coerced. batchFieldsError has already passed.
+// The operator fields, coerced. batchFieldsError has already passed. The
+// Stitching / Packing party (105) is optional: blank is NULL. There is no
+// floor (106) -- a pack gets its location from its first scan.
 function batchFields(src) {
+  const party = src.stitching_party_id;
   return {
     outbound_vendor_id: Number(src.outbound_vendor_id),
+    stitching_party_id: party == null || String(party).trim() === '' ? null : Number(party),
     article_id: Number(src.article_id),
-    floor_id: Number(src.floor_id),
     pack_size: Number(String(src.pack_size).trim()),
     label_count: Number(String(src.label_count).trim()),
   };
 }
 
-// The picked vendor, article and floor must still be live, and the article
-// must be one the vendor is mapped to (outbound_vendor_articles holds the
-// mapping as a value triple, matched to the catalog the way
-// outboundVendors.controller.js#list does). Returns { error } or the names,
-// which the audit diff shows instead of bare ids.
+// The Stitching / Packing parties an entry may name (105): active, and ticked
+// Stitching or Packing in Purchase Config -> Stitching Parties.
+const ENTRY_PARTY_TAGGED = `EXISTS (SELECT 1 FROM stitching_party_uses u
+                                     WHERE u.party_id = sp.id AND u.use_stage IN ('Stitching', 'Packing'))`;
+
+// The picked vendor and article must still be live, and the article must be
+// one the vendor is mapped to (outbound_vendor_articles holds the mapping as a
+// value triple, matched to the catalog the way outboundVendors.controller.js
+// #list does). A picked Stitching / Packing party must be active and still
+// tagged Stitching or Packing. Returns { error } or the names, which the audit
+// diff shows instead of bare ids.
 async function checkReferences(f) {
   const { rows } = await db.execute({
     sql: `SELECT
@@ -125,29 +133,40 @@ async function checkReferences(f) {
                  ON prm.category = a.category AND prm.item_name = a.item_name
                 AND prm.variant = COALESCE(a.variant, '')
               WHERE a.vendor_id = ? AND prm.id = ? LIMIT 1) AS article_mapped,
-            (SELECT name      FROM floors WHERE id = ?) AS floor_name,
-            (SELECT is_active FROM floors WHERE id = ?) AS floor_active`,
-    args: [f.outbound_vendor_id, f.outbound_vendor_id, f.article_id, f.outbound_vendor_id, f.article_id, f.floor_id, f.floor_id],
+            (SELECT name      FROM stitching_parties WHERE id = ?) AS party_name,
+            (SELECT is_active FROM stitching_parties WHERE id = ?) AS party_active,
+            (SELECT 1 FROM stitching_parties sp WHERE sp.id = ? AND ${ENTRY_PARTY_TAGGED}) AS party_tagged`,
+    args: [
+      f.outbound_vendor_id, f.outbound_vendor_id, f.article_id, f.outbound_vendor_id, f.article_id,
+      f.stitching_party_id, f.stitching_party_id, f.stitching_party_id,
+    ],
   });
   const r = rows[0];
   if (r.vendor_name == null) return { error: 'Vendor not found' };
   if (!Number(r.vendor_active)) return { error: `${r.vendor_name} is no longer active — pick another vendor` };
+  if (f.stitching_party_id != null) {
+    if (r.party_name == null) return { error: 'Stitching / Packing party not found' };
+    if (!Number(r.party_active)) return { error: `${r.party_name} is no longer active — pick another party` };
+    if (!r.party_tagged) return { error: `${r.party_name} is not a Stitching or Packing party` };
+  }
   if (r.article_label == null) return { error: 'Article not found' };
   if (!r.article_mapped) return { error: `${r.article_label} is not mapped to ${r.vendor_name} — pick one of its articles` };
-  if (r.floor_name == null) return { error: 'Floor not found' };
-  if (!Number(r.floor_active)) return { error: `${r.floor_name} is no longer active — pick another floor` };
-  return { names: { vendor: r.vendor_name, article: r.article_label, floor: r.floor_name } };
+  return { names: { vendor: r.vendor_name, party: r.party_name ?? null, article: r.article_label } };
 }
 
 // The fields the history drawer diffs, by name rather than id.
 const auditView = (f, names) => ({
   vendor: names.vendor,
+  stitching_party: names.party || '',
   article: names.article,
   pack_size: f.pack_size,
-  floor: names.floor,
   label_count: f.label_count,
 });
-const AUDIT_FIELDS = ['vendor', 'article', 'pack_size', 'floor', 'label_count'];
+const AUDIT_FIELDS = ['vendor', 'stitching_party', 'article', 'pack_size', 'label_count'];
+
+// How an entry is named in an audit description: vendor, party (when set),
+// article.
+const entryText = (vendor, party, article) => [vendor, party, article].filter(Boolean).join(', ');
 
 function buildPagination(query) {
   const rawPage = query.page;
@@ -218,12 +237,13 @@ async function createSession(req, res, next) {
 }
 
 // GET /options -- what the add-row form needs: active vendors with the
-// articles each is mapped to (resolved to catalog ids), active floors, the
-// label page. Also hands back a fresh token, so a device in daily use never
+// articles each is mapped to (resolved to catalog ids), the Stitching /
+// Packing parties (105), and for the Stock count tab the active floors and
+// the label page. Also hands back a fresh token, so a device in daily use never
 // reaches the 90-day expiry.
 async function options(req, res, next) {
   try {
-    const [articles, floors, settings] = await Promise.all([
+    const [articles, parties, floors, settings] = await Promise.all([
       db.execute(
         `SELECT DISTINCT v.id AS vendor_id, v.name AS vendor_name,
                 prm.id AS article_id, prm.category, prm.item_name,
@@ -237,6 +257,9 @@ async function options(req, res, next) {
           ORDER BY v.name COLLATE NOCASE, prm.category COLLATE NOCASE,
                    prm.item_name COLLATE NOCASE, prm.variant COLLATE NOCASE`
       ),
+      db.execute(`SELECT sp.id, sp.name FROM stitching_parties sp
+                   WHERE sp.is_active = 1 AND ${ENTRY_PARTY_TAGGED}
+                   ORDER BY sp.name COLLATE NOCASE`),
       db.execute('SELECT id, name FROM floors WHERE is_active = 1 ORDER BY name COLLATE NOCASE'),
       db.execute('SELECT print_mode FROM barcode_station_settings WHERE id = 1'),
     ]);
@@ -254,6 +277,7 @@ async function options(req, res, next) {
     const s = settings.rows[0] || {};
     res.json({
       vendors: Array.from(vendors.values()),
+      stitching_parties: parties.rows.map(p => ({ id: Number(p.id), name: p.name })),
       floors: floors.rows.map(f => ({ id: Number(f.id), name: f.name })),
       label: await labelSize(),
       print_mode: s.print_mode || 'dialog',
@@ -271,7 +295,7 @@ const makeList = ({ withKeyPreview }) => async function list(req, res, next) {
     const conditions = ['b.deleted_at IS NULL'];
     const args = [];
 
-    for (const [param, col] of [['id', 'b.id'], ['vendor_id', 'b.outbound_vendor_id'], ['floor_id', 'b.floor_id']]) {
+    for (const [param, col] of [['id', 'b.id'], ['vendor_id', 'b.outbound_vendor_id']]) {
       if (q[param] == null || q[param] === '') continue;
       const n = parseId(q[param]);
       if (n == null) return res.status(400).json({ message: `${param} must be a number` });
@@ -352,16 +376,16 @@ async function create(req, res, next) {
     const tx = await db.transaction('write');
     try {
       const { rows } = await tx.execute({
-        sql: `INSERT INTO label_batches (outbound_vendor_id, article_id, floor_id, pack_size, label_count, entered_by)
+        sql: `INSERT INTO label_batches (outbound_vendor_id, stitching_party_id, article_id, pack_size, label_count, entered_by)
               VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
-        args: [f.outbound_vendor_id, f.article_id, f.floor_id, f.pack_size, f.label_count, operator],
+        args: [f.outbound_vendor_id, f.stitching_party_id, f.article_id, f.pack_size, f.label_count, operator],
       });
       id = Number(rows[0].id);
       await logAction({
         client: tx,
         userId: req.user.id,
         actionType: 'LABEL_BATCH_CREATE',
-        description: `${operator} added label batch #${id}: ${ref.names.vendor}, ${ref.names.article}, pack of ${f.pack_size}, ${ref.names.floor}, ${f.label_count} labels`,
+        description: `${operator} added label batch #${id}: ${entryText(ref.names.vendor, ref.names.party, ref.names.article)}, pack of ${f.pack_size}, ${f.label_count} labels`,
         entityType: 'label_batch',
         entityId: id,
       });
@@ -384,7 +408,7 @@ async function loadDraft(id, res) {
   return batch;
 }
 
-// PATCH /batches/:id -- edit a draft. Any of the five fields, plus operator.
+// PATCH /batches/:id -- edit a draft. Any of the entry fields, plus operator.
 async function update(req, res, next) {
   try {
     const id = parseId(req.params.id);
@@ -394,7 +418,7 @@ async function update(req, res, next) {
     const body = req.body || {};
     const has = (k) => Object.prototype.hasOwnProperty.call(body, k);
     const merged = {};
-    for (const k of ['outbound_vendor_id', 'article_id', 'pack_size', 'floor_id', 'label_count']) {
+    for (const k of ['outbound_vendor_id', 'stitching_party_id', 'article_id', 'pack_size', 'label_count']) {
       merged[k] = has(k) ? body[k] : current[k];
     }
     const err = batchFieldsError(merged) || operatorError(body.operator);
@@ -405,7 +429,7 @@ async function update(req, res, next) {
     if (ref.error) return res.status(400).json({ message: ref.error });
     const operator = normOperator(body.operator);
 
-    const before = auditView(current, { vendor: current.vendor_name, article: articleLabel(current), floor: current.floor_name });
+    const before = auditView(current, { vendor: current.vendor_name, party: current.stitching_party_name, article: articleLabel(current) });
     const changes = diffFields(before, auditView(f, ref.names), AUDIT_FIELDS);
 
     const tx = await db.transaction('write');
@@ -413,11 +437,11 @@ async function update(req, res, next) {
     try {
       const { rows } = await tx.execute({
         sql: `UPDATE label_batches
-                 SET outbound_vendor_id = ?, article_id = ?, floor_id = ?, pack_size = ?, label_count = ?,
+                 SET outbound_vendor_id = ?, stitching_party_id = ?, article_id = ?, pack_size = ?, label_count = ?,
                      updated_at = datetime('now')
                WHERE id = ? AND generated_at IS NULL AND deleted_at IS NULL
                RETURNING id`,
-        args: [f.outbound_vendor_id, f.article_id, f.floor_id, f.pack_size, f.label_count, id],
+        args: [f.outbound_vendor_id, f.stitching_party_id, f.article_id, f.pack_size, f.label_count, id],
       });
       updated = rows.length > 0;
       if (updated && changes.length) {
@@ -539,9 +563,9 @@ async function generate(req, res, next) {
     if (opErr) return res.status(400).json({ message: opErr });
     const operator = normOperator(req.body.operator);
 
-    // Re-checked here, not just on save: the vendor, article mapping or floor
-    // may have been retired since the draft was written, and after this the
-    // batch can never be corrected.
+    // Re-checked here, not just on save: the vendor, article mapping or
+    // Stitching / Packing party may have been retired since the draft was
+    // written, and after this the batch can never be corrected.
     const ref = await checkReferences(current);
     if (ref.error) return res.status(400).json({ message: ref.error });
 
@@ -565,7 +589,7 @@ async function generate(req, res, next) {
           client: tx,
           userId: req.user.id,
           actionType: 'LABEL_BATCH_GENERATE',
-          description: `${operator} generated ${count} key${count !== 1 ? 's' : ''} for label batch #${id} (${current.vendor_name}, ${articleLabel(current)}, ${current.floor_name})`,
+          description: `${operator} generated ${count} key${count !== 1 ? 's' : ''} for label batch #${id} (${entryText(current.vendor_name, current.stitching_party_name, articleLabel(current))})`,
           entityType: 'label_batch',
           entityId: id,
         });
@@ -665,7 +689,7 @@ const makePrint = (operatorOf) => async function print(req, res, next) {
     await logAction({
       userId: req.user.id,
       actionType: PRINT_ACTION,
-      description: `${who.name} printed ${which} of label batch #${batch.id} (${batch.vendor_name}, ${articleLabel(batch)}, ${batch.floor_name})`,
+      description: `${who.name} printed ${which} of label batch #${batch.id} (${entryText(batch.vendor_name, batch.stitching_party_name, articleLabel(batch))})`,
       entityType: 'label_batch',
       entityId: batch.id,
     });

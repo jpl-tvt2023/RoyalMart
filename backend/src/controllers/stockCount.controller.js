@@ -28,17 +28,16 @@ const {
 // stockCount.service.js. Nothing here stores a status.
 //
 // WHAT THE STATION NEVER LEARNS: whether a pack was Out. A scan answers
-// counted / moved / already counted / unknown key, plus the pack and the floor
-// it moved from, if any. Missed scans are the scanner's mistakes, and only
-// Admin/Owner see them.
+// counted / already counted / unknown key, plus the pack, the floor it moved
+// from (counted) or the floor it was already counted on today. Missed scans
+// are the scanner's mistakes, and only Admin/Owner see them.
 //
-// LOCATION FOLLOWS THE SCAN (client, 2026-11-27). Packs move between floors as
-// a matter of course, so a pack may be scanned on any floor and it is then ON
-// that floor -- nothing is flagged. Until its first scan a pack sits on its
-// entry's floor, the ARRIVAL floor (label_batches.floor_id, no longer printed
-// on the sticker). A second scan on another floor the same day moves it again:
-// the day's row keeps the floor it ended up on. The API still calls the
-// arrival floor sticker_floor_id / sticker_floor_name.
+// LOCATION COMES ONLY FROM SCANS (client, 2026-11-27). An entry has no floor
+// (106) and the sticker prints none, so a pack has NO location until its first
+// scan. Packs move between floors as a matter of course: a pack may be scanned
+// on any floor and is then on that floor -- nothing is flagged. ONE SCAN PER
+// PACK PER DAY: the day's first scan stands, and every later scan that day is
+// rejected, on any floor.
 //
 // Scans are NOT audited one by one: the scan rows are the record (who, when,
 // which floor), and a row per scan would flood audit_logs. The day's first
@@ -72,14 +71,12 @@ const articleLabel = (r) => `${r.category} · ${r.item_name}${r.variant ? ` · $
 // key. `keyCol` is the SQL holding the label_key to join on.
 const PACK_COLS = `
   k.batch_id, k.label_no, b.label_count, b.pack_size, v.name AS vendor_name,
-  prm.category, prm.item_name, NULLIF(prm.variant, '') AS variant, prm.unit_metric,
-  b.floor_id AS sticker_floor_id, sf.name AS sticker_floor_name`; // the ARRIVAL floor
+  prm.category, prm.item_name, NULLIF(prm.variant, '') AS variant, prm.unit_metric`;
 const PACK_JOINS = (keyCol) => `
   JOIN label_keys k               ON k.label_key = ${keyCol}
   JOIN label_batches b            ON b.id = k.batch_id
   JOIN outbound_vendors v         ON v.id = b.outbound_vendor_id
-  JOIN packaging_raw_materials prm ON prm.id = b.article_id
-  JOIN floors sf                  ON sf.id = b.floor_id`;
+  JOIN packaging_raw_materials prm ON prm.id = b.article_id`;
 
 const shapePack = (r) => ({
   batch_id: num(r.batch_id),
@@ -91,8 +88,6 @@ const shapePack = (r) => ({
   item_name: r.item_name,
   variant: r.variant,
   unit_metric: r.unit_metric,
-  sticker_floor_id: num(r.sticker_floor_id),
-  sticker_floor_name: r.sticker_floor_name,
   ...(r.seen_floor_id !== undefined && {
     seen_floor_id: r.seen_floor_id == null ? null : num(r.seen_floor_id),
     seen_floor_name: r.seen_floor_name ?? null,
@@ -156,8 +151,8 @@ async function todayCount() {
 
 // What is left to find today. Expected = every key that was not Out as of the
 // last finished day (In Stock or Not yet counted), on the floor it was last
-// seen on -- today's floor once it is found, its arrival floor if it has
-// never been counted. A pack that was
+// seen on -- today's floor once it is found. A pack never counted has no
+// floor yet: it is expected under floor_id null ("Not scanned yet"). A pack that was
 // Out is not expected -- if one turns up it is simply counted, and the
 // expected figure does not move, so the station cannot tell it was Out.
 // countId is today's count, or null before the day's first scan.
@@ -170,7 +165,7 @@ async function progressOf(countId) {
                        FROM stock_count_scans s JOIN cc c ON c.id = s.count_id GROUP BY s.label_key),
               cur AS (SELECT label_key FROM stock_count_scans WHERE count_id = ?),
               exp AS (
-                SELECT st.article_id, COALESCE(st.seen_floor_id, st.sticker_floor_id) AS floor_id,
+                SELECT st.article_id, st.seen_floor_id AS floor_id,
                        (cur.label_key IS NOT NULL) AS found
                   FROM kstate st
                   LEFT JOIN kf ON kf.label_key = st.label_key
@@ -195,14 +190,19 @@ async function progressOf(countId) {
 
   const floorName = new Map(floors.rows.map((f) => [num(f.id), f.name]));
   const byFloor = new Map();
+  // fid null = packs never scanned, which have no floor yet.
   const floorRow = (fid) => {
-    if (!byFloor.has(fid)) byFloor.set(fid, { floor_id: fid, floor_name: floorName.get(fid) || '—', expected: 0, found: 0, scanned_here: 0 });
+    if (!byFloor.has(fid)) {
+      byFloor.set(fid, {
+        floor_id: fid, floor_name: fid == null ? null : floorName.get(fid) || '—', expected: 0, found: 0, scanned_here: 0,
+      });
+    }
     return byFloor.get(fid);
   };
   const byArticle = [];
   for (const r of groups.rows) {
     if (r.dim === 'floor') {
-      const f = floorRow(num(r.id));
+      const f = floorRow(r.id == null ? null : num(r.id));
       f.expected = num(r.expected);
       f.found = num(r.found);
     } else {
@@ -211,9 +211,10 @@ async function progressOf(countId) {
   }
   for (const r of scannedHere.rows) floorRow(num(r.floor_id)).scanned_here = num(r.n);
 
+  // Named floors by name, then the not-yet-scanned row last.
   const floorsOut = [...byFloor.values()]
     .map((f) => ({ ...f, to_go: f.expected - f.found }))
-    .sort((a, b) => a.floor_name.localeCompare(b.floor_name));
+    .sort((a, b) => (a.floor_id == null) - (b.floor_id == null) || String(a.floor_name).localeCompare(String(b.floor_name)));
   const articles = byArticle
     .map((a) => ({ ...a, to_go: a.expected - a.found }))
     .sort((a, b) => b.to_go - a.to_go || a.article.localeCompare(b.article));
@@ -245,15 +246,16 @@ async function today(req, res, next) {
 
 // POST /api/station/counts/today/scans { operator, floor_id, keys } -- a batch
 // of scans into TODAY's count, created by the day's first scan. floor_id is
-// where the scanner is, and each pack is now there:
-//   counted          first scan today. moved_from names the floor it was on
-//                    before (its last earlier sighting, else its arrival
-//                    floor) when that is another floor.
-//   moved            already scanned today on another floor -- the day's row
-//                    takes this floor. moved_from is the floor it had.
-//   already_counted  already scanned today on this floor. Re-sending a scan
-//                    is harmless, and the offline queue sends in order, so the
-//                    last floor wins.
+// where the scanner is. ONE SCAN PER PACK PER DAY -- the day's first scan
+// stands:
+//   counted          first scan today: the pack is now on this floor.
+//                    moved_from names the floor of its last scan on an
+//                    earlier day when that was another floor (null for a pack
+//                    never scanned before -- it had no location).
+//   already_counted  REJECTED: already scanned today. Nothing is written, on
+//                    this floor or any other. counted_on names the floor
+//                    today's scan was on. Re-sending a queued scan lands here
+//                    too, harmlessly.
 async function scan(req, res, next) {
   try {
     const opErr = operatorError(req.body?.operator);
@@ -273,10 +275,9 @@ async function scan(req, res, next) {
 
     const tx = await db.transaction('write');
     let count = null;
-    let written = new Set();
-    // Where each pack was before this batch: its floor today, if it was
-    // already scanned today, and its floor before today -- its latest earlier
-    // sighting, else its arrival floor.
+    let inserted = new Set();
+    // The floor each pack was already counted on today, and the floor of its
+    // last scan on an earlier day.
     const todayFloor = new Map();
     const earlierFloor = new Map();
     try {
@@ -300,32 +301,32 @@ async function scan(req, res, next) {
       for (const r of todays.rows) todayFloor.set(Number(r.label_key), num(r.floor_id));
       const earlier = await tx.execute({
         sql: `SELECT k.label_key,
-                     COALESCE((SELECT s.floor_id
-                                 FROM stock_count_scans s JOIN stock_counts c ON c.id = s.count_id
-                                WHERE s.label_key = k.label_key AND c.count_date < ?
-                                ORDER BY c.count_date DESC LIMIT 1), b.floor_id) AS floor_id
-                FROM label_keys k JOIN label_batches b ON b.id = k.batch_id
+                     (SELECT s.floor_id
+                        FROM stock_count_scans s JOIN stock_counts c ON c.id = s.count_id
+                       WHERE s.label_key = k.label_key AND c.count_date < ?
+                       ORDER BY c.count_date DESC LIMIT 1) AS floor_id
+                FROM label_keys k
                WHERE k.label_key IN (${marks})`,
         args: [day, ...keys],
       });
-      for (const r of earlier.rows) earlierFloor.set(Number(r.label_key), num(r.floor_id));
+      for (const r of earlier.rows) {
+        if (r.floor_id != null) earlierFloor.set(Number(r.label_key), num(r.floor_id));
+      }
 
-      // From label_keys, so an unknown key writes nothing. A pack already
-      // scanned today on another floor moves here, and RETURNING lists it as
-      // well as the new ones. The WHERE in the SELECT also settles SQLite's
-      // INSERT ... SELECT ... ON CONFLICT parsing ambiguity.
+      // From label_keys, so an unknown key inserts nothing. The PK (count_id,
+      // label_key) keeps the day's first scan: a later one inserts nothing.
+      // The WHERE also settles SQLite's INSERT ... SELECT ... ON CONFLICT
+      // parsing ambiguity.
       const { rows } = await tx.execute({
         sql: `INSERT INTO stock_count_scans (count_id, label_key, floor_id, scanned_by)
               SELECT ?, k.label_key, ?, ? FROM label_keys k WHERE k.label_key IN (${marks})
-              ON CONFLICT (count_id, label_key) DO UPDATE
-                 SET floor_id = excluded.floor_id, scanned_by = excluded.scanned_by, scanned_at = datetime('now')
-               WHERE stock_count_scans.floor_id <> excluded.floor_id
+              ON CONFLICT (count_id, label_key) DO NOTHING
               RETURNING label_key`,
         args: [count.id, floorId, operator, ...keys],
       });
-      written = new Set(rows.map((r) => Number(r.label_key)));
+      inserted = new Set(rows.map((r) => Number(r.label_key)));
 
-      if (created && !written.size) {
+      if (created && !inserted.size) {
         // Only unknown keys: no count for the day. An empty finished day would
         // mark every pack Out.
         await tx.rollback();
@@ -356,22 +357,20 @@ async function scan(req, res, next) {
       db.execute('SELECT id, name FROM floors'),
     ]);
     const floorName = new Map(floors.rows.map((f) => [num(f.id), f.name]));
+    const nameOf = (id) => (id == null ? null : floorName.get(id) || null);
     const byKey = new Map(packs.rows.map((r) => [Number(r.label_key), shapePack(r)]));
     const results = keys.map((key) => {
       const pack = byKey.get(key);
       if (!pack) return { key: String(key), status: 'unknown' };
-      if (todayFloor.has(key)) {
-        const was = todayFloor.get(key);
-        return was === floorId
-          ? { key: String(key), status: 'already_counted', pack, moved_from: null }
-          : { key: String(key), status: 'moved', pack, moved_from: floorName.get(was) || null };
+      if (!inserted.has(key)) {
+        return { key: String(key), status: 'already_counted', pack, counted_on: nameOf(todayFloor.get(key)) };
       }
       const was = earlierFloor.get(key);
       return {
         key: String(key),
-        status: written.has(key) ? 'counted' : 'already_counted',
+        status: 'counted',
         pack,
-        moved_from: was != null && was !== floorId ? floorName.get(was) || null : null,
+        moved_from: was != null && was !== floorId ? nameOf(was) : null,
       };
     });
     res.json({ results, scanned: num(total.rows[0].n), floor: { id: floorId, name: floor.name }, count });
@@ -382,16 +381,17 @@ async function scan(req, res, next) {
 // PORTAL -- everyone logged in (no keys, no missed scans)
 // ===========================================================================
 
-// The floor a pack counts on in the stock reports: where it was last seen, or
-// its arrival floor if it has never been counted.
-const STOCK_FLOOR = 'COALESCE(st.seen_floor_id, st.sticker_floor_id)';
+// The floor a pack counts on in the stock reports: where it was last seen.
+// NULL for a pack never counted -- it has no location until its first scan.
+const STOCK_FLOOR = 'st.seen_floor_id';
 
 // "Went Out on the last count": last seen on the day before the latest
 // finished day, so Out on that day itself.
 const OUT_LAST = `(st.status = '${STATUS.OUT}' AND st.last_seq = (SELECT seq FROM latest) - 1)`;
 
 // ?vendor_id&floor_id, shared by /summary and the Admin sticker list so the
-// download matches the page. Returns { conditions, args } or { error }.
+// download matches the page. floor_id matches scanned packs only -- packs not
+// scanned yet have no floor. Returns { conditions, args } or { error }.
 function stockFilters(q) {
   const conditions = [];
   const args = [];
@@ -406,8 +406,8 @@ function stockFilters(q) {
 }
 
 // GET /api/stock/summary?vendor_id&floor_id -- stock per article and floor.
-// A pack sits on the floor it was last seen on (its arrival floor if it has
-// never been counted). In Stock already includes packs scanned today. "Out on
+// A pack sits on the floor it was last seen on. Packs never counted have no
+// floor yet, and group under floor_id null ("Not scanned yet"). In Stock already includes packs scanned today. "Out on
 // the last count" is the latest FINISHED day's Out.
 async function summary(req, res, next) {
   try {
@@ -429,7 +429,7 @@ async function summary(req, res, next) {
                      SUM(CASE WHEN ${outLast} THEN st.pack_size ELSE 0 END) AS out_last_pcs
                 FROM kstate st
                 JOIN packaging_raw_materials prm ON prm.id = st.article_id
-                JOIN floors f ON f.id = ${STOCK_FLOOR}
+                LEFT JOIN floors f ON f.id = ${STOCK_FLOOR}
                 ${where}
                GROUP BY st.article_id, ${STOCK_FLOOR}
               HAVING SUM(st.status = '${STATUS.IN_STOCK}') + SUM(st.status = '${STATUS.NOT_COUNTED}') + SUM(${outLast}) > 0
@@ -446,8 +446,8 @@ async function summary(req, res, next) {
       item_name: r.item_name,
       variant: r.variant,
       unit_metric: r.unit_metric,
-      floor_id: num(r.floor_id),
-      floor_name: r.floor_name,
+      floor_id: r.floor_id == null ? null : num(r.floor_id),
+      floor_name: r.floor_name ?? null,
       in_stock_packs: num(r.in_stock_packs),
       in_stock_pcs: num(r.in_stock_pcs),
       not_counted_packs: num(r.not_counted_packs),
@@ -708,7 +708,7 @@ async function stickerList(req, res, next) {
                      ${IST_DATE('b.generated_at')} AS stickered_on
                 ${from}
                ORDER BY prm.category COLLATE NOCASE, prm.item_name COLLATE NOCASE, prm.variant COLLATE NOCASE,
-                        COALESCE(xf.name, sf.name) COLLATE NOCASE, k.batch_id, k.label_no
+                        xf.name COLLATE NOCASE, k.batch_id, k.label_no
                ${limitSql(pag)}`,
         args,
       }),
@@ -720,7 +720,7 @@ async function stickerList(req, res, next) {
         label_key: num(r.label_key),
         status: r.status,
         article_id: num(r.article_id),
-        floor_id: num(r.floor_id),
+        floor_id: r.floor_id == null ? null : num(r.floor_id),
         ...pack,
         first_seen: r.first_seen ?? null,
         last_seen: r.last_seen ?? null,

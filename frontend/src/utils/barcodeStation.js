@@ -52,13 +52,21 @@ export function wholeNumberError(value, label, max) {
   return null;
 }
 
-// Vendor, Article, Pack Size, Floor, Number of Barcodes -- grid order.
+// An optional pick (105): blank is fine, anything else must be an id.
+export function optionalPickError(value, label) {
+  if (isBlank(value)) return null;
+  if (!/^\d+$/.test(String(value).trim()) || Number(value) < 1) return `${label} must be picked from the list`;
+  return null;
+}
+
+// Vendor, Stitching / Packing (optional), Article, Pack Size, Number of
+// Barcodes -- grid order. No floor (106): location comes from the first scan.
 export function batchFieldsError(f) {
   const v = f || {};
   return pickError(v.outbound_vendor_id, 'Vendor')
+    || optionalPickError(v.stitching_party_id, 'Stitching / Packing')
     || pickError(v.article_id, 'Article')
     || wholeNumberError(v.pack_size, 'Pack Size', PACK_SIZE_MAX)
-    || pickError(v.floor_id, 'Floor')
     || wholeNumberError(v.label_count, 'Number of Barcodes', LABEL_COUNT_MAX);
 }
 

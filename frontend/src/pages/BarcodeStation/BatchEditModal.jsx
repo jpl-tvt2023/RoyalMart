@@ -7,14 +7,17 @@ import { batchFieldsError, articleLabel } from '../../utils/barcodeStation';
 import { sortByText } from '../../utils/sort';
 import { inputCls, fieldsOf } from './stationHelpers';
 
-// The five things an operator fills in, in grid order -- shared by the add row
-// on the station page and the edit-draft modal below. Article options are the
-// picked vendor's mapped articles. `fallback` names a saved value that is no
-// longer offered (vendor deactivated, mapping removed, floor retired), so an
-// old draft still shows what it holds -- the server refuses it on save.
+// What an operator fills in, in grid order -- shared by the add row on the
+// station page and the edit-draft modal below: Vendor, Stitching / Packing
+// (optional, 105), Article, Pack Size, Number of Barcodes. There is NO floor
+// (106): a pack gets its location from its first scan. Article options are the
+// picked vendor's mapped articles; Stitching / Packing options are the active
+// parties tagged Stitching or Packing. `fallback` names a saved value that is
+// no longer offered (vendor or party deactivated, mapping removed), so an old
+// draft still shows what it holds -- the server refuses it on save.
 export function BatchFields({ value, onChange, options, fallback, layout = 'row' }) {
   const vendors = useMemo(() => sortByText(options?.vendors || [], (v) => v.name), [options]);
-  const floors = useMemo(() => sortByText(options?.floors || [], (f) => f.name), [options]);
+  const parties = useMemo(() => sortByText(options?.stitching_parties || [], (p) => p.name), [options]);
   const vendor = vendors.find((v) => String(v.id) === String(value.outbound_vendor_id));
   const articles = useMemo(() => sortByText(vendor?.articles || [], articleLabel), [vendor]);
   const article = articles.find((a) => String(a.id) === String(value.article_id));
@@ -29,7 +32,7 @@ export function BatchFields({ value, onChange, options, fallback, layout = 'row'
 
   const missing = (list, id) => id !== '' && id != null && !list.some((x) => String(x.id) === String(id));
   const grid = layout === 'row'
-    ? 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[1.2fr_2fr_0.8fr_1fr_0.9fr] gap-3'
+    ? 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[1.2fr_1.1fr_2fr_0.8fr_0.9fr] gap-3'
     : 'grid grid-cols-1 gap-4';
 
   return (
@@ -41,6 +44,19 @@ export function BatchFields({ value, onChange, options, fallback, layout = 'row'
           {vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
           {missing(vendors, value.outbound_vendor_id) && (
             <option value={value.outbound_vendor_id}>{fallback?.vendor || 'Unknown vendor'} (no longer available)</option>
+          )}
+        </select>
+      </label>
+
+      <label className="block">
+        <span className="block text-xs font-medium text-gray-600 mb-1">
+          Stitching / Packing <span className="font-normal text-gray-400">(optional)</span>
+        </span>
+        <select value={value.stitching_party_id} onChange={(e) => set({ stitching_party_id: e.target.value })} className={inputCls}>
+          <option value="">— None —</option>
+          {parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {missing(parties, value.stitching_party_id) && (
+            <option value={value.stitching_party_id}>{fallback?.party || 'Unknown party'} (no longer available)</option>
           )}
         </select>
       </label>
@@ -73,17 +89,6 @@ export function BatchFields({ value, onChange, options, fallback, layout = 'row'
           className={inputCls}
           placeholder="e.g. 300"
         />
-      </label>
-
-      <label className="block">
-        <span className="block text-xs font-medium text-gray-600 mb-1">Floor</span>
-        <select value={value.floor_id} onChange={(e) => set({ floor_id: e.target.value })} className={inputCls}>
-          <option value="">Select floor…</option>
-          {floors.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-          {missing(floors, value.floor_id) && (
-            <option value={value.floor_id}>{fallback?.floor || 'Unknown floor'} (no longer available)</option>
-          )}
-        </select>
       </label>
 
       <label className="block">
@@ -134,7 +139,7 @@ export default function BatchEditModal({ batch, options, operator, onClose, onSa
           onChange={setValue}
           options={options}
           layout="stack"
-          fallback={{ vendor: batch.vendor_name, article: articleLabel(batch), floor: batch.floor_name }}
+          fallback={{ vendor: batch.vendor_name, party: batch.stitching_party_name, article: articleLabel(batch) }}
         />
         {error && <p className="text-sm text-[#c1121f]">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">

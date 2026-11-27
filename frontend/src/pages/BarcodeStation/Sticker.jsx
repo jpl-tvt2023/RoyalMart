@@ -4,13 +4,13 @@ import { articleLabel, packSizeLabel } from '../../utils/barcodeStation';
 import { formatDateTime } from '../../utils/formatters';
 
 // One sticker, laid out as the client's mockup: the barcode centred on top
-// with its key underneath, then Vendor Name, Article, Pack Size and Inbound
-// Date. Inbound Date carries the time as well as the date (the moment the keys
-// were generated, in IST).
+// with its key underneath, then Vendor Name, Stitching/Packing (only when the
+// entry names a party, 105), Article, Pack Size and Inbound Date. Inbound Date
+// carries the time as well as the date (the moment the keys were generated,
+// in IST).
 //
-// No floor (client, 2026-11-27): packs move between floors, so where a pack
-// is comes from its latest scan, not from its sticker. The entry's floor is
-// kept as the arrival floor, off the sticker.
+// No floor (client, 2026-11-27): an entry has none (106) -- a pack gets its
+// location from its first scan, and packs move between floors.
 //
 // Used by StickerPages -- the Admin's on-screen preview (`framed`, with an
 // outline) and the station's off-screen PrintPortal (plain, never seen). The
@@ -18,6 +18,7 @@ import { formatDateTime } from '../../utils/formatters';
 export default function Sticker({ batch, label, bits, widthMm, heightMm, layout, framed = false }) {
   const rows = [
     ['Vendor Name', batch.vendor_name],
+    ...(batch.stitching_party_name ? [['Stitching/Packing', batch.stitching_party_name]] : []),
     ['Article', articleLabel(batch)],
     ['Pack Size', packSizeLabel(batch)],
     ['Inbound Date', formatDateTime(batch.generated_at)],
