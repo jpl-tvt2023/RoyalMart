@@ -59,10 +59,12 @@ export default function PrintLabelsModal({ batch, operator, printMode, label, on
     <Modal isOpen onClose={onClose} title={`Print batch #${batch.id}`} size="md">
       <form onSubmit={submit} className="space-y-4" noValidate>
         <div className="text-sm bg-gray-50 rounded-lg p-3 space-y-0.5">
-          <p className="font-medium text-[#003049]">{batch.vendor_name}</p>
+          <p className="font-medium text-[#003049]">
+            {batch.vendor_name}{batch.stitching_party_name ? ` · ${batch.stitching_party_name}` : ''}
+          </p>
           <p className="text-gray-600">{articleLabel(batch)}</p>
           <p className="text-gray-600">
-            Pack of {packSizeLabel(batch)} · {batch.floor_name} · {keyCountLabel(n)} · {printCountLabel(batch.print_count)}
+            Pack of {packSizeLabel(batch)} · {keyCountLabel(n)} · {printCountLabel(batch.print_count)}
           </p>
         </div>
 

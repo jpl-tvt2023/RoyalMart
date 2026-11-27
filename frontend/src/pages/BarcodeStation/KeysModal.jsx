@@ -64,16 +64,16 @@ export default function KeysModal({ batch, highlightKey, onClose }) {
       { header: 'Label #', key: 'label_no' },
       { header: 'Key', key: 'label_key' },
       { header: 'Vendor Name', key: 'vendor' },
+      { header: 'Stitching / Packing', key: 'party' },
       { header: 'Article', key: 'article' },
       { header: 'Pack Size', key: 'pack' },
-      { header: 'Floor', key: 'floor' },
       { header: 'Date of Incoming', key: 'date' },
     ], (keys || []).map((k) => ({
       ...k,
       vendor: batch.vendor_name,
+      party: batch.stitching_party_name || '',
       article: articleLabel(batch),
       pack: packSizeLabel(batch),
-      floor: batch.floor_name,
       date: formatDateTime(batch.generated_at),
     })));
   };
@@ -81,10 +81,11 @@ export default function KeysModal({ batch, highlightKey, onClose }) {
   return (
     <Modal isOpen onClose={onClose} title={`Batch #${batch.id} · ${keyCountLabel(n)}`} size="xl">
       <div className="space-y-4">
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm bg-gray-50 rounded-lg p-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm bg-gray-50 rounded-lg p-3">
           <div><p className="text-xs text-gray-500">Vendor Name</p><p className="font-medium text-[#003049]">{batch.vendor_name}</p></div>
+          <div><p className="text-xs text-gray-500">Stitching / Packing</p><p className="font-medium text-[#003049]">{batch.stitching_party_name || '—'}</p></div>
           <div className="col-span-2"><p className="text-xs text-gray-500">Article</p><p className="font-medium text-[#003049]">{articleLabel(batch)}</p></div>
-          <div><p className="text-xs text-gray-500">Pack Size · Floor</p><p className="font-medium text-[#003049]">{packSizeLabel(batch)} · {batch.floor_name}</p></div>
+          <div><p className="text-xs text-gray-500">Pack Size</p><p className="font-medium text-[#003049]">{packSizeLabel(batch)}</p></div>
           <div><p className="text-xs text-gray-500">Date of Incoming</p><p className="font-medium text-[#003049]">{formatDateTime(batch.generated_at)}</p></div>
         </div>
 

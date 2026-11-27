@@ -115,7 +115,7 @@ export default function LabelPrintPage() {
         <div className="flex-1 min-w-[220px]">
           <p className="font-semibold text-[#003049]">Batch #{batch.id} · {range}</p>
           <p className="text-xs text-gray-500">
-            {batch.vendor_name} · {articleLabel(batch)} · {batch.floor_name}
+            {[batch.vendor_name, batch.stitching_party_name, articleLabel(batch)].filter(Boolean).join(' · ')}
           </p>
         </div>
         <button

@@ -11,10 +11,11 @@ const { db } = require('./helpers/db');
 //   Day 1 is the baseline. A pack seen before and missing from a finished day
 //   is Out at once. One that comes back is a missed scan (Admin/Owner only),
 //   and the earlier day's Out total corrects itself. A sticker never counted
-//   is never Out. A pack may be scanned on any floor and is then on that floor
-//   -- a later scan elsewhere the same day moves it again, nothing is flagged.
-//   A pack scanned today is In Stock at once, and Out figures move only when a
-//   day finishes.
+//   is never Out. An entry has no floor (106): a pack has no location until its
+//   first scan, then is on the floor of its latest day's scan -- nothing is
+//   flagged. ONE SCAN PER PACK PER DAY: the first stands, later ones that day
+//   are rejected on any floor. A pack scanned today is In Stock at once, and
+//   Out figures move only when a day finishes.
 // Messages are asserted verbatim where src/utils/barcodeStation.js mirrors them.
 //
 // Days pass through nextDay(), which moves every count back one day -- today's
@@ -58,10 +59,11 @@ async function cleanStock() {
 }
 
 // A generated batch through the station API; returns its keys in label order.
-async function batchWithKeys({ articleId, floorId, packSize, labels }) {
+// No floor: a pack gets its location from its first scan.
+async function batchWithKeys({ articleId, packSize, labels }) {
   const draft = await asStation(request(app).post('/api/station/batches')).send({
     outbound_vendor_id: fx.vendorId, article_id: articleId, pack_size: packSize,
-    floor_id: floorId, label_count: labels, operator: OP,
+    label_count: labels, operator: OP,
   });
   expect(draft.status).toBe(201);
   const gen = await asStation(request(app).post(`/api/station/batches/${draft.body.id}/generate`)).send({ operator: OP });
@@ -123,9 +125,9 @@ beforeAll(async () => {
 
   fx.today = (await db.execute("SELECT date('now', '+5 hours', '+30 minutes') AS d")).rows[0].d;
 
-  // Boxes: 3 packs of 100 on floor 1. Cartons: 2 packs of 10 on floor 2.
-  fx.box = await batchWithKeys({ articleId: fx.boxId, floorId: fx.floor1, packSize: 100, labels: 3 });
-  fx.carton = await batchWithKeys({ articleId: fx.cartonId, floorId: fx.floor2, packSize: 10, labels: 2 });
+  // Boxes: 3 packs of 100. Cartons: 2 packs of 10. Nowhere until scanned.
+  fx.box = await batchWithKeys({ articleId: fx.boxId, packSize: 100, labels: 3 });
+  fx.carton = await batchWithKeys({ articleId: fx.cartonId, packSize: 10, labels: 2 });
 
   // A key no sticker has.
   let k = 99999999;
@@ -187,6 +189,10 @@ describe('Stock counts — day 1 (the baseline)', () => {
     expect(res.body.count).toBeNull();
     expect(res.body.last_finished).toBeNull();
     expect(res.body.progress).toMatchObject({ scanned: 0, expected: 5, found: 0, to_go: 5 });
+    // Nothing scanned yet, so nothing has a floor.
+    expect(res.body.progress.by_floor).toEqual([
+      { floor_id: null, floor_name: null, expected: 5, found: 0, scanned_here: 0, to_go: 5 },
+    ]);
   });
 
   test('scan validation, in field order, with the mirrored messages', async () => {
@@ -208,9 +214,9 @@ describe('Stock counts — day 1 (the baseline)', () => {
     expect((await db.execute('SELECT COUNT(*) AS n FROM stock_counts')).rows[0].n).toBe(0);
   });
 
-  test("the day's first scan creates today's count: counted, already counted, unknown, moved off its arrival floor", async () => {
-    // box 0 twice in one batch (deduped), box 1, an unknown key, and a carton
-    // -- whose entry arrived on floor 2 -- scanned on floor 1.
+  test("the day's first scan creates today's count: counted, already counted, unknown", async () => {
+    // box 0 twice in one batch (deduped), box 1, an unknown key, and a carton,
+    // all on floor 1.
     const res = await scan(fx.floor1, [fx.box[0], fx.box[0], fx.box[1], fx.unknownKey, fx.carton[0]]);
     expect(res.status).toBe(200);
     expect(res.body.count).toMatchObject({ count_date: fx.today, started_by: OP });
@@ -221,10 +227,9 @@ describe('Stock counts — day 1 (the baseline)', () => {
       [fx.unknownKey, 'unknown'],
       [fx.carton[0], 'counted'],
     ]);
-    const carton = res.body.results[3];
-    expect(carton.moved_from).toBe(fx.floor2Name);
-    expect(carton.pack.sticker_floor_id).toBe(fx.floor2);
-    expect(res.body.results[0].moved_from).toBeNull();
+    // Never scanned before: no floor to have moved from.
+    for (const i of [0, 1, 3]) expect(res.body.results[i].moved_from).toBeNull();
+    expect(res.body.results[3].pack).not.toHaveProperty('sticker_floor_id');
     expect(JSON.stringify(res.body)).not.toMatch(/floor_mismatch/);
     expect(res.body.results[0].pack).toMatchObject({ pack_size: 100, item_name: fx.boxName, label_no: 1, label_count: 3 });
     expect(res.body.scanned).toBe(3);
@@ -233,7 +238,9 @@ describe('Stock counts — day 1 (the baseline)', () => {
     // lands on the same day's count.
     const again = await scan(fx.floor1, [fx.box[0], fx.box[1]]);
     expect(again.body.count.id).toBe(counts.c1);
-    expect(again.body.results.map((r) => r.status)).toEqual(['already_counted', 'already_counted']);
+    expect(again.body.results.map((r) => [r.status, r.counted_on])).toEqual([
+      ['already_counted', fx.floor1Name], ['already_counted', fx.floor1Name],
+    ]);
     expect(again.body.scanned).toBe(3);
 
     const audit = await db.execute({
@@ -243,21 +250,20 @@ describe('Stock counts — day 1 (the baseline)', () => {
     expect(audit.rows.map((r) => r.action_type)).toEqual(['STOCK_COUNT_START']);
   });
 
-  test('a second scan on another floor the same day moves the pack -- and moves it back', async () => {
+  test('one scan per pack per day: a later scan on another floor is rejected, the first stands', async () => {
     const away = await scan(fx.floor2, [fx.carton[0]]);
-    expect(away.body.results).toEqual([expect.objectContaining({ key: fx.carton[0], status: 'moved', moved_from: fx.floor1Name })]);
-    expect(away.body.scanned).toBe(3); // still one row per pack per day
-    expect(summaryRow((await stock('/summary')).body, fx.cartonId, fx.floor2)).toMatchObject({ in_stock_packs: 1 });
+    expect(away.body.results).toEqual([
+      expect.objectContaining({ key: fx.carton[0], status: 'already_counted', counted_on: fx.floor1Name }),
+    ]);
+    expect(away.body.scanned).toBe(3);
     const row = await db.execute({
-      sql: 'SELECT floor_id FROM stock_count_scans WHERE count_id = ? AND label_key = ?',
+      sql: 'SELECT floor_id, scanned_by FROM stock_count_scans WHERE count_id = ? AND label_key = ?',
       args: [counts.c1, Number(fx.carton[0])],
     });
-    expect(Number(row.rows[0].floor_id)).toBe(fx.floor2);
-
-    const back = await scan(fx.floor1, [fx.carton[0]]);
-    expect(back.body.results[0]).toMatchObject({ status: 'moved', moved_from: fx.floor2Name });
-    const stay = await scan(fx.floor1, [fx.carton[0]]);
-    expect(stay.body.results[0]).toMatchObject({ status: 'already_counted', moved_from: null });
+    expect(Number(row.rows[0].floor_id)).toBe(fx.floor1);
+    const sum = (await stock('/summary')).body;
+    expect(summaryRow(sum, fx.cartonId, fx.floor1)).toMatchObject({ in_stock_packs: 1 });
+    expect(summaryRow(sum, fx.cartonId, fx.floor2)).toBeUndefined();
     expect((await stock('/counts')).body.rows.find((c) => c.id === counts.c1)).toMatchObject({ found: 3, new_packs: 3 });
   });
 
@@ -267,11 +273,13 @@ describe('Stock counts — day 1 (the baseline)', () => {
     const p = res.body.progress;
     expect(p).toMatchObject({ scanned: 3, expected: 5, found: 3, to_go: 2 });
     const f1 = p.by_floor.find((f) => f.floor_id === fx.floor1);
-    const f2 = p.by_floor.find((f) => f.floor_id === fx.floor2);
-    // A pack found today counts on the floor it was found on: carton 0
-    // (arrival floor 2) was scanned on floor 1.
-    expect(f1).toMatchObject({ expected: 4, found: 3, scanned_here: 3, to_go: 1 });
-    expect(f2).toMatchObject({ expected: 1, found: 0, scanned_here: 0, to_go: 1 });
+    const none = p.by_floor.find((f) => f.floor_id === null);
+    // A pack found today counts on the floor it was found on. Box 2 and carton
+    // 1 have never been scanned, so they have no floor yet.
+    expect(f1).toMatchObject({ expected: 3, found: 3, scanned_here: 3, to_go: 0 });
+    expect(none).toMatchObject({ floor_name: null, expected: 2, found: 0, scanned_here: 0, to_go: 2 });
+    expect(p.by_floor.find((f) => f.floor_id === fx.floor2)).toBeUndefined();
+    expect(p.by_floor[p.by_floor.length - 1].floor_id).toBeNull(); // listed last
     expect(p.by_article.find((a) => a.article_id === fx.boxId)).toMatchObject({ expected: 3, found: 2 });
   });
 
@@ -284,7 +292,9 @@ describe('Stock counts — day 1 (the baseline)', () => {
     const sum = await stock('/summary');
     expect(sum.body.latest_count).toBeNull();
     expect(sum.body.today).toMatchObject({ id: counts.c1, count_date: fx.today, scanned: 3 });
-    expect(summaryRow(sum.body, fx.boxId, fx.floor1)).toMatchObject({ in_stock_packs: 2, not_counted_packs: 1 });
+    expect(summaryRow(sum.body, fx.boxId, fx.floor1)).toMatchObject({ in_stock_packs: 2, not_counted_packs: 0 });
+    // Box 2, never scanned, has no floor.
+    expect(summaryRow(sum.body, fx.boxId, null)).toMatchObject({ floor_name: null, in_stock_packs: 0, not_counted_packs: 1 });
 
     const list = await stock('/counts');
     expect(list.body.today).toBe(fx.today);
@@ -301,14 +311,15 @@ describe('Stock counts — day 1 (the baseline)', () => {
     await nextDay();
     const res = await stock('/summary');
     expect(res.status).toBe(200);
-    // Boxes 0 and 1 seen on floor 1. Box 2 never counted (its arrival floor).
+    // Boxes 0 and 1 seen on floor 1. Box 2 never counted: no floor.
     expect(summaryRow(res.body, fx.boxId, fx.floor1)).toMatchObject({
-      in_stock_packs: 2, in_stock_pcs: 200, not_counted_packs: 1, out_last_packs: 0,
+      in_stock_packs: 2, in_stock_pcs: 200, not_counted_packs: 0, out_last_packs: 0,
     });
+    expect(summaryRow(res.body, fx.boxId, null)).toMatchObject({ not_counted_packs: 1 });
     expect(res.body.totals).not.toHaveProperty('flagged_packs');
-    // Carton 0 moved to floor 1, carton 1 never counted (arrival floor 2).
+    // Carton 0 on floor 1, carton 1 never counted: no floor.
     expect(summaryRow(res.body, fx.cartonId, fx.floor1)).toMatchObject({ in_stock_packs: 1 });
-    expect(summaryRow(res.body, fx.cartonId, fx.floor2)).toMatchObject({ in_stock_packs: 0, not_counted_packs: 1 });
+    expect(summaryRow(res.body, fx.cartonId, null)).toMatchObject({ in_stock_packs: 0, not_counted_packs: 1 });
     expect(res.body.latest_count.id).toBe(counts.c1);
     expect(res.body.today).toBeNull();
 
@@ -325,6 +336,10 @@ describe('Stock counts — day 2: a pack goes Out', () => {
     const evening = await scan(fx.floor2, [fx.carton[0], fx.carton[1]]);
     expect(evening.body.count.id).toBe(counts.c2);
     expect(evening.body.scanned).toBe(3);
+    // The day's first scan places a pack: carton 0 was on floor 1 yesterday.
+    expect(evening.body.results.map((r) => [r.status, r.moved_from])).toEqual([
+      ['counted', fx.floor1Name], ['counted', null],
+    ]);
     await nextDay();
     // found 3, new 1 (carton 1), Out 1 (box 1). Box 2 is still not counted:
     // never Out.
@@ -334,9 +349,11 @@ describe('Stock counts — day 2: a pack goes Out', () => {
   test('summary: box 1 Out on the last count, box 2 still Not yet counted', async () => {
     const res = await stock('/summary');
     expect(summaryRow(res.body, fx.boxId, fx.floor1)).toMatchObject({
-      in_stock_packs: 1, out_last_packs: 1, out_last_pcs: 100, not_counted_packs: 1,
+      in_stock_packs: 1, out_last_packs: 1, out_last_pcs: 100, not_counted_packs: 0,
     });
+    expect(summaryRow(res.body, fx.boxId, null)).toMatchObject({ not_counted_packs: 1 });
     expect(summaryRow(res.body, fx.cartonId, fx.floor2)).toMatchObject({ in_stock_packs: 2 });
+    expect(summaryRow(res.body, fx.cartonId, fx.floor1)).toBeUndefined();
   });
 
   test('a day with no scans is no count and changes nothing', async () => {
@@ -367,7 +384,7 @@ describe('Stock counts — day 3: an evening delivery, and the Out pack comes ba
   });
 
   test('evening: new stock is stickered and scanned -- In Stock before the day ends', async () => {
-    fx.evening = await batchWithKeys({ articleId: fx.boxId, floorId: fx.floor1, packSize: 100, labels: 1 });
+    fx.evening = await batchWithKeys({ articleId: fx.boxId, packSize: 100, labels: 1 });
     // Expected now: box 0, box 2, both cartons, and the new pack. Box 1 was
     // Out, so it is not expected -- and scanning it must not move the figure,
     // or the station would learn it had been Out.
@@ -380,7 +397,8 @@ describe('Stock counts — day 3: an evening delivery, and the Out pack comes ba
 
     const sum = await stock('/summary');
     // Box 0, box 1 (back) and the evening pack, all before midnight.
-    expect(summaryRow(sum.body, fx.boxId, fx.floor1)).toMatchObject({ in_stock_packs: 3, in_stock_pcs: 300, not_counted_packs: 1 });
+    expect(summaryRow(sum.body, fx.boxId, fx.floor1)).toMatchObject({ in_stock_packs: 3, in_stock_pcs: 300, not_counted_packs: 0 });
+    expect(summaryRow(sum.body, fx.boxId, null)).toMatchObject({ not_counted_packs: 1 });
   });
 
   test("after midnight: day 3's totals, and day 2's Out total corrects itself with no missed figure", async () => {
@@ -539,9 +557,11 @@ describe('Stock counts — cross-check against dispatches', () => {
 // Last, so the cross-check's window above is not moved by day 6.
 describe('Stock counts — the Admin sticker list behind Current stock (the XLSX download)', () => {
   test('day 6: one row per pack behind the summary, with its key, status and days', async () => {
-    // Box 0, and carton 0 (sticker floor 2), both scanned on floor 1. The
-    // evening pack, last seen on day 5, goes Out on day 6.
-    counts.c6 = (await scan(fx.floor1, [fx.box[0], fx.carton[0]])).body.count.id;
+    // Box 0, and carton 0 (last seen on floor 2), both scanned on floor 1.
+    // The evening pack, last seen on day 5, goes Out on day 6.
+    const day6 = await scan(fx.floor1, [fx.box[0], fx.carton[0]]);
+    counts.c6 = day6.body.count.id;
+    expect(day6.body.results.map((r) => r.moved_from)).toEqual([null, fx.floor2Name]);
     await nextDay();
     const days = Object.fromEntries((await stock('/counts')).body.rows.map((c) => [c.id, c.count_date]));
 
@@ -556,15 +576,14 @@ describe('Stock counts — the Admin sticker list behind Current stock (the XLSX
       status: 'in_stock', floor_id: fx.floor1, label_no: 1, label_count: 3,
       first_seen: days[counts.c1], last_seen: days[counts.c6], out_on: null, stickered_on: fx.today,
     });
-    expect(byKey[fx.carton[0]]).toMatchObject({
-      status: 'in_stock', floor_id: fx.floor1, sticker_floor_id: fx.floor2, seen_floor_id: fx.floor1,
-    });
+    expect(byKey[fx.carton[0]]).toMatchObject({ status: 'in_stock', floor_id: fx.floor1, seen_floor_id: fx.floor1 });
     expect(byKey[fx.carton[0]]).not.toHaveProperty('wrong_floor');
+    expect(byKey[fx.carton[0]]).not.toHaveProperty('sticker_floor_id');
     expect(byKey[fx.evening[0]]).toMatchObject({
       status: 'out', floor_id: fx.floor1, last_seen: days[counts.c5], out_on: days[counts.c6],
     });
     expect(byKey[fx.box[2]]).toMatchObject({
-      status: 'not_counted', floor_id: fx.floor1, seen_floor_id: null, first_seen: null, last_seen: null, out_on: null,
+      status: 'not_counted', floor_id: null, seen_floor_id: null, first_seen: null, last_seen: null, out_on: null,
     });
   });
 
@@ -583,7 +602,9 @@ describe('Stock counts — the Admin sticker list behind Current stock (the XLSX
 
   test('the floor filter works as on the page, and only Admin/Owner may list keys', async () => {
     expect((await stock(`/keys?floor_id=${fx.floor2}`)).body.total).toBe(0);
-    expect((await stock(`/keys?floor_id=${fx.floor1}`)).body.total).toBe(4);
+    // Box 2, never scanned, has no floor: only All floors lists it.
+    expect((await stock(`/keys?floor_id=${fx.floor1}`)).body.total).toBe(3);
+    expect((await stock('/keys')).body.total).toBe(4);
     const bad = await stock('/keys?floor_id=first');
     expect(bad.status).toBe(400);
     expect(bad.body.message).toBe('floor_id must be a number');

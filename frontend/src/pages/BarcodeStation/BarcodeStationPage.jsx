@@ -46,7 +46,7 @@ import { sortByText } from '../../utils/sort';
 // uses the shared portal instance (api/labelBatches.api.js).
 
 const PAGE_SIZE_KEY = 'barcodeStation.batches';
-const defaultFilters = () => ({ vendor_id: '', floor_id: '', date_from: '', date_to: '' });
+const defaultFilters = () => ({ vendor_id: '', date_from: '', date_to: '' });
 
 // Two jobs on one station: labelling incoming stock, and the daily stock count
 // (migration 102). Remembered per device -- the counting phone stays on Count.
@@ -147,7 +147,7 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
     const params = { page: o.page ?? page, page_size: o.pageSize ?? pageSize };
     if (focus) params.id = focus;
     else {
-      for (const k of ['vendor_id', 'floor_id', 'date_from', 'date_to']) if (f[k]) params[k] = f[k];
+      for (const k of ['vendor_id', 'date_from', 'date_to']) if (f[k]) params[k] = f[k];
     }
     return params;
   }, [filters, keyHit, page, pageSize]);
@@ -183,8 +183,8 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
     try {
       const created = await createLabelBatch({ ...entry, operator });
       toast.success(`Batch #${created.id} saved — press Generate when it is right`);
-      // Keep vendor and floor: the next entry is usually the same delivery.
-      setEntry({ ...fieldsOf(null), outbound_vendor_id: entry.outbound_vendor_id, floor_id: entry.floor_id });
+      // Keep vendor and Stitching / Packing: the next entry is usually the same delivery.
+      setEntry({ ...fieldsOf(null), outbound_vendor_id: entry.outbound_vendor_id, stitching_party_id: entry.stitching_party_id });
       setKeyHit(null);
       setPage(1);
       load({ page: 1, focusId: null });
@@ -384,13 +384,6 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
               </select>
             </label>
             <label className="block w-40">
-              <span className="block text-xs font-medium text-gray-600 mb-1">Floor</span>
-              <select value={draftFilters.floor_id} onChange={(e) => setDraftFilters((f) => ({ ...f, floor_id: e.target.value }))} className={inputCls}>
-                <option value="">All floors</option>
-                {floorsSorted.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-              </select>
-            </label>
-            <label className="block w-40">
               <span className="block text-xs font-medium text-gray-600 mb-1">Incoming from</span>
               <input type="date" value={draftFilters.date_from} onChange={(e) => setDraftFilters((f) => ({ ...f, date_from: e.target.value }))} className={inputCls} />
             </label>
@@ -424,9 +417,9 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
                 <tr>
                   <th className="px-4 py-3">Batch</th>
                   <th className="px-4 py-3">Vendor Name</th>
+                  <th className="px-4 py-3">Stitching / Packing</th>
                   <th className="px-4 py-3">Article</th>
                   <th className="px-4 py-3 text-right">Pack Size</th>
-                  <th className="px-4 py-3">Floor</th>
                   <th className="px-4 py-3 text-right">No. of Barcodes</th>
                   <th className="px-4 py-3">Key</th>
                   <th className="px-4 py-3">Date of Incoming</th>
@@ -445,9 +438,9 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
                   <tr key={b.id} className={`border-b border-gray-100 hover:bg-gray-50 align-top ${keyHit?.batch.id === b.id ? 'bg-red-50/40' : ''}`}>
                     <td className="px-4 py-3 text-gray-500 tabular-nums">#{b.id}</td>
                     <td className="px-4 py-3 font-medium text-[#003049]">{b.vendor_name}</td>
+                    <td className="px-4 py-3 text-gray-700">{b.stitching_party_name || <span className="text-gray-400">—</span>}</td>
                     <td className="px-4 py-3 text-gray-700">{articleLabel(b)}</td>
                     <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">{packSizeLabel(b)}</td>
-                    <td className="px-4 py-3 whitespace-nowrap">{b.floor_name}</td>
                     <td className="px-4 py-3 text-right tabular-nums">{b.label_count}</td>
                     <td className="px-4 py-3">
                       {b.is_generated && isAdmin && (
@@ -558,7 +551,7 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
         title="Generate keys?"
         confirmLabel={confirmGenerate ? `Generate ${keyCountLabel(confirmGenerate.label_count)}` : 'Generate'}
         message={confirmGenerate
-          ? `${confirmGenerate.vendor_name} · ${articleLabel(confirmGenerate)} · pack of ${packSizeLabel(confirmGenerate)} · ${confirmGenerate.floor_name}. After this the entry is final — it can never be edited or deleted.`
+          ? `${[confirmGenerate.vendor_name, confirmGenerate.stitching_party_name, articleLabel(confirmGenerate)].filter(Boolean).join(' · ')} · pack of ${packSizeLabel(confirmGenerate)}. After this the entry is final — it can never be edited or deleted.`
           : ''}
       />
       <ConfirmDialog

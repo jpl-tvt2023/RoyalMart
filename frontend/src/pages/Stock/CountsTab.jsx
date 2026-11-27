@@ -146,7 +146,6 @@ function CountPacks({ count }) {
               <th className="px-4 py-3">Vendor</th>
               <th className="px-4 py-3">Article</th>
               <th className="px-4 py-3 text-right">Pack</th>
-              <th className="px-4 py-3">Arrival floor</th>
               <th className="px-4 py-3">{seenLabel}</th>
             </tr>
           </thead>
@@ -157,7 +156,6 @@ function CountPacks({ count }) {
                 <td className="px-4 py-2.5">{p.vendor_name}</td>
                 <td className="px-4 py-2.5 text-[#003049]">{articleText(p)}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums whitespace-nowrap">{packText(p)}</td>
-                <td className="px-4 py-2.5 whitespace-nowrap">{p.sticker_floor_name}</td>
                 <td className="px-4 py-2.5 whitespace-nowrap">{p.seen_floor_name || '—'}</td>
               </tr>
             ))}

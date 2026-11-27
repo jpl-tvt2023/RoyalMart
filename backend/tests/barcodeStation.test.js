@@ -37,7 +37,6 @@ const draftBody = (overrides = {}) => ({
   outbound_vendor_id: fx.vendorId,
   article_id: fx.articleId,
   pack_size: 300,
-  floor_id: fx.floorId,
   label_count: 5,
   operator: OPERATOR,
   ...overrides,
@@ -118,6 +117,21 @@ beforeAll(async () => {
   fx.floorId = await insertId(`INSERT INTO floors (name) VALUES (?) RETURNING id`, [`BS Floor ${tag}`]);
   fx.inactiveFloorId = await insertId(`INSERT INTO floors (name, is_active) VALUES (?, 0) RETURNING id`, [`BS Shut Floor ${tag}`]);
 
+  // Stitching / Packing parties (105): the list offers active parties tagged
+  // Stitching or Packing -- not a Third-Party-only one, not an inactive one.
+  const party = async (name, uses, active = 1) => {
+    const id = await insertId('INSERT INTO stitching_parties (name, is_active) VALUES (?, ?) RETURNING id', [name, active]);
+    for (const u of uses) await db.execute({ sql: 'INSERT INTO stitching_party_uses (party_id, use_stage) VALUES (?, ?)', args: [id, u] });
+    return id;
+  };
+  fx.partyName = `BS Stitcher ${tag}`;
+  fx.partyId = await party(fx.partyName, ['Stitching', 'Packing']);
+  fx.packerId = await party(`BS Packer ${tag}`, ['Packing']);
+  fx.buyerName = `BS Buyer ${tag}`;
+  fx.buyerId = await party(fx.buyerName, ['Third Party']);
+  fx.oldPartyName = `BS Old Stitcher ${tag}`;
+  fx.oldPartyId = await party(fx.oldPartyName, ['Stitching'], 0);
+
   await cleanStation();
   await resetSettings();
 });
@@ -129,6 +143,8 @@ afterAll(async () => {
   await db.execute({ sql: 'DELETE FROM outbound_vendors WHERE id IN (?, ?)', args: [fx.vendorId, fx.inactiveVendorId] });
   await db.execute({ sql: 'DELETE FROM packaging_raw_materials WHERE id IN (?, ?, ?)', args: [fx.articleId, fx.silverId, fx.unmappedId] });
   await db.execute(`DELETE FROM floors WHERE name LIKE 'BS %'`);
+  await db.execute(`DELETE FROM stitching_party_uses WHERE party_id IN (SELECT id FROM stitching_parties WHERE name LIKE 'BS %')`);
+  await db.execute(`DELETE FROM stitching_parties WHERE name LIKE 'BS %'`);
   await db.execute({ sql: 'DELETE FROM user_roles WHERE user_id = ?', args: [fx.employeeId] });
   await db.execute({ sql: 'DELETE FROM users WHERE id = ?', args: [fx.employeeId] });
 });
@@ -330,6 +346,14 @@ describe('Barcode Station — options', () => {
     const floorIds = res.body.floors.map(f => f.id);
     expect(floorIds).toContain(fx.floorId);
     expect(floorIds).not.toContain(fx.inactiveFloorId);
+
+    // Stitching / Packing: active parties tagged Stitching or Packing, each once.
+    const partyIds = res.body.stitching_parties.map(p => p.id);
+    expect(partyIds.filter(id => id === fx.partyId)).toHaveLength(1);
+    expect(partyIds).toContain(fx.packerId);
+    expect(partyIds).not.toContain(fx.buyerId);
+    expect(partyIds).not.toContain(fx.oldPartyId);
+    expect(res.body.stitching_parties.find(p => p.id === fx.partyId)).toEqual({ id: fx.partyId, name: fx.partyName });
   });
 });
 
@@ -342,8 +366,33 @@ describe('Barcode Station — drafts', () => {
     expect(res.body).toMatchObject({
       outbound_vendor_id: fx.vendorId, vendor_name: fx.vendorName, article_id: fx.articleId,
       pack_size: 300, label_count: 5, entered_by: 'Ramesh Kumar', is_generated: false, key_count: 0,
-      generated_at: null,
+      generated_at: null, stitching_party_id: null, stitching_party_name: null,
     });
+    // No floor (106): a pack gets its location from its first scan.
+    expect(res.body).not.toHaveProperty('floor_id');
+    expect(res.body).not.toHaveProperty('floor_name');
+  });
+
+  test('an entry may name a Stitching / Packing party, which the audit names too', async () => {
+    const res = await createDraft({ stitching_party_id: fx.partyId });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ stitching_party_id: fx.partyId, stitching_party_name: fx.partyName });
+    const { rows } = await db.execute({
+      sql: `SELECT description FROM audit_logs WHERE entity_type = 'label_batch' AND entity_id = ? AND action_type = 'LABEL_BATCH_CREATE'`,
+      args: [res.body.id],
+    });
+    expect(rows[0].description).toContain(`${fx.vendorName}, ${fx.partyName}, `);
+
+    // Blank clears it on an edit, and the diff shows the party going.
+    const cleared = await asStation(request(app).patch(`/api/station/batches/${res.body.id}`))
+      .send({ stitching_party_id: '', operator: OPERATOR });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body).toMatchObject({ stitching_party_id: null, stitching_party_name: null });
+    const upd = await db.execute({
+      sql: `SELECT changes FROM audit_logs WHERE entity_type = 'label_batch' AND entity_id = ? AND action_type = 'LABEL_BATCH_UPDATE'`,
+      args: [res.body.id],
+    });
+    expect(JSON.parse(upd.rows[0].changes).map(c => c.field)).toEqual(['stitching_party']);
   });
 
   test('field errors come back in grid order, with the mirrored messages', async () => {
@@ -354,13 +403,17 @@ describe('Barcode Station — drafts', () => {
       [{ pack_size: '3.5' }, 'Pack Size must be a whole number'],
       [{ pack_size: '0' }, 'Pack Size must be at least 1'],
       [{ pack_size: 1000001 }, 'Pack Size cannot be more than 1000000'],
-      [{ floor_id: undefined }, 'Floor is required'],
+      [{ stitching_party_id: 'x' }, 'Stitching / Packing must be picked from the list'],
+      [{ stitching_party_id: '0' }, 'Stitching / Packing must be picked from the list'],
       [{ label_count: '' }, 'Number of Barcodes is required'],
       [{ label_count: 2001 }, 'Number of Barcodes cannot be more than 2000'],
       [{ operator: '   ' }, 'Operator name is required'],
       [{ operator: 'x'.repeat(61) }, 'Operator name cannot be longer than 60 characters'],
       // Vendor is checked before Article
       [{ outbound_vendor_id: '', article_id: '' }, 'Vendor is required'],
+      // Grid order: Vendor, Stitching / Packing, Article
+      [{ outbound_vendor_id: '', stitching_party_id: 'x' }, 'Vendor is required'],
+      [{ stitching_party_id: 'x', article_id: '' }, 'Stitching / Packing must be picked from the list'],
     ];
     for (const [overrides, message] of cases) {
       const res = await createDraft(overrides);
@@ -369,7 +422,7 @@ describe('Barcode Station — drafts', () => {
     }
   });
 
-  test('the article must be one the vendor is mapped to, and vendor and floor must be active', async () => {
+  test('the article must be one the vendor is mapped to, the vendor active, and a party active and tagged', async () => {
     const unmapped = await createDraft({ article_id: fx.unmappedId });
     expect(unmapped.status).toBe(400);
     expect(unmapped.body.message).toMatch(/is not mapped to/);
@@ -378,12 +431,20 @@ describe('Barcode Station — drafts', () => {
     expect(oldVendor.status).toBe(400);
     expect(oldVendor.body.message).toMatch(/is no longer active — pick another vendor/);
 
-    const shutFloor = await createDraft({ floor_id: fx.inactiveFloorId });
-    expect(shutFloor.status).toBe(400);
-    expect(shutFloor.body.message).toMatch(/is no longer active — pick another floor/);
+    const ghost = await createDraft({ stitching_party_id: 999999 });
+    expect(ghost.status).toBe(400);
+    expect(ghost.body.message).toBe('Stitching / Packing party not found');
 
-    const ghost = await createDraft({ floor_id: 999999 });
-    expect(ghost.body.message).toBe('Floor not found');
+    const oldParty = await createDraft({ stitching_party_id: fx.oldPartyId });
+    expect(oldParty.body.message).toBe(`${fx.oldPartyName} is no longer active — pick another party`);
+
+    const buyer = await createDraft({ stitching_party_id: fx.buyerId });
+    expect(buyer.body.message).toBe(`${fx.buyerName} is not a Stitching or Packing party`);
+
+    // A floor is no longer part of an entry: one sent is ignored.
+    const withFloor = await createDraft({ floor_id: fx.inactiveFloorId });
+    expect(withFloor.status).toBe(201);
+    expect(withFloor.body).not.toHaveProperty('floor_id');
   });
 
   test('a draft can be edited, with a field-level audit diff', async () => {
@@ -536,17 +597,24 @@ describe('Barcode Station — Generate', () => {
     expect(await keysOf(draft.id)).toHaveLength(30);
   });
 
-  test('Generate re-checks the entry: a floor retired since the draft blocks it', async () => {
-    const draft = (await createDraft()).body;
-    await db.execute({ sql: 'UPDATE floors SET is_active = 0 WHERE id = ?', args: [fx.floorId] });
+  test('Generate re-checks the entry: a Stitching / Packing party retired since the draft blocks it', async () => {
+    const draft = (await createDraft({ stitching_party_id: fx.packerId })).body;
+    await db.execute({ sql: 'UPDATE stitching_parties SET is_active = 0 WHERE id = ?', args: [fx.packerId] });
     try {
       const res = await generate(draft.id);
       expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/is no longer active — pick another floor/);
+      expect(res.body.message).toMatch(/is no longer active — pick another party/);
       expect(await keysOf(draft.id)).toHaveLength(0);
     } finally {
-      await db.execute({ sql: 'UPDATE floors SET is_active = 1 WHERE id = ?', args: [fx.floorId] });
+      await db.execute({ sql: 'UPDATE stitching_parties SET is_active = 1 WHERE id = ?', args: [fx.packerId] });
     }
+    const ok = await generate(draft.id);
+    expect(ok.status).toBe(200);
+    const { rows } = await db.execute({
+      sql: `SELECT description FROM audit_logs WHERE entity_type = 'label_batch' AND entity_id = ? AND action_type = 'LABEL_BATCH_GENERATE'`,
+      args: [draft.id],
+    });
+    expect(rows[0].description).toMatch(new RegExp(`\\(${fx.vendorName}, BS Packer `));
   });
 
   test('Generate needs an operator name', async () => {
@@ -570,7 +638,8 @@ describe('Barcode Station — keys, lookup and list', () => {
   test('an Admin sees every key of a batch, in label order, with the batch and sticker size', async () => {
     const res = await asAdmin(request(app).get(`/api/label-batches/${batch.id}/keys`));
     expect(res.status).toBe(200);
-    expect(res.body.batch).toMatchObject({ id: batch.id, vendor_name: fx.vendorName, floor_id: fx.floorId, unit_metric: 'pcs' });
+    expect(res.body.batch).toMatchObject({ id: batch.id, vendor_name: fx.vendorName, unit_metric: 'pcs' });
+    expect(res.body.batch).not.toHaveProperty('floor_name');
     expect(res.body.keys).toHaveLength(60);
     expect(res.body.keys.map(k => k.label_no)).toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
     expect(res.body.label).toEqual({ width_mm: 152, height_mm: 51, per_page: 1, gap_mm: 0, margin_mm: 0 });

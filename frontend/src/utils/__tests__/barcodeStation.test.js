@@ -12,12 +12,16 @@ import { encodeKey } from '../../pages/BarcodeStation/stationHelpers';
 // server's, verbatim -- backend tests/barcodeStation.test.js asserts the same
 // strings, in the same field order.
 
-const ok = { outbound_vendor_id: 3, article_id: 7, pack_size: 300, floor_id: 2, label_count: 180 };
+const ok = { outbound_vendor_id: 3, article_id: 7, pack_size: 300, label_count: 180 };
 
 describe('batchFieldsError', () => {
   test('a complete entry passes, numbers or digit strings alike', () => {
     expect(batchFieldsError(ok)).toBeNull();
-    expect(batchFieldsError({ outbound_vendor_id: '3', article_id: '7', pack_size: ' 300 ', floor_id: '2', label_count: '180' })).toBeNull();
+    expect(batchFieldsError({ outbound_vendor_id: '3', article_id: '7', pack_size: ' 300 ', label_count: '180' })).toBeNull();
+    // Stitching / Packing is optional (105): blank or a picked id.
+    expect(batchFieldsError({ ...ok, stitching_party_id: '' })).toBeNull();
+    expect(batchFieldsError({ ...ok, stitching_party_id: null })).toBeNull();
+    expect(batchFieldsError({ ...ok, stitching_party_id: '4' })).toBeNull();
   });
 
   test('fields are reported in grid order', () => {
@@ -25,9 +29,14 @@ describe('batchFieldsError', () => {
     expect(batchFieldsError({ ...ok, outbound_vendor_id: '', article_id: '' })).toBe('Vendor is required');
     expect(batchFieldsError({ ...ok, article_id: null })).toBe('Article is required');
     expect(batchFieldsError({ ...ok, pack_size: '' })).toBe('Pack Size is required');
-    expect(batchFieldsError({ ...ok, floor_id: undefined })).toBe('Floor is required');
     expect(batchFieldsError({ ...ok, label_count: '' })).toBe('Number of Barcodes is required');
-    expect(batchFieldsError({ ...ok, pack_size: '', floor_id: '' })).toBe('Pack Size is required');
+    // No floor any more (106): an entry without one is complete.
+    expect(batchFieldsError({ ...ok, floor_id: undefined })).toBeNull();
+    // Vendor, Stitching / Packing, Article
+    expect(batchFieldsError({ ...ok, stitching_party_id: 'x' })).toBe('Stitching / Packing must be picked from the list');
+    expect(batchFieldsError({ ...ok, stitching_party_id: '0' })).toBe('Stitching / Packing must be picked from the list');
+    expect(batchFieldsError({ ...ok, outbound_vendor_id: '', stitching_party_id: 'x' })).toBe('Vendor is required');
+    expect(batchFieldsError({ ...ok, stitching_party_id: 'x', article_id: '' })).toBe('Stitching / Packing must be picked from the list');
   });
 
   test('the same limits and messages as the server', () => {

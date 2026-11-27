@@ -8,9 +8,10 @@ import { formatDate } from '../../utils/formatters';
 import { articleText, fmt, toastMessage } from './stockHelpers';
 
 // Current stock: one row per article and floor -- WHERE the stock is. A pack
-// sits on the floor it was last scanned on (its entry's arrival floor if it
-// has never been counted). Packs move between floors as a matter of course, so
-// a scan elsewhere simply moves it (no "wrong floor" since 2026-11-27).
+// sits on the floor of its latest day's scan. An entry has no floor (106), so
+// a pack never scanned has no location: its row is "Not scanned yet", and the
+// floor filter leaves it out. Packs move between floors as a matter of course
+// (no "wrong floor" since 2026-11-27).
 // Packs scanned today are In Stock already -- an evening delivery shows the
 // moment it is scanned -- while Out moves only when a day finishes at midnight.
 // Pieces are pack size x packs, so a part-used pack counts in full until its
@@ -21,6 +22,9 @@ import { articleText, fmt, toastMessage } from './stockHelpers';
 // sticker WITH its key (/api/stock/keys, Admin-only -- staff never see keys).
 
 const COLS = 6;
+
+// A pack never scanned has no floor yet (106).
+const NOT_SCANNED = 'Not scanned yet';
 
 // Local multi-sheet variant of the house XLSX helper (frontend/CLAUDE.md: the
 // helper is duplicated per page by design). Each sheet is { name, columns,
@@ -44,7 +48,7 @@ function downloadSheets(filename, sheets) {
 // Numbers stay numbers, so the sheet can be summed and filtered.
 const STOCK_COLUMNS = [
   { header: 'Article', get: articleText, wch: 40 },
-  { header: 'Floor', key: 'floor_name' },
+  { header: 'Floor', get: (r) => r.floor_name || NOT_SCANNED },
   { header: 'In stock (packs)', key: 'in_stock_packs', wch: 16 },
   { header: 'In stock (pcs)', key: 'in_stock_pcs', wch: 16 },
   { header: 'Unit', key: 'unit_metric', wch: 8 },
@@ -61,8 +65,7 @@ const STICKER_COLUMNS = [
   { header: 'Key', key: 'label_key', wch: 12 },
   { header: 'Status', get: (s) => STATUS_TEXT[s.status] || s.status, wch: 22 },
   { header: 'Article', get: articleText, wch: 40 },
-  { header: 'Floor', get: (s) => s.seen_floor_name || s.sticker_floor_name },
-  { header: 'Arrival floor', key: 'sticker_floor_name' },
+  { header: 'Floor', get: (s) => s.seen_floor_name || NOT_SCANNED },
   { header: 'Vendor', key: 'vendor_name', wch: 24 },
   { header: 'Entry #', key: 'batch_id', wch: 9 },
   { header: 'Label', get: (s) => `${s.label_no} of ${s.label_count}`, wch: 10 },
@@ -91,7 +94,8 @@ export default function CurrentStockTab({ isAdmin }) {
 
   const onFloor = (r) => !floorFilter || r.floor_id === Number(floorFilter);
   const rows = (data?.rows || []).filter(onFloor);
-  const floors = [...new Map((data?.rows || []).map((r) => [r.floor_id, r.floor_name])).entries()]
+  // The filter offers the floors packs were scanned on -- not the no-floor row.
+  const floors = [...new Map((data?.rows || []).filter((r) => r.floor_id != null).map((r) => [r.floor_id, r.floor_name])).entries()]
     .sort((a, b) => a[1].localeCompare(b[1]));
   const t = data?.totals;
 
@@ -184,7 +188,7 @@ export default function CurrentStockTab({ isAdmin }) {
               {!loading && rows.map((r) => (
                 <tr key={`${r.article_id}:${r.floor_id}`} className="border-b border-gray-100 hover:bg-gray-50">
                   <td className="px-4 py-3 text-[#003049] font-medium">{articleText(r)}</td>
-                  <td className="px-4 py-3 whitespace-nowrap">{r.floor_name}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">{r.floor_name ?? <span className="text-gray-400">{NOT_SCANNED}</span>}</td>
                   <td className="px-4 py-3 text-right tabular-nums font-semibold">{fmt(r.in_stock_packs)}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{fmt(r.in_stock_pcs)}{r.unit_metric ? ` ${r.unit_metric}` : ''}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{r.out_last_packs ? `${fmt(r.out_last_packs)} (${fmt(r.out_last_pcs)})` : '—'}</td>

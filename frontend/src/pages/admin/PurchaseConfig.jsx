@@ -29,7 +29,7 @@ const SUBTITLES = {
   stitchingPrefixes: 'Incoming-number prefixes, and the processing stage each one records',
   stitchingParties: 'Who material is sent to, and which jobs each party may be given',
   warehouses: 'Our own warehouses — where finished stock sits at the end of the Stitching chain',
-  floors: 'Where Barcode Station stock is stored — the floor an entry arrives on, then wherever a pack is last scanned',
+  floors: 'Where Barcode Station stock is — the floor each pack was last scanned on (a new pack has none until its first scan)',
   barcodeStation: 'The public page warehouse staff label incoming stock on: its PIN, label page and link',
 };
 

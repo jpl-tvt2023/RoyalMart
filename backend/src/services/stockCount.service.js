@@ -37,11 +37,11 @@
 //                finished day: the days between two sightings are all before
 //                today.
 //
-// LOCATION: a pack is on the floor it was last scanned on (seen_floor_id, the
-// floor of its row on its latest day -- a same-day rescan elsewhere updates
-// that row), else on its entry's arrival floor. Packs move between floors as
-// a matter of course (client, 2026-11-27), so a scan on another floor is not
-// flagged -- the "wrong floor" figure of 102 is gone.
+// LOCATION: a pack is on the floor of its latest day's scan (seen_floor_id),
+// and has NO location until its first scan -- an entry has no floor (106).
+// Packs move between floors as a matter of course (client, 2026-11-27), so a
+// scan on another floor is not flagged -- the "wrong floor" figure of 102 is
+// gone. One scan per pack per day: the day's first scan stands.
 
 const STATUS = { IN_STOCK: 'in_stock', OUT: 'out', NOT_COUNTED: 'not_counted' };
 
@@ -59,7 +59,7 @@ const IST_TODAY = "date('now', '+5 hours', '+30 minutes')";
 //   latest     the latest finished seq (0 before Day 1 has finished)
 //   ks         each sighted key's first and last seq, today's scans included
 //   kstate     EVERY key: status, first/last seq, the floor it was last seen
-//              on, and its batch's article, arrival floor, pack size
+//              on (NULL if never), and its batch's article, pack size
 // days, cc and ks are read many times per query, so they are MATERIALIZED
 // (computed once) rather than inlined at every reference.
 const STATE_CTES = `
@@ -78,7 +78,7 @@ const STATE_CTES = `
   ),
   kstate AS (
     SELECT k.label_key, k.batch_id, k.label_no,
-           b.article_id, b.outbound_vendor_id, b.floor_id AS sticker_floor_id, b.pack_size,
+           b.article_id, b.outbound_vendor_id, b.pack_size,
            ks.first_seq, ks.last_seq,
            ls.floor_id AS seen_floor_id,
            CASE WHEN ks.label_key IS NULL THEN '${STATUS.NOT_COUNTED}'

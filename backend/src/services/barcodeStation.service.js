@@ -66,14 +66,22 @@ function wholeNumberError(value, label, max) {
   return null;
 }
 
-// The five fields an operator fills in, in grid order:
-// Vendor, Article, Pack Size, Floor, Number of Barcodes.
+// An optional pick (105): blank is fine, anything else must be an id.
+function optionalPickError(value, label) {
+  if (isBlank(value)) return null;
+  if (!/^\d+$/.test(String(value).trim()) || Number(value) < 1) return `${label} must be picked from the list`;
+  return null;
+}
+
+// The fields an operator fills in, in grid order: Vendor, Stitching /
+// Packing (optional, 105), Article, Pack Size, Number of Barcodes. There is
+// no floor (106): a pack gets its location from its first scan.
 function batchFieldsError(f) {
   const v = f || {};
   return pickError(v.outbound_vendor_id, 'Vendor')
+    || optionalPickError(v.stitching_party_id, 'Stitching / Packing')
     || pickError(v.article_id, 'Article')
     || wholeNumberError(v.pack_size, 'Pack Size', PACK_SIZE_MAX)
-    || pickError(v.floor_id, 'Floor')
     || wholeNumberError(v.label_count, 'Number of Barcodes', LABEL_COUNT_MAX);
 }
 
@@ -159,7 +167,7 @@ module.exports = {
   KEY_MIN, KEY_MAX, KEY_RE, PACK_SIZE_MAX, LABEL_COUNT_MAX, OPERATOR_MAX, PRINT_MODES, PIN_RE,
   LABEL_WIDTH_MIN, LABEL_WIDTH_MAX, LABEL_HEIGHT_MIN, LABEL_HEIGHT_MAX, SCAN_BATCH_MAX,
   LABELS_PER_PAGE_MAX, LABEL_GAP_MAX, PAGE_MARGIN_MAX,
-  wholeNumberError, batchFieldsError, normOperator, operatorError, printModeError, keyError, pinError, labelSizeError,
+  wholeNumberError, optionalPickError, batchFieldsError, normOperator, operatorError, printModeError, keyError, pinError, labelSizeError,
   labelPageHeight, labelPageError,
   scanBatchError, scanFieldsError,
 };

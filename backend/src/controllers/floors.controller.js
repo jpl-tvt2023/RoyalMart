@@ -1,11 +1,13 @@
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
 
-// Floors master (migration 098) -- where a Barcode Station batch is stored,
-// printed on its stickers. Name-only, the companies shape, and deliberately
-// NOT linked to the warehouses master. Delete means deactivate: a batch keeps
-// pointing at its floor, so an inactive floor only drops out of the station's
-// dropdown.
+// Floors master (migration 098) -- where Barcode Station stock is: the floor a
+// scanner picks on the Stock count tab, and so the floor each pack was last
+// scanned on. Since 106 an entry has no floor and the sticker prints none -- a
+// pack gets its location only from a scan. Name-only, the companies shape, and
+// deliberately NOT linked to the warehouses master. Delete means deactivate:
+// past scans keep pointing at the floor, so an inactive floor only drops out
+// of the station's picker.
 
 function normName(v) {
   return v == null ? '' : String(v).trim();
@@ -17,8 +19,7 @@ async function list(req, res, next) {
   try {
     const { rows } = await db.execute(
       `SELECT f.id, f.name, f.is_active, f.created_at, f.updated_at,
-              u.name AS updated_by_name,
-              (SELECT COUNT(*) FROM label_batches b WHERE b.floor_id = f.id AND b.deleted_at IS NULL) AS batch_count
+              u.name AS updated_by_name
        FROM floors f
        LEFT JOIN users u ON u.id = f.updated_by
        ORDER BY f.is_active DESC, f.name ASC`

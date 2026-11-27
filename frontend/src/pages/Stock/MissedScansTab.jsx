@@ -152,7 +152,6 @@ function MissedPacks({ count, onOpenKey }) {
               <th className="px-4 py-3">Label</th>
               <th className="px-4 py-3">Article</th>
               <th className="px-4 py-3 text-right">Pack</th>
-              <th className="px-4 py-3">Arrival floor</th>
               <th className="px-4 py-3">Turned up on</th>
             </tr>
           </thead>
@@ -165,7 +164,6 @@ function MissedPacks({ count, onOpenKey }) {
                 <td className="px-4 py-2.5 whitespace-nowrap text-gray-600">{labelText(p)}</td>
                 <td className="px-4 py-2.5 text-[#003049]">{articleText(p)}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums whitespace-nowrap">{packText(p)}</td>
-                <td className="px-4 py-2.5 whitespace-nowrap">{p.sticker_floor_name}</td>
                 <td className="px-4 py-2.5 whitespace-nowrap">{formatDate(p.found_again_date)}</td>
               </tr>
             ))}
@@ -185,7 +183,7 @@ function HistoryModal({ history: h, onClose }) {
       <div className="space-y-4 text-sm">
         <div className="space-y-1">
           <p className="font-medium text-[#003049]">{h.vendor_name} · {articleText(h)}</p>
-          <p className="text-gray-600">{labelText(h)} · pack of {packText(h)} · arrival floor {h.sticker_floor_name}</p>
+          <p className="text-gray-600">{labelText(h)} · pack of {packText(h)}</p>
           <p className="text-gray-600">Generated {formatDateTime(h.generated_at)} by {h.generated_by}</p>
           <p className="flex items-center gap-2">
             <Badge color={badge.color}>{badge.label}</Badge>

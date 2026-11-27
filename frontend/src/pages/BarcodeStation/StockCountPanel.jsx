@@ -25,12 +25,14 @@ import { formatDate, formatDateTime } from '../../utils/formatters';
 // reloads. Re-sending is harmless: the server keeps one scan per sticker per
 // day.
 //
-// The card says counted / moved / already counted / not our sticker. Packs
-// move between floors as a matter of course (client, 2026-11-27): a scan puts
-// the pack on the floor picked here, and the card says where it moved from --
-// nothing is flagged. A second scan on another floor the same day moves it
-// again. It never says a pack had been Out: missed scans are the scanner's
-// mistakes, for Admin/Owner only.
+// LOCATION COMES FROM THE SCAN (client, 2026-11-27). An entry has no floor, so
+// a pack has none until its first scan, which puts it on the floor picked
+// here. ONE SCAN PER PACK PER DAY: the first stands, and every later scan that
+// day is rejected (grey card, naming the floor it was counted on), on any
+// floor. The card says counted (and where it moved from, when the pack was
+// last on another floor) / already scanned today / not our sticker -- nothing
+// is flagged. It never says a pack had been Out: missed scans are the
+// scanner's mistakes, for Admin/Owner only.
 
 const FLOOR_KEY = 'roms:barcodeStation:countFloor';
 const RETRY_MS = 3000;
@@ -60,15 +62,18 @@ const CARD_STYLE = {
 };
 const LOUDEST = ['error', 'ok', 'info'];
 
-function cardFor(result, floorName) {
+function cardFor(result) {
   if (result.status === 'unknown') {
     return { kind: 'error', title: 'Not one of our stickers', detail: `Key ${result.key} is on no label. Put this pack aside and tell an Admin.` };
   }
   const p = result.pack;
   const line = `${p.vendor_name} · ${articleLabel(p)} · pack of ${packSizeLabel(p)} · label ${p.label_no} of ${p.label_count}`;
-  if (result.status === 'already_counted') return { kind: 'info', title: 'Already counted today', detail: line };
-  if (result.status === 'moved') {
-    return { kind: 'ok', title: `Moved to ${floorName}`, detail: `${line}. It was on ${result.moved_from || 'another floor'} earlier today.` };
+  if (result.status === 'already_counted') {
+    return {
+      kind: 'info',
+      title: `Already scanned today${result.counted_on ? ` on ${result.counted_on}` : ''} — not counted again`,
+      detail: line,
+    };
   }
   if (result.moved_from) {
     return { kind: 'ok', title: `Counted — moved here from ${result.moved_from}`, detail: line };
@@ -128,9 +133,8 @@ export default function StockCountPanel({ operator, floors }) {
       const res = await sendScans(batch);
       setQueue(removeSent(queueRef.current, batch));
       setOffline(false);
-      const name = res.floor?.name || 'this floor';
       const stamp = Date.now();
-      const cards = res.results.map((r) => ({ ...cardFor(r, name), id: `${r.key}:${stamp}` }));
+      const cards = res.results.map((r) => ({ ...cardFor(r), id: `${r.key}:${stamp}` }));
       if (cards.length) {
         setCard(cards[cards.length - 1]);
         setRecent((prev) => [...cards.slice().reverse(), ...prev].slice(0, RECENT_MAX));
@@ -345,10 +349,14 @@ export default function StockCountPanel({ operator, floors }) {
               </thead>
               <tbody>
                 {p.by_floor.map((f) => (
-                  <tr key={f.floor_id} className={`border-b border-gray-100 ${floor?.id === f.floor_id ? 'bg-[#fdf0d5]/60' : ''}`}>
+                  <tr key={f.floor_id ?? 'none'} className={`border-b border-gray-100 ${floor?.id === f.floor_id ? 'bg-[#fdf0d5]/60' : ''}`}>
                     <td className="px-3 py-2">
-                      <span className="font-medium text-[#003049]">{f.floor_name}</span>
-                      {f.expected > 0 && f.scanned_here === 0 && (
+                      {f.floor_id == null ? (
+                        <span className="font-medium text-gray-500" title="Packs never scanned have no floor yet — their first scan places them">Not scanned yet</span>
+                      ) : (
+                        <span className="font-medium text-[#003049]">{f.floor_name}</span>
+                      )}
+                      {f.floor_id != null && f.expected > 0 && f.scanned_here === 0 && (
                         <span className="ml-2 inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800">
                           nothing scanned yet
                         </span>
