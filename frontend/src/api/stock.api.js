@@ -42,6 +42,15 @@ export async function getCrossCheck(params) {
   return data;
 }
 
+// ADMIN/OWNER: the packs behind the Current stock figures, one row per sticker
+// WITH its key (In stock, Not yet counted, Went Out on the last count) -- for
+// the Current stock XLSX download. params: { floor_id?, vendor_id? }; no
+// page params = every row.
+export async function listStockStickers(params) {
+  const { data } = await api.get('/stock/keys', { params });
+  return data;
+}
+
 export async function getStickerHistory(key) {
   const { data } = await api.get(`/stock/keys/${encodeURIComponent(key)}`);
   return data;

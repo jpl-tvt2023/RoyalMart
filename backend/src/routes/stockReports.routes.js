@@ -24,6 +24,7 @@ router.get('/counts/:id',          everyone, c.getCount);
 router.get('/missed',              admins,   c.missedByCount);
 router.get('/missed/:id',          admins,   c.missedPacks);
 router.get('/cross-check',         admins,   c.crossCheck);
+router.get('/keys',                admins,   c.stickerList);   // the Current stock download
 router.get('/keys/:key',           admins,   c.keyHistory);
 
 module.exports = router;

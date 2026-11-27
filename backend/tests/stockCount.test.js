@@ -507,3 +507,59 @@ describe('Stock counts — cross-check against dispatches', () => {
     expect(flipped.body.message).toBe('from cannot be after to');
   });
 });
+
+// Last, so the cross-check's window above is not moved by day 6.
+describe('Stock counts — the Admin sticker list behind Current stock (the XLSX download)', () => {
+  test('day 6: one row per pack behind the summary, with its key, status and days', async () => {
+    // Box 0, and carton 0 (sticker floor 2), both scanned on floor 1. The
+    // evening pack, last seen on day 5, goes Out on day 6.
+    counts.c6 = (await scan(fx.floor1, [fx.box[0], fx.carton[0]])).body.count.id;
+    await nextDay();
+    const days = Object.fromEntries((await stock('/counts')).body.rows.map((c) => [c.id, c.count_date]));
+
+    const res = await stock('/keys');
+    expect(res.status).toBe(200);
+    const byKey = Object.fromEntries(res.body.rows.map((s) => [String(s.label_key), s]));
+    // Box 1 and carton 1 went Out on day 4, not on the last count: not listed.
+    expect(Object.keys(byKey).sort()).toEqual([fx.box[0], fx.box[2], fx.carton[0], fx.evening[0]].sort());
+    expect(res.body.total).toBe(4);
+
+    expect(byKey[fx.box[0]]).toMatchObject({
+      status: 'in_stock', floor_id: fx.floor1, wrong_floor: false, label_no: 1, label_count: 3,
+      first_seen: days[counts.c1], last_seen: days[counts.c6], out_on: null, stickered_on: fx.today,
+    });
+    expect(byKey[fx.carton[0]]).toMatchObject({
+      status: 'in_stock', floor_id: fx.floor1, sticker_floor_id: fx.floor2, seen_floor_id: fx.floor1, wrong_floor: true,
+    });
+    expect(byKey[fx.evening[0]]).toMatchObject({
+      status: 'out', floor_id: fx.floor1, last_seen: days[counts.c5], out_on: days[counts.c6], wrong_floor: false,
+    });
+    expect(byKey[fx.box[2]]).toMatchObject({
+      status: 'not_counted', floor_id: fx.floor1, seen_floor_id: null, first_seen: null, last_seen: null, out_on: null,
+    });
+  });
+
+  test('each Current stock figure is the count of its rows', async () => {
+    const [sum, list] = await Promise.all([stock('/summary'), stock('/keys')]);
+    const mine = (r, status) => list.body.rows.filter((s) => s.article_id === r.article_id && s.floor_id === r.floor_id && s.status === status);
+    expect(sum.body.rows.length).toBeGreaterThan(0);
+    for (const r of sum.body.rows) {
+      expect(mine(r, 'in_stock')).toHaveLength(r.in_stock_packs);
+      expect(mine(r, 'not_counted')).toHaveLength(r.not_counted_packs);
+      expect(mine(r, 'out')).toHaveLength(r.out_last_packs);
+      expect(mine(r, 'in_stock').filter((s) => s.wrong_floor)).toHaveLength(r.flagged_packs);
+    }
+    const t = sum.body.totals;
+    expect(list.body.total).toBe(t.in_stock_packs + t.not_counted_packs + t.out_last_packs);
+  });
+
+  test('the floor filter works as on the page, and only Admin/Owner may list keys', async () => {
+    expect((await stock(`/keys?floor_id=${fx.floor2}`)).body.total).toBe(0);
+    expect((await stock(`/keys?floor_id=${fx.floor1}`)).body.total).toBe(4);
+    const bad = await stock('/keys?floor_id=first');
+    expect(bad.status).toBe(400);
+    expect(bad.body.message).toBe('floor_id must be a number');
+    expect((await stock('/keys', asEmployee)).status).toBe(403);
+    expect((await stock('/keys', asStation)).status).toBe(401);
+  });
+});
