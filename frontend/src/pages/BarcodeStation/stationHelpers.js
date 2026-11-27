@@ -107,15 +107,56 @@ export function beep(kind) {
   } catch { /* no sound on this device */ }
 }
 
+// ---- Camera scanning ---------------------------------------------------------
+
+// Every iPhone browser is WebKit: no BarcodeDetector, and camera permission is
+// granted per app in the iOS Settings. An iPad on iPadOS 13+ reports itself as
+// a Mac, so a Mac with a touch screen counts too.
+export function isIOS(nav = typeof navigator !== 'undefined' ? navigator : null) {
+  if (!nav) return false;
+  return /iPad|iPhone|iPod/.test(nav.userAgent || '')
+    || (nav.platform === 'MacIntel' && (nav.maxTouchPoints || 0) > 1);
+}
+
+// The part of a vw x vh camera frame that an `object-cover` box of boxW x boxH
+// actually shows. The reader decodes only this, so a sticker cut off the
+// screen is never read. A box with no size yet gets the whole frame.
+export function visibleCrop(vw, vh, boxW, boxH) {
+  if (!(vw > 0 && vh > 0 && boxW > 0 && boxH > 0)) return { sx: 0, sy: 0, sw: vw, sh: vh };
+  const scale = Math.max(boxW / vw, boxH / vh);
+  const sw = Math.min(vw, Math.round(boxW / scale));
+  const sh = Math.min(vh, Math.round(boxH / scale));
+  return { sx: Math.round((vw - sw) / 2), sy: Math.round((vh - sh) / 2), sw, sh };
+}
+
+// iPhones list each back lens as its own camera. The "Triple" and "Dual Wide"
+// ones are virtual devices that switch to the ultra-wide lens up close (iOS
+// 17+), which focuses a few cm away; the plain "Back Camera" a Pro iPhone
+// picks for facingMode cannot focus nearer than ~15 cm. Labels are only filled
+// in once camera access is granted. Returns a deviceId, or null.
+const PREFERRED_BACK_CAMERAS = [/back triple camera/i, /back dual wide camera/i];
+export function preferredBackCamera(devices) {
+  const cams = (devices || []).filter((d) => d.kind === 'videoinput' && d.label);
+  for (const re of PREFERRED_BACK_CAMERAS) {
+    const hit = cams.find((d) => re.test(d.label));
+    if (hit) return hit.deviceId;
+  }
+  return null;
+}
+
 // What to tell the person when the camera will not start.
-export function cameraErrorMessage(err) {
+export function cameraErrorMessage(err, ios = isIOS()) {
   if (typeof window !== 'undefined' && !window.isSecureContext) {
     return 'The camera only works on the secure https:// link of this page.';
   }
   switch (err?.name) {
+    case 'ReaderLoadError':
+      return 'The barcode reader could not load. Check the connection and tap the camera button again — or use a scanner gun.';
     case 'NotAllowedError':
     case 'SecurityError':
-      return 'Camera access is blocked. Allow the camera for this site in your browser settings, then tap the camera button again.';
+      return ios
+        ? 'Camera access is blocked. On iPhone open Settings → Chrome (or Safari) → Camera, allow it, then reload this page.'
+        : 'Camera access is blocked. Allow the camera for this site in your browser settings, then tap the camera button again.';
     case 'NotFoundError':
     case 'OverconstrainedError':
       return 'No camera was found on this device.';
