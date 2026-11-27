@@ -54,7 +54,7 @@ export default function StockPage() {
       </div>
 
       {/* Keyed so a tab switch remounts rather than reusing the last tab's rows. */}
-      {current.key === 'current' && <CurrentStockTab key="current" />}
+      {current.key === 'current' && <CurrentStockTab key="current" isAdmin={isAdmin} />}
       {current.key === 'counts' && <CountsTab key="counts" />}
       {current.key === 'missed' && isAdmin && <MissedScansTab key="missed" />}
       {current.key === 'cross' && isAdmin && <CrossCheckTab key="cross" />}

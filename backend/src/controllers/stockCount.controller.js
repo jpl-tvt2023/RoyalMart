@@ -4,7 +4,7 @@ const { excludedItemNameSql } = require('../services/packagingExclusions');
 const { isValidDateString } = require('../utils/dateValidation');
 const { normOperator, operatorError, keyError, scanFieldsError } = require('../services/barcodeStation.service');
 const {
-  STATUS, IST_TODAY,
+  STATUS, IST_DATE, IST_TODAY,
   STATE_CTES, MISSED_CTES, COUNT_TOTALS_SELECT, EXPECTED_USE_SQL, UNLINKED_LINES_SQL,
 } = require('../services/stockCount.service');
 
@@ -332,30 +332,45 @@ async function scan(req, res, next) {
 // PORTAL -- everyone logged in (no keys, no missed scans)
 // ===========================================================================
 
+// The floor a pack counts on in the stock reports: where it was last seen, or
+// its sticker's floor if it has never been counted.
+const STOCK_FLOOR = 'COALESCE(st.seen_floor_id, st.sticker_floor_id)';
+
+// "Went Out on the last count": last seen on the day before the latest
+// finished day, so Out on that day itself.
+const OUT_LAST = `(st.status = '${STATUS.OUT}' AND st.last_seq = (SELECT seq FROM latest) - 1)`;
+
+// ?vendor_id&floor_id, shared by /summary and the Admin sticker list so the
+// download matches the page. Returns { conditions, args } or { error }.
+function stockFilters(q) {
+  const conditions = [];
+  const args = [];
+  for (const [param, col] of [['vendor_id', 'st.outbound_vendor_id'], ['floor_id', STOCK_FLOOR]]) {
+    if (q[param] == null || q[param] === '') continue;
+    const n = parseId(q[param]);
+    if (n == null) return { error: `${param} must be a number` };
+    conditions.push(`${col} = ?`);
+    args.push(n);
+  }
+  return { conditions, args };
+}
+
 // GET /api/stock/summary?vendor_id&floor_id -- stock per article and floor.
 // A pack sits on the floor it was last seen on (its sticker's floor if it has
 // never been counted). In Stock already includes packs scanned today. "Out on
 // the last count" is the latest FINISHED day's Out.
 async function summary(req, res, next) {
   try {
-    const q = req.query || {};
-    const conditions = [];
-    const args = [];
-    for (const [param, col] of [['vendor_id', 'st.outbound_vendor_id'], ['floor_id', 'COALESCE(st.seen_floor_id, st.sticker_floor_id)']]) {
-      if (q[param] == null || q[param] === '') continue;
-      const n = parseId(q[param]);
-      if (n == null) return res.status(400).json({ message: `${param} must be a number` });
-      conditions.push(`${col} = ?`);
-      args.push(n);
-    }
+    const { conditions, args, error } = stockFilters(req.query || {});
+    if (error) return res.status(400).json({ message: error });
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const outLast = `st.status = '${STATUS.OUT}' AND st.last_seq = (SELECT seq FROM latest) - 1`;
+    const outLast = OUT_LAST;
 
     const [{ rows }, latest, todays] = await Promise.all([
       db.execute({
         sql: `WITH ${STATE_CTES}
               SELECT st.article_id, prm.category, prm.item_name, NULLIF(prm.variant, '') AS variant, prm.unit_metric,
-                     COALESCE(st.seen_floor_id, st.sticker_floor_id) AS floor_id, f.name AS floor_name,
+                     ${STOCK_FLOOR} AS floor_id, f.name AS floor_name,
                      SUM(st.status = '${STATUS.IN_STOCK}') AS in_stock_packs,
                      SUM(CASE WHEN st.status = '${STATUS.IN_STOCK}' THEN st.pack_size ELSE 0 END) AS in_stock_pcs,
                      SUM(st.status = '${STATUS.NOT_COUNTED}') AS not_counted_packs,
@@ -365,9 +380,9 @@ async function summary(req, res, next) {
                      SUM(st.status = '${STATUS.IN_STOCK}' AND st.seen_floor_id <> st.sticker_floor_id) AS flagged_packs
                 FROM kstate st
                 JOIN packaging_raw_materials prm ON prm.id = st.article_id
-                JOIN floors f ON f.id = COALESCE(st.seen_floor_id, st.sticker_floor_id)
+                JOIN floors f ON f.id = ${STOCK_FLOOR}
                 ${where}
-               GROUP BY st.article_id, COALESCE(st.seen_floor_id, st.sticker_floor_id)
+               GROUP BY st.article_id, ${STOCK_FLOOR}
               HAVING SUM(st.status = '${STATUS.IN_STOCK}') + SUM(st.status = '${STATUS.NOT_COUNTED}') + SUM(${outLast}) > 0
                ORDER BY prm.category COLLATE NOCASE, prm.item_name COLLATE NOCASE, prm.variant COLLATE NOCASE, f.name COLLATE NOCASE`,
         args,
@@ -622,6 +637,59 @@ async function crossCheck(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// GET /api/stock/keys?vendor_id&floor_id -- ADMIN/OWNER: the packs behind the
+// Current stock figures, one row per sticker WITH its key -- In stock (today's
+// scans included), Not yet counted, and Went Out on the last count -- for the
+// page's XLSX download. Same filters and floor rule as /summary, so each
+// summary figure is the count of its rows here.
+async function stickerList(req, res, next) {
+  try {
+    const { conditions, args, error } = stockFilters(req.query || {});
+    if (error) return res.status(400).json({ message: error });
+    const pag = buildPagination(req.query || {});
+    const where = [
+      `(st.status IN ('${STATUS.IN_STOCK}', '${STATUS.NOT_COUNTED}') OR ${OUT_LAST})`,
+      ...conditions,
+    ].join(' AND ');
+    const from = `FROM kstate st ${PACK_JOINS('st.label_key')}
+                  LEFT JOIN floors xf ON xf.id = st.seen_floor_id
+                  LEFT JOIN days fd ON fd.seq = st.first_seq
+                  LEFT JOIN days ld ON ld.seq = st.last_seq
+                  LEFT JOIN cc od ON st.status = '${STATUS.OUT}' AND od.seq = st.last_seq + 1
+                 WHERE ${where}`;
+    const [{ rows }, total] = await Promise.all([
+      db.execute({
+        sql: `WITH ${STATE_CTES}
+              SELECT st.label_key, st.status, st.article_id, ${STOCK_FLOOR} AS floor_id, ${PACK_COLS},
+                     st.seen_floor_id, xf.name AS seen_floor_name,
+                     fd.count_date AS first_seen, ld.count_date AS last_seen, od.count_date AS out_on,
+                     ${IST_DATE('b.generated_at')} AS stickered_on
+                ${from}
+               ORDER BY prm.category COLLATE NOCASE, prm.item_name COLLATE NOCASE, prm.variant COLLATE NOCASE,
+                        COALESCE(xf.name, sf.name) COLLATE NOCASE, k.batch_id, k.label_no
+               ${limitSql(pag)}`,
+        args,
+      }),
+      db.execute({ sql: `WITH ${STATE_CTES} SELECT COUNT(*) AS n ${from}`, args }),
+    ]);
+    res.json(envelope(rows.map((r) => {
+      const pack = shapePack(r);
+      return {
+        label_key: num(r.label_key),
+        status: r.status,
+        article_id: num(r.article_id),
+        floor_id: num(r.floor_id),
+        ...pack,
+        wrong_floor: r.status === STATUS.IN_STOCK && pack.seen_floor_id !== pack.sticker_floor_id,
+        first_seen: r.first_seen ?? null,
+        last_seen: r.last_seen ?? null,
+        out_on: r.out_on ?? null,
+        stickered_on: r.stickered_on ?? null,
+      };
+    }), num(total.rows[0].n), pag));
+  } catch (err) { next(err); }
+}
+
 // GET /api/stock/keys/:key -- one sticker's whole history.
 async function keyHistory(req, res, next) {
   try {
@@ -686,5 +754,5 @@ module.exports = {
   // portal, everyone logged in
   summary, listCounts, getCount, countPacks,
   // portal, Admin/Owner
-  missedByCount, missedPacks, crossCheck, keyHistory,
+  missedByCount, missedPacks, crossCheck, stickerList, keyHistory,
 };
