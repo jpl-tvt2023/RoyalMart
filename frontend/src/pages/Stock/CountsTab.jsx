@@ -7,8 +7,8 @@ import { formatDate } from '../../utils/formatters';
 import { articleText, fmt, labelText, packText, toastMessage } from './stockHelpers';
 
 // One row per day with scans (migration 103: the count is the IST day, finished
-// at midnight). Today's row is In progress: found / new / wrong floor so far,
-// and no Out until it finishes. Out is the FINAL figure: a pack that turned up
+// at midnight). Today's row is In progress: found / new so far, and no Out
+// until it finishes. Out is the FINAL figure: a pack that turned up
 // again on a later day is not Out here (it was a missed scan, which only
 // Admin/Owner see, on its own tab). Packs are named by batch and label, never
 // by key.
@@ -18,10 +18,9 @@ const PACK_PAGE_SIZE_KEY = 'stock.countPacks';
 const LISTS = [
   { key: 'out', label: 'Went Out', finishedOnly: true },
   { key: 'new', label: 'New' },
-  { key: 'flagged', label: 'Wrong floor' },
   { key: 'found', label: 'All found' },
 ];
-const COLS = 6;
+const COLS = 5;
 
 export default function CountsTab() {
   const [rows, setRows] = useState([]);
@@ -53,7 +52,6 @@ export default function CountsTab() {
                 <th className="px-4 py-3 text-right">Found</th>
                 <th className="px-4 py-3 text-right">New</th>
                 <th className="px-4 py-3 text-right">Went Out</th>
-                <th className="px-4 py-3 text-right">Wrong floor</th>
               </tr>
             </thead>
             <tbody>
@@ -84,7 +82,6 @@ export default function CountsTab() {
                   >
                     {fmt(c.out_packs)}
                   </td>
-                  <td className={`px-4 py-3 text-right tabular-nums ${c.flagged ? 'text-amber-700 font-semibold' : 'text-gray-400'}`}>{fmt(c.flagged)}</td>
                 </tr>
               ))}
             </tbody>
@@ -149,7 +146,7 @@ function CountPacks({ count }) {
               <th className="px-4 py-3">Vendor</th>
               <th className="px-4 py-3">Article</th>
               <th className="px-4 py-3 text-right">Pack</th>
-              <th className="px-4 py-3">Sticker floor</th>
+              <th className="px-4 py-3">Arrival floor</th>
               <th className="px-4 py-3">{seenLabel}</th>
             </tr>
           </thead>
@@ -161,7 +158,7 @@ function CountPacks({ count }) {
                 <td className="px-4 py-2.5 text-[#003049]">{articleText(p)}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums whitespace-nowrap">{packText(p)}</td>
                 <td className="px-4 py-2.5 whitespace-nowrap">{p.sticker_floor_name}</td>
-                <td className={`px-4 py-2.5 whitespace-nowrap ${p.seen_floor_id && p.seen_floor_id !== p.sticker_floor_id ? 'text-amber-700 font-medium' : ''}`}>{p.seen_floor_name || '—'}</td>
+                <td className="px-4 py-2.5 whitespace-nowrap">{p.seen_floor_name || '—'}</td>
               </tr>
             ))}
           </tbody>

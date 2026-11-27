@@ -60,7 +60,8 @@ async function cleanStation() {
 async function resetSettings() {
   await db.execute(`UPDATE barcode_station_settings
                        SET pin_hash = NULL, pin_version = 0, failed_attempts = 0, locked_until = NULL,
-                           label_width_mm = 152, label_height_mm = 51, print_mode = 'dialog'
+                           label_width_mm = 152, label_height_mm = 51, labels_per_page = 1,
+                           label_gap_mm = 0, page_margin_mm = 0, print_mode = 'dialog'
                      WHERE id = 1`);
 }
 
@@ -265,13 +266,52 @@ describe('Barcode Station — sign-in', () => {
   test('the sticker size is validated and audited', async () => {
     const bad = await setSettings({ label_width_mm: 5 });
     expect(bad.status).toBe(400);
-    expect(bad.body.message).toBe('Sticker width must be a whole number of mm from 20 to 300');
+    expect(bad.body.message).toBe('Sticker width must be from 20 to 300 mm, at most one decimal');
     const ok = await setSettings({ label_width_mm: 100, label_height_mm: 50 });
     expect(ok.status).toBe(200);
-    expect(ok.body).toMatchObject({ label_width_mm: 100, label_height_mm: 50 });
+    expect(ok.body).toMatchObject({ label_width_mm: 100, label_height_mm: 50, labels_per_page: 1, label_gap_mm: 0, page_margin_mm: 0 });
     const options = await asStation(request(app).get('/api/station/options'));
-    expect(options.body.label).toEqual({ width_mm: 100, height_mm: 50 });
+    expect(options.body.label).toEqual({ width_mm: 100, height_mm: 50, per_page: 1, gap_mm: 0, margin_mm: 0 });
     await setSettings({ label_width_mm: 152, label_height_mm: 51 });
+  });
+
+  // Migration 104: the client's TSC TA210 roll, from its BarTender template --
+  // two 150 x 48.2 stickers per 150 x 103 page, 4 mm apart, 1.3 mm margins.
+  test('the label page takes one decimal and several stickers per page, and is audited', async () => {
+    const page = { label_width_mm: 150, label_height_mm: 48.2, labels_per_page: 2, label_gap_mm: 4, page_margin_mm: 1.3 };
+    const ok = await setSettings(page);
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject(page);
+    const audit = await db.execute(`SELECT description FROM audit_logs
+                                     WHERE entity_type = 'barcode_station' ORDER BY id DESC LIMIT 1`);
+    expect(audit.rows[0].description).toContain(
+      'set the label page to 2 stickers of 150 × 48.2 mm, 4 mm gap, 1.3 mm margin (page 150 × 103 mm)',
+    );
+
+    const options = await asStation(request(app).get('/api/station/options'));
+    expect(options.body.label).toEqual({ width_mm: 150, height_mm: 48.2, per_page: 2, gap_mm: 4, margin_mm: 1.3 });
+
+    // Saved again unchanged: nothing to write, no new audit row.
+    const before = (await db.execute("SELECT COUNT(*) AS n FROM audit_logs WHERE entity_type = 'barcode_station'")).rows[0].n;
+    expect((await setSettings(page)).status).toBe(200);
+    expect((await db.execute("SELECT COUNT(*) AS n FROM audit_logs WHERE entity_type = 'barcode_station'")).rows[0].n).toBe(before);
+
+    const cases = [
+      [{ label_height_mm: 48.25 }, 'Sticker height must be from 10 to 300 mm, at most one decimal'],
+      [{ labels_per_page: 0 }, 'Stickers per page must be at least 1'],
+      [{ labels_per_page: 5 }, 'Stickers per page cannot be more than 4'],
+      [{ labels_per_page: 1.5 }, 'Stickers per page must be a whole number'],
+      [{ label_gap_mm: 21 }, 'Gap between stickers must be from 0 to 20 mm, at most one decimal'],
+      [{ page_margin_mm: -1 }, 'Top and bottom margin must be from 0 to 20 mm, at most one decimal'],
+      [{ label_height_mm: 100, labels_per_page: 3, label_gap_mm: 4 }, 'The page cannot be taller than 300 mm'],
+    ];
+    for (const [body, message] of cases) {
+      const res = await setSettings(body);
+      expect(res.status).toBe(400);
+      expect(res.body.message).toBe(message);
+    }
+
+    await setSettings({ label_width_mm: 152, label_height_mm: 51, labels_per_page: 1, label_gap_mm: 0, page_margin_mm: 0 });
   });
 });
 
@@ -533,7 +573,7 @@ describe('Barcode Station — keys, lookup and list', () => {
     expect(res.body.batch).toMatchObject({ id: batch.id, vendor_name: fx.vendorName, floor_id: fx.floorId, unit_metric: 'pcs' });
     expect(res.body.keys).toHaveLength(60);
     expect(res.body.keys.map(k => k.label_no)).toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
-    expect(res.body.label).toEqual({ width_mm: 152, height_mm: 51 });
+    expect(res.body.label).toEqual({ width_mm: 152, height_mm: 51, per_page: 1, gap_mm: 0, margin_mm: 0 });
   });
 
   test('a slice of labels, for a reprint', async () => {
@@ -624,7 +664,7 @@ describe('Barcode Station — printing', () => {
     expect(res.body.keys).toHaveLength(12);
     expect(res.body.keys.map(k => k.label_no)).toEqual(Array.from({ length: 12 }, (_, i) => i + 1));
     expect(res.body.keys.map(k => k.label_key)).toEqual((await keysOf(batch.id)).map(k => k.label_key));
-    expect(res.body.label).toEqual({ width_mm: 152, height_mm: 51 });
+    expect(res.body.label).toEqual({ width_mm: 152, height_mm: 51, per_page: 1, gap_mm: 0, margin_mm: 0 });
     expect(res.body.batch).toMatchObject({ id: batch.id, print_count: 1 });
 
     // A reprint of a range -- allowed any number of times, each one logged.

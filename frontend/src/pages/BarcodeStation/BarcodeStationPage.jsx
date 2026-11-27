@@ -536,6 +536,7 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
           batch={printing}
           operator={operator}
           printMode={printMode}
+          label={options?.label}
           onClose={() => setPrinting(null)}
           onJob={startPrint}
         />

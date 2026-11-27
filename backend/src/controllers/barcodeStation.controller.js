@@ -219,7 +219,7 @@ async function createSession(req, res, next) {
 
 // GET /options -- what the add-row form needs: active vendors with the
 // articles each is mapped to (resolved to catalog ids), active floors, the
-// sticker size. Also hands back a fresh token, so a device in daily use never
+// label page. Also hands back a fresh token, so a device in daily use never
 // reaches the 90-day expiry.
 async function options(req, res, next) {
   try {
@@ -238,7 +238,7 @@ async function options(req, res, next) {
                    prm.item_name COLLATE NOCASE, prm.variant COLLATE NOCASE`
       ),
       db.execute('SELECT id, name FROM floors WHERE is_active = 1 ORDER BY name COLLATE NOCASE'),
-      db.execute('SELECT label_width_mm, label_height_mm, print_mode FROM barcode_station_settings WHERE id = 1'),
+      db.execute('SELECT print_mode FROM barcode_station_settings WHERE id = 1'),
     ]);
 
     const vendors = new Map();
@@ -255,7 +255,7 @@ async function options(req, res, next) {
     res.json({
       vendors: Array.from(vendors.values()),
       floors: floors.rows.map(f => ({ id: Number(f.id), name: f.name })),
-      label: { width_mm: Number(s.label_width_mm) || 152, height_mm: Number(s.label_height_mm) || 51 },
+      label: await labelSize(),
       print_mode: s.print_mode || 'dialog',
       token: signStationToken(req.stationPinVersion),
     });
@@ -582,10 +582,22 @@ async function generate(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// The label page every print sheet is laid out at (098, 104): one sticker's
+// size, and how many share a printed page -- with the gap between them and the
+// margin above and below. The client renders the page from these.
 async function labelSize() {
-  const { rows } = await db.execute('SELECT label_width_mm, label_height_mm FROM barcode_station_settings WHERE id = 1');
+  const { rows } = await db.execute(
+    `SELECT label_width_mm, label_height_mm, labels_per_page, label_gap_mm, page_margin_mm
+       FROM barcode_station_settings WHERE id = 1`
+  );
   const s = rows[0] || {};
-  return { width_mm: Number(s.label_width_mm) || 152, height_mm: Number(s.label_height_mm) || 51 };
+  return {
+    width_mm: Number(s.label_width_mm) || 152,
+    height_mm: Number(s.label_height_mm) || 51,
+    per_page: Number(s.labels_per_page) || 1,
+    gap_mm: Number(s.label_gap_mm) || 0,
+    margin_mm: Number(s.page_margin_mm) || 0,
+  };
 }
 
 // A generated batch and the slice of its keys from..to (label numbers, both
@@ -619,7 +631,7 @@ async function loadKeySlice(rawId, rawFrom, rawTo) {
 }
 
 // GET /api/label-batches/:id/keys?from=&to= -- ADMIN ONLY. Every key of a
-// batch (or a slice), with the batch and the sticker size, for the Admin's key
+// batch (or a slice), with the batch and the label page, for the Admin's key
 // list and print preview. Viewing is not a print, so it is not logged.
 async function keys(req, res, next) {
   try {

@@ -152,7 +152,7 @@ function MissedPacks({ count, onOpenKey }) {
               <th className="px-4 py-3">Label</th>
               <th className="px-4 py-3">Article</th>
               <th className="px-4 py-3 text-right">Pack</th>
-              <th className="px-4 py-3">Sticker floor</th>
+              <th className="px-4 py-3">Arrival floor</th>
               <th className="px-4 py-3">Turned up on</th>
             </tr>
           </thead>
@@ -185,7 +185,7 @@ function HistoryModal({ history: h, onClose }) {
       <div className="space-y-4 text-sm">
         <div className="space-y-1">
           <p className="font-medium text-[#003049]">{h.vendor_name} · {articleText(h)}</p>
-          <p className="text-gray-600">{labelText(h)} · pack of {packText(h)} · sticker floor {h.sticker_floor_name}</p>
+          <p className="text-gray-600">{labelText(h)} · pack of {packText(h)} · arrival floor {h.sticker_floor_name}</p>
           <p className="text-gray-600">Generated {formatDateTime(h.generated_at)} by {h.generated_by}</p>
           <p className="flex items-center gap-2">
             <Badge color={badge.color}>{badge.label}</Badge>
@@ -198,7 +198,7 @@ function HistoryModal({ history: h, onClose }) {
           <ul className="divide-y divide-gray-100">
             {h.sightings.map((s) => (
               <li key={s.count_id} className="flex flex-wrap justify-between gap-2 py-1.5">
-                <span>{formatDate(s.count_date)} · {s.floor_name}{s.floor_mismatch && <span className="text-amber-700"> (wrong floor)</span>}</span>
+                <span>{formatDate(s.count_date)} · {s.floor_name}</span>
                 <span className="text-gray-500">{formatDateTime(s.scanned_at)} · {s.scanned_by}</span>
               </li>
             ))}

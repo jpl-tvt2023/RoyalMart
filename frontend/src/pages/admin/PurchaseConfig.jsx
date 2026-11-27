@@ -29,8 +29,8 @@ const SUBTITLES = {
   stitchingPrefixes: 'Incoming-number prefixes, and the processing stage each one records',
   stitchingParties: 'Who material is sent to, and which jobs each party may be given',
   warehouses: 'Our own warehouses — where finished stock sits at the end of the Stitching chain',
-  floors: 'Where Barcode Station stock is stored — printed on each sticker as its Panchal Floor',
-  barcodeStation: 'The public page warehouse staff label incoming stock on: its PIN, sticker size and link',
+  floors: 'Where Barcode Station stock is stored — the floor an entry arrives on, then wherever a pack is last scanned',
+  barcodeStation: 'The public page warehouse staff label incoming stock on: its PIN, label page and link',
 };
 
 export default function PurchaseConfig() {

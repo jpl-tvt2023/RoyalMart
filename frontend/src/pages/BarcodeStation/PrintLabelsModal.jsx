@@ -5,15 +5,16 @@ import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
 import { printLabelBatch } from '../../api/station.api';
 import { articleLabel, packSizeLabel, keyCountLabel, printCountLabel } from '../../utils/barcodeStation';
-import { inputCls, loadKeyEncoder, toPrintJob } from './stationHelpers';
+import { inputCls, loadKeyEncoder, pageOf, toPrintJob } from './stationHelpers';
 
 // Print an entry's labels from the station -- all of them, or a run of label
 // numbers (a jammed roll, a damaged sticker) -- without a sticker or a key ever
 // appearing on screen. The keys come back from the logged print call and go
 // straight to PrintPortal. Reprints are allowed any number of times; every one
 // is logged with the operator's name.
-export default function PrintLabelsModal({ batch, operator, printMode, onClose, onJob }) {
+export default function PrintLabelsModal({ batch, operator, printMode, label, onClose, onJob }) {
   const n = batch.label_count;
+  const page = pageOf(label);
   const [scope, setScope] = useState('all');
   const [from, setFrom] = useState('1');
   const [to, setTo] = useState(String(n));
@@ -86,8 +87,8 @@ export default function PrintLabelsModal({ batch, operator, printMode, onClose, 
           <p className="text-xs text-gray-500">The labels go straight to the label printer. Nothing is shown on screen.</p>
         ) : (
           <p className="text-xs text-gray-500">
-            Your browser&apos;s print dialog will open. Pick the label printer, set the paper to the sticker size,
-            scale 100% (Actual size), margins None, and turn off headers and footers.
+            Your browser&apos;s print dialog will open. Pick the label printer, set the paper to {page.widthMm} ×{' '}
+            {page.pageHeightMm} mm, scale 100% (Actual size), margins None, and turn off headers and footers.
           </p>
         )}
 

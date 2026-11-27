@@ -29,11 +29,22 @@ const PRINT_MODES = ['dialog', 'direct'];
 // are why the server also keeps a database-backed, escalating lockout.
 const PIN_RE = /^\d{4,8}$/;
 
-// The sticker the print sheet is laid out at, in whole millimetres.
+// The sticker the print sheet is laid out at, in mm with at most one decimal
+// (104 -- the client's roll is 150 x 48.2).
 const LABEL_WIDTH_MIN = 20;
 const LABEL_WIDTH_MAX = 300;
 const LABEL_HEIGHT_MIN = 10;
 const LABEL_HEIGHT_MAX = 300;
+
+// How stickers share one printed page (104), as in the client's BarTender
+// template: N stacked per page, a gap between them, a blank strip above the
+// first and below the last. The page height is derived (labelPageHeight) and
+// may be no taller than LABEL_HEIGHT_MAX.
+const LABELS_PER_PAGE_MAX = 4;
+const LABEL_GAP_MAX = 20;
+const PAGE_MARGIN_MAX = 20;
+
+const MM_RE = /^\d+(\.\d)?$/;
 
 const isBlank = (v) => v == null || String(v).trim() === '';
 
@@ -109,20 +120,46 @@ function pinError(value) {
   return null;
 }
 
+// A length in mm, at most one decimal, from min to max.
+function mmError(v, label, min, max) {
+  if (isBlank(v)) return `${label} is required`;
+  const s = String(v).trim();
+  if (!MM_RE.test(s) || Number(s) < min || Number(s) > max) return `${label} must be from ${min} to ${max} mm, at most one decimal`;
+  return null;
+}
+
 function labelSizeError(width, height) {
-  const range = (v, label, min, max) => {
-    if (isBlank(v)) return `${label} is required`;
-    const s = String(v).trim();
-    if (!/^\d+$/.test(s) || Number(s) < min || Number(s) > max) return `${label} must be a whole number of mm from ${min} to ${max}`;
-    return null;
-  };
-  return range(width, 'Sticker width', LABEL_WIDTH_MIN, LABEL_WIDTH_MAX)
-    || range(height, 'Sticker height', LABEL_HEIGHT_MIN, LABEL_HEIGHT_MAX);
+  return mmError(width, 'Sticker width', LABEL_WIDTH_MIN, LABEL_WIDTH_MAX)
+    || mmError(height, 'Sticker height', LABEL_HEIGHT_MIN, LABEL_HEIGHT_MAX);
+}
+
+// The printed page: n stickers of heightMm, gapMm apart, marginMm above the
+// first and below the last. Rounded to 0.1 mm, so 2 x 48.2 + 4 + 2 x 1.3 is
+// exactly 103, not 103.00000000000001.
+function labelPageHeight(heightMm, perPage, gapMm, marginMm) {
+  const n = Number(perPage) || 1;
+  const h = 2 * (Number(marginMm) || 0) + n * Number(heightMm) + (n - 1) * (Number(gapMm) || 0);
+  return Math.round(h * 10) / 10;
+}
+
+// Stickers per page, gap, margin -- the order the Label page form shows them --
+// then the page they make, which must fit the same bound as a sticker.
+function labelPageError(perPage, gapMm, marginMm, heightMm) {
+  const err = wholeNumberError(perPage, 'Stickers per page', LABELS_PER_PAGE_MAX)
+    || mmError(gapMm, 'Gap between stickers', 0, LABEL_GAP_MAX)
+    || mmError(marginMm, 'Top and bottom margin', 0, PAGE_MARGIN_MAX);
+  if (err) return err;
+  if (labelPageHeight(heightMm, perPage, gapMm, marginMm) > LABEL_HEIGHT_MAX) {
+    return `The page cannot be taller than ${LABEL_HEIGHT_MAX} mm`;
+  }
+  return null;
 }
 
 module.exports = {
   KEY_MIN, KEY_MAX, KEY_RE, PACK_SIZE_MAX, LABEL_COUNT_MAX, OPERATOR_MAX, PRINT_MODES, PIN_RE,
   LABEL_WIDTH_MIN, LABEL_WIDTH_MAX, LABEL_HEIGHT_MIN, LABEL_HEIGHT_MAX, SCAN_BATCH_MAX,
+  LABELS_PER_PAGE_MAX, LABEL_GAP_MAX, PAGE_MARGIN_MAX,
   wholeNumberError, batchFieldsError, normOperator, operatorError, printModeError, keyError, pinError, labelSizeError,
+  labelPageHeight, labelPageError,
   scanBatchError, scanFieldsError,
 };
