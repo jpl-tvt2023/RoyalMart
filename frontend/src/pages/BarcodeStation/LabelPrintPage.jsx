@@ -2,16 +2,17 @@ import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ArrowLeft, Printer } from 'lucide-react';
-import Sticker from './Sticker';
-import { layoutFor, loadKeyEncoder, toPrintJob } from './stationHelpers';
+import StickerPages from './StickerPages';
+import { loadKeyEncoder, toPrintJob } from './stationHelpers';
 import { getLabelBatchKeysAdmin, printLabelBatchAdmin } from '../../api/labelBatches.api';
 import { articleLabel } from '../../utils/barcodeStation';
 import { useAuth } from '../../context/AuthContext';
 import { useRBAC } from '../../hooks/useRBAC';
 
 // ADMIN ONLY: the sticker sheet with an on-screen preview, for one label batch
-// or a from/to slice of it -- one sticker per printed page, at the size set in
-// Purchase Config -> Barcode Station, in the client's mockup layout.
+// or a from/to slice of it -- laid out as printed pages (104): as many stickers
+// per page as the roll carries, at the label page set in Purchase Config ->
+// Barcode Station, in the client's mockup layout.
 //
 // Only Admins see keys (client's rule), so this page loads them through the
 // Admin API with the portal login, and anyone else gets a message and no call.
@@ -89,8 +90,7 @@ export default function LabelPrintPage() {
     );
   }
 
-  const { batch, labels, widthMm, heightMm } = sheet;
-  const layout = layoutFor(widthMm, heightMm, labels[0]?.bits.length || 79);
+  const { batch, labels, widthMm, heightMm, perPage, pageHeightMm } = sheet;
   const range = labels.length === batch.label_count
     ? `all ${labels.length} labels`
     : `labels ${labels[0]?.label_no}–${labels[labels.length - 1]?.label_no} of ${batch.label_count}`;
@@ -98,13 +98,13 @@ export default function LabelPrintPage() {
   return (
     <div className="label-sheet min-h-screen bg-gray-100 p-6">
       <style>{`
-        @page { size: ${widthMm}mm ${heightMm}mm; margin: 0; }
+        @page { size: ${widthMm}mm ${pageHeightMm}mm; margin: 0; }
         @media print {
           html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
           .no-print { display: none !important; }
           .label-sheet { padding: 0 !important; background: #fff !important; min-height: 0 !important; }
           .sticker-list { display: block !important; }
-          .sticker { margin: 0 !important; box-shadow: none !important; outline: none !important; }
+          .sticker, .sticker-page { margin: 0 !important; box-shadow: none !important; outline: none !important; }
         }
       `}</style>
 
@@ -127,27 +127,16 @@ export default function LabelPrintPage() {
           <Printer size={16} /> Print {labels.length} label{labels.length !== 1 ? 's' : ''}
         </button>
         <p className="w-full text-xs text-gray-500">
-          Admin preview. Sticker {widthMm} × {heightMm} mm. In the print dialog pick the label printer, set the paper
-          size to the sticker, scale 100% (Actual size), margins None, and turn off headers and footers.
+          Admin preview. Sticker {widthMm} × {heightMm} mm, {perPage} per page. In the print dialog pick the label
+          printer, set the paper size to {widthMm} × {pageHeightMm} mm, scale 100% (Actual size), margins None, and
+          turn off headers and footers.
         </p>
       </div>
 
-      {/* Flex on screen to centre the stickers. Print switches it to a block,
+      {/* Flex on screen to centre the pages. Print switches it to a block,
           because page breaks are ignored between flex items. */}
       <div className="sticker-list flex flex-col items-center">
-        {labels.map((l, i) => (
-          <Sticker
-            key={l.label_key}
-            batch={batch}
-            label={l}
-            bits={l.bits}
-            widthMm={widthMm}
-            heightMm={heightMm}
-            layout={layout}
-            last={i === labels.length - 1}
-            framed
-          />
-        ))}
+        <StickerPages job={sheet} framed />
       </div>
     </div>
   );

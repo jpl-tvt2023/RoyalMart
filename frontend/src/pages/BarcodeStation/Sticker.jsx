@@ -4,27 +4,31 @@ import { articleLabel, packSizeLabel } from '../../utils/barcodeStation';
 import { formatDateTime } from '../../utils/formatters';
 
 // One sticker, laid out as the client's mockup: the barcode centred on top
-// with its key underneath, then Vendor Name, Article, Pack Size, Inbound Date
-// and Panchal Floor. Inbound Date carries the time as well as the date (the
-// moment the keys were generated, in IST).
+// with its key underneath, then Vendor Name, Article, Pack Size and Inbound
+// Date. Inbound Date carries the time as well as the date (the moment the keys
+// were generated, in IST).
 //
-// Used by the Admin's on-screen preview (`framed`, with an outline) and by the
-// station's off-screen PrintPortal (plain, never seen). Each sticker is one
-// printed page; the last one does not force a trailing blank page.
-export default function Sticker({ batch, label, bits, widthMm, heightMm, layout, last, framed = false }) {
+// No floor (client, 2026-11-27): packs move between floors, so where a pack
+// is comes from its latest scan, not from its sticker. The entry's floor is
+// kept as the arrival floor, off the sticker.
+//
+// Used by StickerPages -- the Admin's on-screen preview (`framed`, with an
+// outline) and the station's off-screen PrintPortal (plain, never seen). The
+// printed page, which may hold several stickers, owns the page breaks.
+export default function Sticker({ batch, label, bits, widthMm, heightMm, layout, framed = false }) {
   const rows = [
     ['Vendor Name', batch.vendor_name],
     ['Article', articleLabel(batch)],
     ['Pack Size', packSizeLabel(batch)],
     ['Inbound Date', formatDateTime(batch.generated_at)],
-    ['Panchal Floor', batch.floor_name],
   ];
   return (
     <div
-      className={`sticker${framed ? ' shadow-sm outline outline-1 outline-gray-300' : ''}`}
+      className={`sticker${framed ? ' outline outline-1 outline-gray-300' : ''}`}
       style={{
         width: `${widthMm}mm`,
         height: `${heightMm}mm`,
+        flex: 'none',
         boxSizing: 'border-box',
         padding: `${layout.padMm}mm ${layout.padMm * 1.6}mm`,
         overflow: 'hidden',
@@ -33,9 +37,6 @@ export default function Sticker({ batch, label, bits, widthMm, heightMm, layout,
         fontFamily: 'Arial, Helvetica, sans-serif',
         display: 'flex',
         flexDirection: 'column',
-        breakAfter: last ? 'auto' : 'page',
-        pageBreakAfter: last ? 'auto' : 'always',
-        marginBottom: framed ? '4mm' : 0,
       }}
     >
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>

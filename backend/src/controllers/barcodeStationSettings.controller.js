@@ -1,7 +1,9 @@
 const bcrypt = require('bcryptjs');
 const db = require('../config/db');
 const { logAction, diffFields } = require('../services/auditLog.service');
-const { pinError, labelSizeError, printModeError } = require('../services/barcodeStation.service');
+const {
+  pinError, labelSizeError, labelPageError, labelPageHeight, printModeError,
+} = require('../services/barcodeStation.service');
 
 // Admin -> Purchase Config -> Barcode Station (migration 098). Admin/Owner only.
 //
@@ -13,6 +15,13 @@ const { pinError, labelSizeError, printModeError } = require('../services/barcod
 //
 // print_mode (migration 100) is how the station prints: 'dialog' (the
 // browser's print dialog) or 'direct' (kiosk PCs, no dialog, no preview).
+//
+// The label page (migration 104): the sticker's width and height plus how many
+// stickers share one printed page, the gap between them and the margin above
+// and below -- the client's BarTender template for the roll. The five are
+// saved together, and the page height they make is derived, never stored.
+
+const LABEL_FIELDS = ['label_width_mm', 'label_height_mm', 'labels_per_page', 'label_gap_mm', 'page_margin_mm'];
 
 const BCRYPT_COST = 12;
 
@@ -20,7 +29,8 @@ async function readSettings() {
   const { rows } = await db.execute(
     `SELECT s.pin_hash IS NOT NULL AS pin_set, s.pin_version, s.failed_attempts, s.locked_until,
             (s.locked_until IS NOT NULL AND s.locked_until > datetime('now')) AS locked,
-            s.label_width_mm, s.label_height_mm, s.print_mode, s.updated_at, u.name AS updated_by_name
+            s.label_width_mm, s.label_height_mm, s.labels_per_page, s.label_gap_mm, s.page_margin_mm,
+            s.print_mode, s.updated_at, u.name AS updated_by_name
        FROM barcode_station_settings s
        LEFT JOIN users u ON u.id = s.updated_by
       WHERE s.id = 1`
@@ -34,6 +44,9 @@ async function readSettings() {
     locked_until: r.locked_until,
     label_width_mm: Number(r.label_width_mm),
     label_height_mm: Number(r.label_height_mm),
+    labels_per_page: Number(r.labels_per_page),
+    label_gap_mm: Number(r.label_gap_mm),
+    page_margin_mm: Number(r.page_margin_mm),
     print_mode: r.print_mode,
     updated_at: r.updated_at,
     updated_by_name: r.updated_by_name,
@@ -48,7 +61,8 @@ async function get(req, res, next) {
   } catch (err) { next(err); }
 }
 
-// PUT { pin?, label_width_mm?, label_height_mm?, print_mode?, sign_out_all?, clear_lock? }
+// PUT { pin?, label_width_mm?, label_height_mm?, labels_per_page?, label_gap_mm?,
+//       page_margin_mm?, print_mode?, sign_out_all?, clear_lock? }
 async function update(req, res, next) {
   try {
     const body = req.body || {};
@@ -77,18 +91,24 @@ async function update(req, res, next) {
       sets.push('failed_attempts = 0', 'locked_until = NULL');
       actions.push('cleared the sign-in lock');
     }
-    if (has('label_width_mm') || has('label_height_mm')) {
-      const width = has('label_width_mm') ? body.label_width_mm : current.label_width_mm;
-      const height = has('label_height_mm') ? body.label_height_mm : current.label_height_mm;
-      const err = labelSizeError(width, height);
+    const labelTouched = LABEL_FIELDS.some(has);
+    if (labelTouched) {
+      const v = Object.fromEntries(LABEL_FIELDS.map((k) => [k, has(k) ? body[k] : current[k]]));
+      const err = labelSizeError(v.label_width_mm, v.label_height_mm)
+        || labelPageError(v.labels_per_page, v.label_gap_mm, v.page_margin_mm, v.label_height_mm);
       if (err) return res.status(400).json({ message: err });
-      const size = { label_width_mm: Number(width), label_height_mm: Number(height) };
-      const sizeChanges = diffFields(current, size, ['label_width_mm', 'label_height_mm']);
-      if (sizeChanges.length) {
-        sets.push('label_width_mm = ?', 'label_height_mm = ?');
-        args.push(size.label_width_mm, size.label_height_mm);
-        actions.push(`set the sticker size to ${size.label_width_mm} × ${size.label_height_mm} mm`);
-        changes = changes.concat(sizeChanges);
+      const page = Object.fromEntries(LABEL_FIELDS.map((k) => [k, Number(String(v[k]).trim())]));
+      const pageChanges = diffFields(current, page, LABEL_FIELDS);
+      if (pageChanges.length) {
+        sets.push(...LABEL_FIELDS.map((k) => `${k} = ?`));
+        args.push(...LABEL_FIELDS.map((k) => page[k]));
+        const pageH = labelPageHeight(page.label_height_mm, page.labels_per_page, page.label_gap_mm, page.page_margin_mm);
+        actions.push(
+          `set the label page to ${page.labels_per_page} sticker${page.labels_per_page === 1 ? '' : 's'} of `
+          + `${page.label_width_mm} × ${page.label_height_mm} mm, ${page.label_gap_mm} mm gap, `
+          + `${page.page_margin_mm} mm margin (page ${page.label_width_mm} × ${pageH} mm)`,
+        );
+        changes = changes.concat(pageChanges);
       }
     }
     if (has('print_mode')) {
@@ -105,8 +125,8 @@ async function update(req, res, next) {
       }
     }
     if (!sets.length) {
-      // A size or mode saved unchanged is not an error -- just nothing to write.
-      if (has('label_width_mm') || has('label_height_mm') || has('print_mode')) return res.json(current);
+      // A label page or mode saved unchanged is not an error -- just nothing to write.
+      if (labelTouched || has('print_mode')) return res.json(current);
       return res.status(400).json({ message: 'Nothing to update' });
     }
 

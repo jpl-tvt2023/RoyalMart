@@ -21,10 +21,19 @@ export const PRINT_MODES = ['dialog', 'direct'];
 
 export const PIN_RE = /^\d{4,8}$/;
 
+// The sticker, in mm with at most one decimal (104).
 export const LABEL_WIDTH_MIN = 20;
 export const LABEL_WIDTH_MAX = 300;
 export const LABEL_HEIGHT_MIN = 10;
 export const LABEL_HEIGHT_MAX = 300;
+
+// How stickers share one printed page (104), as in the client's BarTender
+// template: N stacked per page, a gap between, a margin above and below.
+export const LABELS_PER_PAGE_MAX = 4;
+export const LABEL_GAP_MAX = 20;
+export const PAGE_MARGIN_MAX = 20;
+
+const MM_RE = /^\d+(\.\d)?$/;
 
 const isBlank = (v) => v == null || String(v).trim() === '';
 
@@ -94,15 +103,36 @@ export function pinError(value) {
   return null;
 }
 
+// A length in mm, at most one decimal, from min to max.
+function mmError(v, label, min, max) {
+  if (isBlank(v)) return `${label} is required`;
+  const s = String(v).trim();
+  if (!MM_RE.test(s) || Number(s) < min || Number(s) > max) return `${label} must be from ${min} to ${max} mm, at most one decimal`;
+  return null;
+}
+
 export function labelSizeError(width, height) {
-  const range = (v, label, min, max) => {
-    if (isBlank(v)) return `${label} is required`;
-    const s = String(v).trim();
-    if (!/^\d+$/.test(s) || Number(s) < min || Number(s) > max) return `${label} must be a whole number of mm from ${min} to ${max}`;
-    return null;
-  };
-  return range(width, 'Sticker width', LABEL_WIDTH_MIN, LABEL_WIDTH_MAX)
-    || range(height, 'Sticker height', LABEL_HEIGHT_MIN, LABEL_HEIGHT_MAX);
+  return mmError(width, 'Sticker width', LABEL_WIDTH_MIN, LABEL_WIDTH_MAX)
+    || mmError(height, 'Sticker height', LABEL_HEIGHT_MIN, LABEL_HEIGHT_MAX);
+}
+
+// The printed page's height, rounded to 0.1 mm (2 x 48.2 + 4 + 2 x 1.3 = 103).
+export function labelPageHeight(heightMm, perPage, gapMm, marginMm) {
+  const n = Number(perPage) || 1;
+  const h = 2 * (Number(marginMm) || 0) + n * Number(heightMm) + (n - 1) * (Number(gapMm) || 0);
+  return Math.round(h * 10) / 10;
+}
+
+// Stickers per page, gap, margin -- form order -- then the page they make.
+export function labelPageError(perPage, gapMm, marginMm, heightMm) {
+  const err = wholeNumberError(perPage, 'Stickers per page', LABELS_PER_PAGE_MAX)
+    || mmError(gapMm, 'Gap between stickers', 0, LABEL_GAP_MAX)
+    || mmError(marginMm, 'Top and bottom margin', 0, PAGE_MARGIN_MAX);
+  if (err) return err;
+  if (labelPageHeight(heightMm, perPage, gapMm, marginMm) > LABEL_HEIGHT_MAX) {
+    return `The page cannot be taller than ${LABEL_HEIGHT_MAX} mm`;
+  }
+  return null;
 }
 
 // ---- Client-only helpers (no backend twin) ---------------------------------

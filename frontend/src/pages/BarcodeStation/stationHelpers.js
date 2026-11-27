@@ -1,6 +1,8 @@
 // Non-component helpers shared by the Barcode Station pages. Kept out of the
 // .jsx files so those export only components (react-refresh).
 
+import { labelPageHeight } from '../../utils/barcodeStation';
+
 export const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30';
 
 // The five operator fields of a batch, as form state.
@@ -83,7 +85,6 @@ export function unlockAudio() {
 }
 const TONES = {
   ok: [{ f: 1046, d: 0.09 }],                          // counted
-  warn: [{ f: 660, d: 0.12 }, { f: 660, d: 0.12 }],    // counted, wrong floor
   info: [{ f: 520, d: 0.06 }],                         // already counted
   error: [{ f: 196, d: 0.35, type: 'square' }],        // unknown key
 };
@@ -168,11 +169,32 @@ export function cameraErrorMessage(err, ios = isIOS()) {
   }
 }
 
+// The printed page a print response's `label` makes (migrations 098, 104):
+// one sticker's size, how many share a page, the gap between them and the
+// margin above and below -- and the page's height, which the printer's paper
+// must match.
+export function pageOf(label) {
+  const l = label || {};
+  const widthMm = Number(l.width_mm) || 152;
+  const heightMm = Number(l.height_mm) || 51;
+  const perPage = Number(l.per_page) || 1;
+  const gapMm = Number(l.gap_mm) || 0;
+  const marginMm = Number(l.margin_mm) || 0;
+  return { widthMm, heightMm, perPage, gapMm, marginMm, pageHeightMm: labelPageHeight(heightMm, perPage, gapMm, marginMm) };
+}
+
 // A print job from a print response: each key with its barcode modules, plus
-// the sticker size. `encode` comes from loadKeyEncoder.
+// the label page. `encode` comes from loadKeyEncoder.
 export const toPrintJob = (data, encode) => ({
   batch: data.batch,
   labels: data.keys.map((k) => ({ ...k, bits: encode(String(k.label_key)) })),
-  widthMm: data.label.width_mm,
-  heightMm: data.label.height_mm,
+  ...pageOf(data.label),
 });
+
+// The labels in printed pages of `perPage` each, in label order.
+export function pagesOf(labels, perPage) {
+  const n = Math.max(1, Number(perPage) || 1);
+  const pages = [];
+  for (let i = 0; i < labels.length; i += n) pages.push(labels.slice(i, i + n));
+  return pages;
+}

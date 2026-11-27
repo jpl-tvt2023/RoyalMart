@@ -7,8 +7,10 @@ import { getStockSummary, listStockStickers } from '../../api/stock.api';
 import { formatDate } from '../../utils/formatters';
 import { articleText, fmt, toastMessage } from './stockHelpers';
 
-// Current stock: one row per article and floor. A pack sits on the floor it
-// was last scanned on (its sticker's floor if it has never been counted).
+// Current stock: one row per article and floor -- WHERE the stock is. A pack
+// sits on the floor it was last scanned on (its entry's arrival floor if it
+// has never been counted). Packs move between floors as a matter of course, so
+// a scan elsewhere simply moves it (no "wrong floor" since 2026-11-27).
 // Packs scanned today are In Stock already -- an evening delivery shows the
 // moment it is scanned -- while Out moves only when a day finishes at midnight.
 // Pieces are pack size x packs, so a part-used pack counts in full until its
@@ -18,7 +20,7 @@ import { articleText, fmt, toastMessage } from './stockHelpers';
 // floor filter applied), sheet "Stickers" the packs behind it, one row per
 // sticker WITH its key (/api/stock/keys, Admin-only -- staff never see keys).
 
-const COLS = 7;
+const COLS = 6;
 
 // Local multi-sheet variant of the house XLSX helper (frontend/CLAUDE.md: the
 // helper is duplicated per page by design). Each sheet is { name, columns,
@@ -50,7 +52,6 @@ const STOCK_COLUMNS = [
   { header: 'Went Out on last count (pcs)', key: 'out_last_pcs', wch: 28 },
   { header: 'Not yet counted (packs)', key: 'not_counted_packs', wch: 22 },
   { header: 'Not yet counted (pcs)', key: 'not_counted_pcs', wch: 22 },
-  { header: 'Wrong floor (packs)', key: 'flagged_packs', wch: 18 },
 ];
 
 const STATUS_TEXT = { in_stock: 'In stock', not_counted: 'Not yet counted', out: 'Went Out on last count' };
@@ -61,8 +62,7 @@ const STICKER_COLUMNS = [
   { header: 'Status', get: (s) => STATUS_TEXT[s.status] || s.status, wch: 22 },
   { header: 'Article', get: articleText, wch: 40 },
   { header: 'Floor', get: (s) => s.seen_floor_name || s.sticker_floor_name },
-  { header: 'Sticker floor', key: 'sticker_floor_name' },
-  { header: 'Wrong floor', get: (s) => (s.wrong_floor ? 'Yes' : ''), wch: 12 },
+  { header: 'Arrival floor', key: 'sticker_floor_name' },
   { header: 'Vendor', key: 'vendor_name', wch: 24 },
   { header: 'Entry #', key: 'batch_id', wch: 9 },
   { header: 'Label', get: (s) => `${s.label_no} of ${s.label_count}`, wch: 10 },
@@ -122,11 +122,10 @@ export default function CurrentStockTab({ isAdmin }) {
   return (
     <div className="space-y-4">
       {data && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
           <Tile label="In stock" value={`${fmt(t.in_stock_packs)} packs`} sub={`${fmt(t.in_stock_pcs)} pcs`} />
           <Tile label="Went Out on the last count" value={`${fmt(t.out_last_packs)} packs`} sub={`${fmt(t.out_last_pcs)} pcs`} />
           <Tile label="Not yet counted" value={`${fmt(t.not_counted_packs)} packs`} sub="stickered, never scanned" />
-          <Tile label="On the wrong floor" value={`${fmt(t.flagged_packs)} packs`} sub="in stock, not where the sticker says" warn={t.flagged_packs > 0} />
         </div>
       )}
 
@@ -174,7 +173,6 @@ export default function CurrentStockTab({ isAdmin }) {
                 <th className="px-4 py-3 text-right">In stock (pcs)</th>
                 <th className="px-4 py-3 text-right">Out on last count</th>
                 <th className="px-4 py-3 text-right">Not yet counted</th>
-                <th className="px-4 py-3 text-right">Wrong floor</th>
               </tr>
             </thead>
             <tbody>
@@ -191,7 +189,6 @@ export default function CurrentStockTab({ isAdmin }) {
                   <td className="px-4 py-3 text-right tabular-nums">{fmt(r.in_stock_pcs)}{r.unit_metric ? ` ${r.unit_metric}` : ''}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{r.out_last_packs ? `${fmt(r.out_last_packs)} (${fmt(r.out_last_pcs)})` : '—'}</td>
                   <td className="px-4 py-3 text-right tabular-nums text-gray-500">{r.not_counted_packs ? fmt(r.not_counted_packs) : '—'}</td>
-                  <td className={`px-4 py-3 text-right tabular-nums ${r.flagged_packs ? 'text-amber-700 font-semibold' : 'text-gray-400'}`}>{r.flagged_packs ? fmt(r.flagged_packs) : '—'}</td>
                 </tr>
               ))}
             </tbody>

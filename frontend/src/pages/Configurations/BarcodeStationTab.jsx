@@ -5,7 +5,7 @@ import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import { HistoryButton } from '../../components/shared/HistoryDrawer';
 import { getBarcodeStationSettings, updateBarcodeStationSettings } from '../../api/barcodeStationSettings.api';
-import { pinError, labelSizeError } from '../../utils/barcodeStation';
+import { pinError, labelSizeError, labelPageError, labelPageHeight } from '../../utils/barcodeStation';
 import { formatDateTime } from '../../utils/formatters';
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#c1121f]/30';
@@ -42,16 +42,28 @@ function CopyRow({ label, value }) {
 }
 
 // Admin -> Purchase Config -> Barcode Station (migration 098): the shared PIN
-// that unlocks the public station page, its sign-in lock, the sticker size the
-// label sheet prints at, and (migration 100) how the station prints -- through
-// the browser's print dialog, or straight to the printer on kiosk PCs. The PIN
-// is write-only -- the server never sends it back, only whether one is set.
+// that unlocks the public station page, its sign-in lock, the label page the
+// stickers print on -- one sticker's size and (104) how many share a printed
+// page, as in the client's BarTender template -- and (migration 100) how the
+// station prints: through the browser's print dialog, or straight to the
+// printer on kiosk PCs. The PIN is write-only -- the server never sends it
+// back, only whether one is set.
+
+// The label page's fields: [state key, API field, caption, BarTender's name].
+const PAGE_FIELDS = [
+  ['w', 'label_width_mm', 'Sticker width (mm)', 'Template Size width'],
+  ['h', 'label_height_mm', 'Sticker height (mm)', 'Template Size height'],
+  ['n', 'labels_per_page', 'Stickers per page', 'Layout Rows'],
+  ['gap', 'label_gap_mm', 'Gap between (mm)', 'Gap / Pitch vertical'],
+  ['margin', 'page_margin_mm', 'Top / bottom margin (mm)', 'Margins top and bottom'],
+];
+const pageFormOf = (s) => Object.fromEntries(PAGE_FIELDS.map(([k, api]) => [k, String(s[api])]));
 export default function BarcodeStationTab() {
   const [settings, setSettings] = useState(null);
   const [pin, setPin] = useState('');
   const [pin2, setPin2] = useState('');
   const [pinMsg, setPinMsg] = useState('');
-  const [size, setSize] = useState({ w: '', h: '' });
+  const [size, setSize] = useState(() => Object.fromEntries(PAGE_FIELDS.map(([k]) => [k, ''])));
   const [sizeMsg, setSizeMsg] = useState('');
   const [saving, setSaving] = useState('');
   const [confirmSignOut, setConfirmSignOut] = useState(false);
@@ -61,7 +73,7 @@ export default function BarcodeStationTab() {
 
   const apply = (s) => {
     setSettings(s);
-    setSize({ w: String(s.label_width_mm), h: String(s.label_height_mm) });
+    setSize(pageFormOf(s));
   };
 
   useEffect(() => {
@@ -95,10 +107,10 @@ export default function BarcodeStationTab() {
 
   const saveSize = async (e) => {
     e.preventDefault();
-    const err = labelSizeError(size.w, size.h);
+    const err = labelSizeError(size.w, size.h) || labelPageError(size.n, size.gap, size.margin, size.h);
     if (err) { setSizeMsg(err); return; }
     setSizeMsg('');
-    await save('size', { label_width_mm: Number(size.w), label_height_mm: Number(size.h) }, 'Sticker size saved');
+    await save('size', Object.fromEntries(PAGE_FIELDS.map(([k, api]) => [api, Number(size[k])])), 'Label page saved');
   };
 
   const copyLink = async () => {
@@ -113,6 +125,13 @@ export default function BarcodeStationTab() {
   if (!settings) {
     return <div className={`${panel} text-sm text-gray-500`}>Loading…</div>;
   }
+
+  // The page the form's values make (blank while they are invalid), and the
+  // page saved now.
+  const pagePreview = labelSizeError(size.w, size.h) || labelPageError(size.n, size.gap, size.margin, size.h)
+    ? null
+    : labelPageHeight(size.h, size.n, size.gap, size.margin);
+  const savedPageHeight = labelPageHeight(settings.label_height_mm, settings.labels_per_page, settings.label_gap_mm, settings.page_margin_mm);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -197,24 +216,41 @@ export default function BarcodeStationTab() {
           </div>
         </section>
 
-        {/* ---- Sticker size ---- */}
+        {/* ---- Label page ---- */}
         <section className={panel}>
-          <h3 className="font-semibold text-[#003049] mb-1 flex items-center gap-2"><Ruler size={17} /> Sticker size</h3>
+          <h3 className="font-semibold text-[#003049] mb-1 flex items-center gap-2"><Ruler size={17} /> Label page</h3>
           <p className="text-sm text-gray-500 mb-3">
-            The size of one sticker on the label printer, landscape. A 6 × 2 inch sticker is 152 × 51 mm.
+            One sticker, landscape, and how many share a printed page — copy them from the roll&apos;s BarTender
+            template (Page Setup → Layout). For example, the TSC TA210 roll: 150 × 48.2 mm, 2 per page, 4 mm gap, 1.3 mm margin.
           </p>
-          <form onSubmit={saveSize} className="flex flex-wrap items-end gap-3" noValidate>
-            <label className="block w-28">
-              <span className="block text-xs font-medium text-gray-600 mb-1">Width (mm)</span>
-              <input inputMode="numeric" value={size.w} onChange={(e) => { setSize((s) => ({ ...s, w: e.target.value.replace(/\D/g, '') })); setSizeMsg(''); }} className={inputCls} />
-            </label>
-            <label className="block w-28">
-              <span className="block text-xs font-medium text-gray-600 mb-1">Height (mm)</span>
-              <input inputMode="numeric" value={size.h} onChange={(e) => { setSize((s) => ({ ...s, h: e.target.value.replace(/\D/g, '') })); setSizeMsg(''); }} className={inputCls} />
-            </label>
-            <Button type="submit" variant="secondary" loading={saving === 'size'}>Save size</Button>
+          <form onSubmit={saveSize} className="space-y-3" noValidate>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {PAGE_FIELDS.map(([k, , caption, bartender]) => (
+                <label key={k} className="block" title={`BarTender: ${bartender}`}>
+                  <span className="block text-xs font-medium text-gray-600 mb-1">{caption}</span>
+                  <input
+                    inputMode={k === 'n' ? 'numeric' : 'decimal'}
+                    value={size[k]}
+                    onChange={(e) => {
+                      const v = e.target.value.replace(k === 'n' ? /\D/g : /[^\d.]/g, '');
+                      setSize((s) => ({ ...s, [k]: v }));
+                      setSizeMsg('');
+                    }}
+                    className={inputCls}
+                  />
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-gray-600">
+              Printer paper:{' '}
+              <b>
+                {pagePreview ? `${size.w} × ${pagePreview} mm, landscape` : '—'}
+              </b>{' '}
+              — the same as BarTender&apos;s page. Set the label printer&apos;s paper to this.
+            </p>
+            {sizeMsg && <p className="text-sm text-[#c1121f]">{sizeMsg}</p>}
+            <Button type="submit" variant="secondary" loading={saving === 'size'}>Save label page</Button>
           </form>
-          {sizeMsg && <p className="text-sm text-[#c1121f] mt-2">{sizeMsg}</p>}
         </section>
 
         {/* ---- Printing ---- */}
@@ -259,7 +295,7 @@ export default function BarcodeStationTab() {
         <section className={panel}>
           <h3 className="font-semibold text-[#003049] mb-1">Kiosk printing setup (each station PC)</h3>
           <ol className="list-decimal pl-5 text-sm text-gray-600 space-y-1 mb-3">
-            <li>Install the label printer, set its paper to the sticker size ({settings.label_width_mm} × {settings.label_height_mm} mm), and make it the <b>Windows default printer</b>.</li>
+            <li>Install the label printer, set its paper to the label page ({settings.label_width_mm} × {savedPageHeight} mm, landscape), and make it the <b>Windows default printer</b>.</li>
             <li>Create a desktop shortcut with the <b>calibration</b> target below, open it, unlock the station and print one entry: choose the label printer, margins None, scale 100%, headers and footers off. The browser remembers these.</li>
             <li>Change the shortcut to the <b>kiosk</b> target and name it “Barcode Station”. From now on Print goes straight to the printer.</li>
             <li>When every station PC uses the kiosk shortcut, set Printing to <b>Direct</b> above.</li>

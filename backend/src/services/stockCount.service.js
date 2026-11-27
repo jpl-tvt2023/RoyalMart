@@ -36,7 +36,12 @@
 //                station response or an everyone-visible report. Always a
 //                finished day: the days between two sightings are all before
 //                today.
-//   flagged      scanned on C on a floor other than its sticker's.
+//
+// LOCATION: a pack is on the floor it was last scanned on (seen_floor_id, the
+// floor of its row on its latest day -- a same-day rescan elsewhere updates
+// that row), else on its entry's arrival floor. Packs move between floors as
+// a matter of course (client, 2026-11-27), so a scan on another floor is not
+// flagged -- the "wrong floor" figure of 102 is gone.
 
 const STATUS = { IN_STOCK: 'in_stock', OUT: 'out', NOT_COUNTED: 'not_counted' };
 
@@ -54,7 +59,7 @@ const IST_TODAY = "date('now', '+5 hours', '+30 minutes')";
 //   latest     the latest finished seq (0 before Day 1 has finished)
 //   ks         each sighted key's first and last seq, today's scans included
 //   kstate     EVERY key: status, first/last seq, the floor it was last seen
-//              on, and its batch's article, floor, pack size
+//              on, and its batch's article, arrival floor, pack size
 // days, cc and ks are read many times per query, so they are MATERIALIZED
 // (computed once) rather than inlined at every reference.
 const STATE_CTES = `
@@ -104,25 +109,19 @@ const MISSED_CTES = `
      WHERE g.prev_seq IS NOT NULL AND g.seq - g.prev_seq > 1
   )`;
 
-// Per day: found / new / out / flagged, as aggregates joined onto days (one
-// pass each, not a subquery per day -- counts pile up daily). Use after
-// STATE_CTES. `missed` is NOT here -- it is Admin/Owner only, see MISSED_CTES.
+// Per day: found / new / out, as aggregates joined onto days (one pass each,
+// not a subquery per day -- counts pile up daily). Use after STATE_CTES.
+// `missed` is NOT here -- it is Admin/Owner only, see MISSED_CTES.
 // out: a key last seen on seq P went Out on P + 1, and only once P + 1 is a
 // finished day -- today's out_packs is NULL, not 0.
 const COUNT_TOTALS_SELECT = `
   SELECT d.id, d.seq, d.count_date, d.started_by, d.started_at, d.finished,
          COALESCE(fd.n, 0) AS found, COALESCE(nw.n, 0) AS new_packs,
-         CASE WHEN d.finished THEN COALESCE(ot.n, 0) END AS out_packs, COALESCE(fl.n, 0) AS flagged
+         CASE WHEN d.finished THEN COALESCE(ot.n, 0) END AS out_packs
     FROM days d
     LEFT JOIN (SELECT count_id, COUNT(*) AS n FROM stock_count_scans GROUP BY count_id) fd ON fd.count_id = d.id
     LEFT JOIN (SELECT first_seq AS seq, COUNT(*) AS n FROM ks GROUP BY first_seq) nw ON nw.seq = d.seq
-    LEFT JOIN (SELECT last_seq + 1 AS seq, COUNT(*) AS n FROM ks GROUP BY last_seq) ot ON ot.seq = d.seq
-    LEFT JOIN (SELECT s.count_id, COUNT(*) AS n
-                 FROM stock_count_scans s
-                 JOIN label_keys k ON k.label_key = s.label_key
-                 JOIN label_batches b ON b.id = k.batch_id
-                WHERE s.floor_id <> b.floor_id
-                GROUP BY s.count_id) fl ON fl.count_id = d.id`;
+    LEFT JOIN (SELECT last_seq + 1 AS seq, COUNT(*) AS n FROM ks GROUP BY last_seq) ot ON ot.seq = d.seq`;
 
 // Expected use of an article by dispatches (the cross-check): every dispatched
 // PO line, through the vendor's item code to our SKU, times how many of the

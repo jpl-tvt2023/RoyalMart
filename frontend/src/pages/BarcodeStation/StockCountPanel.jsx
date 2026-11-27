@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
-  Camera, ScanLine, CircleCheck, TriangleAlert, CircleX, Info, CloudOff, Loader2, Moon,
+  Camera, ScanLine, CircleCheck, CircleX, Info, CloudOff, Loader2, Moon,
 } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import CameraScanner from './CameraScanner';
@@ -25,9 +25,12 @@ import { formatDate, formatDateTime } from '../../utils/formatters';
 // reloads. Re-sending is harmless: the server keeps one scan per sticker per
 // day.
 //
-// The card says counted / already counted / not our sticker, and turns AMBER
-// when the sticker belongs to another floor. It never says a pack had been
-// Out: missed scans are the scanner's mistakes, for Admin/Owner only.
+// The card says counted / moved / already counted / not our sticker. Packs
+// move between floors as a matter of course (client, 2026-11-27): a scan puts
+// the pack on the floor picked here, and the card says where it moved from --
+// nothing is flagged. A second scan on another floor the same day moves it
+// again. It never says a pack had been Out: missed scans are the scanner's
+// mistakes, for Admin/Owner only.
 
 const FLOOR_KEY = 'roms:barcodeStation:countFloor';
 const RETRY_MS = 3000;
@@ -51,12 +54,11 @@ const finePointer = () => typeof window !== 'undefined' && !!window.matchMedia?.
 
 const CARD_STYLE = {
   ok:    { cls: 'bg-green-50 border-green-300 text-green-900', Icon: CircleCheck },
-  warn:  { cls: 'bg-amber-50 border-amber-400 text-amber-900', Icon: TriangleAlert },
   info:  { cls: 'bg-slate-50 border-slate-300 text-slate-800', Icon: Info },
   error: { cls: 'bg-red-50 border-red-300 text-red-900', Icon: CircleX },
   wait:  { cls: 'bg-white border-gray-200 text-gray-700', Icon: Loader2 },
 };
-const LOUDEST = ['error', 'warn', 'ok', 'info'];
+const LOUDEST = ['error', 'ok', 'info'];
 
 function cardFor(result, floorName) {
   if (result.status === 'unknown') {
@@ -65,8 +67,11 @@ function cardFor(result, floorName) {
   const p = result.pack;
   const line = `${p.vendor_name} · ${articleLabel(p)} · pack of ${packSizeLabel(p)} · label ${p.label_no} of ${p.label_count}`;
   if (result.status === 'already_counted') return { kind: 'info', title: 'Already counted today', detail: line };
-  if (result.floor_mismatch) {
-    return { kind: 'warn', title: `Counted — but its sticker says ${p.sticker_floor_name}`, detail: `${line}. You are on ${floorName}.` };
+  if (result.status === 'moved') {
+    return { kind: 'ok', title: `Moved to ${floorName}`, detail: `${line}. It was on ${result.moved_from || 'another floor'} earlier today.` };
+  }
+  if (result.moved_from) {
+    return { kind: 'ok', title: `Counted — moved here from ${result.moved_from}`, detail: line };
   }
   return { kind: 'ok', title: 'Counted', detail: line };
 }
@@ -391,7 +396,7 @@ export default function StockCountPanel({ operator, floors }) {
               const RowIcon = CARD_STYLE[r.kind].Icon;
               return (
                 <li key={r.id} className="flex items-start gap-2">
-                  <RowIcon size={16} className={`mt-0.5 shrink-0 ${r.kind === 'ok' ? 'text-green-600' : r.kind === 'warn' ? 'text-amber-600' : r.kind === 'error' ? 'text-red-600' : 'text-slate-500'}`} />
+                  <RowIcon size={16} className={`mt-0.5 shrink-0 ${r.kind === 'ok' ? 'text-green-600' : r.kind === 'error' ? 'text-red-600' : 'text-slate-500'}`} />
                   <span className="min-w-0 break-words"><span className="font-medium">{r.title}</span> <span className="text-gray-500">· {r.detail}</span></span>
                 </li>
               );

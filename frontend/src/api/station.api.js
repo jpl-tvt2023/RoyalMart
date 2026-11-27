@@ -126,9 +126,11 @@ export async function getTodayCount() {
   return data;
 }
 
-// { results: [{ key, status, pack?, floor_mismatch? }], scanned, floor, count }
-// status: counted | already_counted | unknown. Re-sending is harmless. The
-// server puts the scans into TODAY's count.
+// { results: [{ key, status, pack?, moved_from? }], scanned, floor, count }
+// status: counted | moved | already_counted | unknown. The scan puts the pack
+// on `floor`: moved_from names the floor it was on before, when that was
+// another one (a same-day rescan elsewhere answers `moved`). Re-sending is
+// harmless. The server puts the scans into TODAY's count.
 export async function sendScans({ operator, floor_id, keys }) {
   const { data } = await station.post('/counts/today/scans', { operator, floor_id, keys });
   return data;

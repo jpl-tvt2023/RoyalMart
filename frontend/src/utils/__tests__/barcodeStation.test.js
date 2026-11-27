@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest';
 import JsBarcode from 'jsbarcode';
 import {
   batchFieldsError, operatorError, keyError, pinError, labelSizeError, wholeNumberError, printModeError,
+  labelPageError, labelPageHeight,
   KEY_RE, PIN_RE, LABEL_COUNT_MAX, PACK_SIZE_MAX, PRINT_MODES, articleLabel, keyCountLabel, printCountLabel,
   scanBatchError, scanFieldsError, SCAN_BATCH_MAX,
 } from '../barcodeStation';
@@ -74,9 +75,25 @@ describe('operator, key and PIN', () => {
   });
 
   test('sticker size', () => {
-    expect(labelSizeError(5, 51)).toBe('Sticker width must be a whole number of mm from 20 to 300');
+    expect(labelSizeError(5, 51)).toBe('Sticker width must be from 20 to 300 mm, at most one decimal');
     expect(labelSizeError(152, '')).toBe('Sticker height is required');
+    expect(labelSizeError(152, 48.25)).toBe('Sticker height must be from 10 to 300 mm, at most one decimal');
     expect(labelSizeError(152, 51)).toBeNull();
+    expect(labelSizeError('150', '48.2')).toBeNull();
+  });
+
+  // Migration 104: the TSC TA210 roll -- two 150 x 48.2 stickers per page.
+  test('label page', () => {
+    expect(labelPageHeight(48.2, 2, 4, 1.3)).toBe(103);
+    expect(labelPageHeight(51, 1, 0, 0)).toBe(51);
+    expect(labelPageError(2, 4, 1.3, 48.2)).toBeNull();
+    expect(labelPageError(1, 0, 0, 51)).toBeNull();
+    expect(labelPageError(0, 0, 0, 51)).toBe('Stickers per page must be at least 1');
+    expect(labelPageError(5, 0, 0, 51)).toBe('Stickers per page cannot be more than 4');
+    expect(labelPageError(1.5, 0, 0, 51)).toBe('Stickers per page must be a whole number');
+    expect(labelPageError(2, 21, 0, 51)).toBe('Gap between stickers must be from 0 to 20 mm, at most one decimal');
+    expect(labelPageError(2, 4, -1, 51)).toBe('Top and bottom margin must be from 0 to 20 mm, at most one decimal');
+    expect(labelPageError(3, 4, 1.3, 100)).toBe('The page cannot be taller than 300 mm');
   });
 });
 

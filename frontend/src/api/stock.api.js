@@ -21,7 +21,7 @@ export async function getStockCount(id) {
   return data;
 }
 
-// list: found | new | out | flagged
+// list: found | new | out
 export async function listStockCountPacks(id, params) {
   const { data } = await api.get(`/stock/counts/${id}/packs`, { params });
   return data;
