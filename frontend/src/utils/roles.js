@@ -85,6 +85,13 @@ export const NAV = [
         description: 'PO → dispatch → GRN turnaround',
         roles: ORDER_FLOW_ROLES,
       },
+      {
+        label: 'Balaji Builty',
+        path: '/balaji-builty',
+        icon: Truck,
+        description: 'Builty entries filled in by hand',
+        roles: ORDER_FLOW_ROLES,
+      },
     ],
   },
   {

@@ -230,11 +230,15 @@ export default function StockCountPanel({ operator, floors }) {
     inputRef.current?.focus();
   };
 
+  // The floor is required: a scan with none is refused here and by the server.
+  // Clearing it also closes the camera, which would otherwise keep reading
+  // stickers only to refuse them.
   const pickFloor = (v) => {
     unlockAudio();
     const id = v ? Number(v) : '';
     setFloorId(id);
     writeFloor(id);
+    if (!id) setCamera(false);
   };
 
   if (loading) {
@@ -261,10 +265,13 @@ export default function StockCountPanel({ operator, floors }) {
 
         <div className="grid gap-3 sm:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto] sm:items-end">
           <label className="block">
-            <span className="block text-xs font-medium text-gray-600 mb-1">I am scanning on</span>
+            <span className="block text-xs font-medium text-gray-600 mb-1">
+              I am scanning on <span className="text-[#c1121f]" aria-hidden="true">*</span>
+            </span>
             <select
               value={floor ? floor.id : ''}
               onChange={(e) => pickFloor(e.target.value)}
+              required
               className={`${inputCls} min-h-[44px] ${floor ? '' : 'border-[#c1121f]'}`}
             >
               <option value="">Pick your floor…</option>
@@ -288,10 +295,16 @@ export default function StockCountPanel({ operator, floors }) {
             </div>
           </form>
 
+          {/* The scan box above stays enabled with no floor: a gun types into it,
+              and a disabled box would drop its digits silently. handleKey's
+              "Pick your floor first" card and beep are the gun's feedback. The
+              camera, though, waits for a floor (an open one can still close). */}
           <Button
             type="button"
             variant={camera ? 'secondary' : 'outline'}
             onClick={() => { unlockAudio(); setCamera((c) => !c); }}
+            disabled={!floor && !camera}
+            title={!floor && !camera ? 'Pick your floor first' : undefined}
             className="min-h-[44px]"
           >
             <Camera size={18} /> {camera ? 'Close camera' : 'Scan with camera'}
