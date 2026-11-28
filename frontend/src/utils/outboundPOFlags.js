@@ -22,6 +22,14 @@ export const FLAG_META = {
     color: 'yellow',
     hint: 'This receipt has an incoming number but no stage prefix, so the lot does not appear on the Stitching page',
   },
+  // Goods that never reach the Stitching page name their own warehouse
+  // (migration 107); receipts saved before that carry this until edited.
+  missing_warehouse: {
+    label: 'Missing Warehouse',
+    short: 'No Whse',
+    color: 'yellow',
+    hint: 'This receipt does not say which warehouse the goods were received at',
+  },
   // PO-level rather than receipt-level, so it never appears on a line or
   // receipt badge — only on the PO row.
   not_approved: {

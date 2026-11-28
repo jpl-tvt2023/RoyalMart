@@ -163,9 +163,15 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
   const stage = form.incoming_stage;
   // An edited receipt keeps its own warehouse on offer even if it was retired.
   const stageOptions = stageOptionsFor(kind, warehouses, receipt?.warehouse_id);
-  const warehouseName = stage === STOCK_STAGE
+  // Named at the Warehouse stage of a stitching line, and on every receipt of
+  // goods that never reach the Stitching page (migration 107).
+  const warehouseName = stage === STOCK_STAGE || !stitching
     ? (warehouses.find(w => String(w.id) === String(form.warehouse_id))?.name || receipt?.warehouse_name || 'a warehouse')
     : null;
+  // Goods off the Stitching page pick their warehouse directly: the active
+  // ones, plus the one an edited receipt already sits in, so a retired
+  // warehouse still shows rather than a blank -- the stage list's rule.
+  const warehouseOptions = warehouses.filter(w => w.is_active || String(w.id) === String(receipt?.warehouse_id ?? ''));
   // Pieces to count from Stitching on; graded from Packing on; a sale at Third
   // Party. The stage is the form's first field, so all of this follows it.
   const dozens = receiptCountsDozens(line, stage);
@@ -218,7 +224,9 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
       incoming_no: receipt.incoming_no ?? '',
       process_rate: receipt.process_rate ?? '',
       incoming_stage: receipt.incoming_stage ?? '',
-      // Which warehouse, at the Warehouse stage -- read off its prefix.
+      // Which warehouse: at the Warehouse stage read off its prefix, and off
+      // the Stitching page the receipt's own (107). Blank on an older receipt
+      // of that kind -- the save asks for one.
       warehouse_id: receipt.warehouse_id ?? '',
       qty_in_metres: receipt.qty_in_metres ?? '',
       // Omitted here once, which made every dozen-stage receipt uneditable: the
@@ -255,16 +263,16 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
   }, []);
 
   // Fetched when the form opens, so a warehouse added in Purchase Config a
-  // minute ago is already a stage option here.
+  // minute ago is already on offer here -- as a stage option on a stitching
+  // line, and as the Warehouse field on everything else.
   useEffect(() => {
-    if (!stitching) return;
     listWarehouses()
       .then(rows => setWarehouses(rows || []))
       .catch(() => {
         setWarehouses([]);
         toast.error('Could not load the warehouse list');
       });
-  }, [stitching]);
+  }, []);
 
   const setField = (field, value) => setForm((f) => ({ ...f, [field]: value }));
 
@@ -302,6 +310,10 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
           payload.incoming_no = null;
           payload.outbound_bill_no = String(form.outbound_bill_no ?? '').trim();
         }
+      } else {
+        // Where goods off the Stitching page were received (107) -- sent on
+        // every save, so an older receipt with none is filled in on its edit.
+        payload.warehouse_id = Number(form.warehouse_id);
       }
       // Sent on an add, and on an edit only when it is new to this receipt: the
       // stage moved, or a different checker was picked. An older receipt whose
@@ -377,6 +389,26 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
                 {stageOptions.map(o => (
                   <option key={o.value} value={o.value} disabled={o.disabled}>
                     {o.label}{o.disabled ? ' (not available)' : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+
+          {/* Goods that never reach the Stitching page have no stage, but they
+              land in one of our warehouses -- asked first, in the Stage's slot
+              (migration 107). */}
+          {!stitching && (
+            <Field label="Warehouse" required hint="Where these goods were received" className="sm:col-span-2">
+              <select
+                value={form.warehouse_id === '' || form.warehouse_id == null ? '' : String(form.warehouse_id)}
+                onChange={e => setField('warehouse_id', e.target.value)}
+                className={inputCls}
+              >
+                <option value="">Warehouse…</option>
+                {warehouseOptions.map(w => (
+                  <option key={w.id} value={String(w.id)}>
+                    {w.name}{w.is_active ? '' : ' (retired)'}
                   </option>
                 ))}
               </select>
@@ -569,8 +601,7 @@ export default function ReceiptModal({ poId, line, receipt, onClose, onSaved }) 
             <Field
               label="Checked By"
               required={requireChecker}
-              hint={!stitching ? 'A Warehouse POC who checked the goods in'
-                : sale ? 'Who checked the goods out' : `Who received the goods at ${warehouseName}`}
+              hint={sale ? 'Who checked the goods out' : `Who received the goods at ${warehouseName}`}
             >
               <select
                 value={form.checked_by === '' || form.checked_by == null ? '' : String(form.checked_by)}

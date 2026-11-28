@@ -527,7 +527,9 @@ describe('Only fabric, and only in metres', () => {
       .post(`/api/outbound-pos/${po.body.id}/lines/${detail.body.lines[0].id}/receipts`))
       .send({
         received_qty: 10, received_rate: 10, bill_no: `B-${uid()}`,
-        checked_by: warehousePocId, incoming_no: `P-${uid()}`,
+        // Packaging names the warehouse it was received at (107) -- which
+        // still does not put it on the Stitching page.
+        checked_by: warehousePocId, incoming_no: `P-${uid()}`, warehouse_id: panchalId,
       });
     expect(receipt.status).toBe(201);
 
