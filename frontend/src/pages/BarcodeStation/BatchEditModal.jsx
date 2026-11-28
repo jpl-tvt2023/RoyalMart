@@ -49,11 +49,9 @@ export function BatchFields({ value, onChange, options, fallback, layout = 'row'
       </label>
 
       <label className="block">
-        <span className="block text-xs font-medium text-gray-600 mb-1">
-          Stitching / Packing <span className="font-normal text-gray-400">(optional)</span>
-        </span>
+        <span className="block text-xs font-medium text-gray-600 mb-1">Stitching / Packing</span>
         <select value={value.stitching_party_id} onChange={(e) => set({ stitching_party_id: e.target.value })} className={inputCls}>
-          <option value="">— None —</option>
+          <option value="">None</option>
           {parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           {missing(parties, value.stitching_party_id) && (
             <option value={value.stitching_party_id}>{fallback?.party || 'Unknown party'} (no longer available)</option>

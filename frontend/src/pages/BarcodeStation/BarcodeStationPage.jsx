@@ -183,8 +183,9 @@ function Station({ operator, isAdmin, adminName, onOperatorChange, onLock }) {
     try {
       const created = await createLabelBatch({ ...entry, operator });
       toast.success(`Batch #${created.id} saved — press Generate when it is right`);
-      // Keep vendor and Stitching / Packing: the next entry is usually the same delivery.
-      setEntry({ ...fieldsOf(null), outbound_vendor_id: entry.outbound_vendor_id, stitching_party_id: entry.stitching_party_id });
+      // Keep the vendor (the next entry is usually the same delivery). Stitching /
+      // Packing goes back to None, as on a fresh entry.
+      setEntry({ ...fieldsOf(null), outbound_vendor_id: entry.outbound_vendor_id });
       setKeyHit(null);
       setPage(1);
       load({ page: 1, focusId: null });

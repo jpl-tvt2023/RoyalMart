@@ -17,6 +17,7 @@ import BuiltyList from './pages/Builty/BuiltyList';
 import GRNList from './pages/GRN/GRNList';
 import RTVList from './pages/RTV/RTVList';
 import LeadTimeReport from './pages/LeadTime/LeadTimeReport';
+import BalajiBuiltyList from './pages/BalajiBuilty/BalajiBuiltyList';
 import ConfigurationsPage from './pages/Configurations/ConfigurationsPage';
 import ProductList from './pages/products/ProductList';
 import ProcurementPage from './pages/Procurement/ProcurementPage';
@@ -112,6 +113,9 @@ export default function App() {
 
           <Route path="/lead-time-report" element={
             <ProtectedRoute roles={ALL_ROLES}><LeadTimeReport /></ProtectedRoute>
+          } />
+          <Route path="/balaji-builty" element={
+            <ProtectedRoute roles={ALL_ROLES}><BalajiBuiltyList /></ProtectedRoute>
           } />
 
           <Route path="/configurations" element={

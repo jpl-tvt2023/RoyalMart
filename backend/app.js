@@ -39,6 +39,7 @@ app.use('/api/procurement', require('./src/routes/procurement.routes'));
 app.use('/api/marketplace-pos', require('./src/routes/marketplacePO.routes'));
 app.use('/api/order-summary', require('./src/routes/orderSummary.routes'));
 app.use('/api/rtv',          require('./src/routes/rtv.routes'));
+app.use('/api/balaji-builty', require('./src/routes/balajiBuilty.routes'));
 app.use('/api/lead-time',    require('./src/routes/leadTime.routes'));
 app.use('/api/product-vendor-codes', require('./src/routes/productVendorCodes.routes'));
 app.use('/api/couriers',     require('./src/routes/couriers.routes'));

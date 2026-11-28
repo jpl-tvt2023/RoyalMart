@@ -11,7 +11,14 @@ function normName(v) {
 // never mint the same id. One to three of them, stored upper-case, UNIQUE.
 const PO_PREFIX_RE = /^[A-Z]{1,3}$/;
 const normPrefix = (v) => (v == null ? '' : String(v).trim().toUpperCase());
-const prefixError = (p) => (PO_PREFIX_RE.test(p) ? null : 'PO Prefix must be 1 to 3 letters (A-Z)');
+// P is taken by Balaji Builty's own ids (P001, migration 108), which live in a
+// table of their own -- a vendor on P would mint a second, different P001.
+const RESERVED_PREFIXES = { P: 'Balaji Builty' };
+const prefixError = (p) => {
+  if (!PO_PREFIX_RE.test(p)) return 'PO Prefix must be 1 to 3 letters (A-Z)';
+  if (RESERVED_PREFIXES[p]) return `PO Prefix "${p}" is reserved for ${RESERVED_PREFIXES[p]}`;
+  return null;
+};
 
 // Any PO at all, Deleted included -- a deleted PO keeps its id and can come back.
 async function hasPos(name) {
