@@ -82,6 +82,27 @@ const FLAGS = {
     js: (r, l) => r.incoming_no != null && String(r.incoming_no).trim() !== ''
       && r.incoming_prefix_id == null && r.direct_stage == null && Number(l?.goes_to_stitching) === 1,
   },
+  missing_warehouse: {
+    label: 'Missing Warehouse',
+    short: 'No Whse',
+    color: 'yellow',
+    // Goods that never reach the Stitching page name the warehouse they were
+    // received at on the receipt itself (migration 107) -- required on every new
+    // one, so this surfaces the receipts saved before the question existed,
+    // until someone edits them and picks one.
+    //
+    // NON-STITCHING ARTICLES ONLY -- the mirror image of missing_incoming_stage.
+    // A stitching receipt stores no warehouse of its own: where it sits follows
+    // from its stage, and one with no stage is that flag's business. The JS half
+    // reads the row's warehouse_id, which the detail query coalesces from the
+    // prefix and this column -- on a non-stitching receipt it is this column,
+    // since one never has a prefix.
+    sql: `r.warehouse_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM outbound_products op
+                           WHERE op.category = l.category AND op.item_name = l.item_name
+                             AND op.unit_metric = l.unit_metric AND op.goes_to_stitching = 1)`,
+    js: (r, l) => r.warehouse_id == null && Number(l?.goes_to_stitching) !== 1,
+  },
   not_approved: {
     label: 'Not Approved',
     short: 'Not Appr',

@@ -1,0 +1,48 @@
+-- WHICH WAREHOUSE NON-STITCHING GOODS LAND IN (client, 2026-11-28).
+--
+-- A receipt for an article WITHOUT the "Goes through Stitching" tick --
+-- packaging, barcodes, corrugated boxes -- recorded no location at all. It
+-- carried a Bill No, a Billed Rate, a free-text Incoming No and the Warehouse
+-- POC who checked it in, and the server refused a stage on it outright. So the
+-- portal could say WHO took a box of packaging in, but not whether it sits in
+-- Panchal, Swastik or a warehouse added next year. Every new non-stitching
+-- receipt now names one, picked from the warehouses master (096).
+--
+-- A COLUMN, NOT THE PREFIX. A stitching receipt is placed in a warehouse by its
+-- incoming prefix (incoming_prefix_id -> stitching_prefixes.warehouse_id), and
+-- reusing that here looked like the natural move. It is not, for three reasons.
+--   1. A prefix makes the Incoming No mandatory (incomingPairError), so
+--      packaging would quietly start demanding a PNL-style register number.
+--   2. Ticking "Goes through Stitching" is always allowed, on the premise that
+--      older receipts carry no stage and so are not lots. A prefix on every
+--      packaging receipt would break that -- ticking an article would put its
+--      whole receipt history on the Stitching page as open Warehouse lots.
+--   3. The warehouses master counts receipts under a warehouse's prefixes to
+--      keep a retired warehouse's Stitching tab in sight, and packaging has no
+--      business on that tab.
+-- So the location of a non-stitching receipt is its own column, and the
+-- Stitching chain is left exactly as it was.
+--
+-- SET ONLY FOR A NON-STITCHING LINE. The controller writes it there (required
+-- on a new receipt, and on any edit that sends it) and writes NULL on every
+-- stitching receipt, whose warehouse follows from its stage. The schema cannot
+-- say so -- the tick lives on outbound_products, reached through the line's
+-- (category, item_name, unit_metric) triple -- so the rule is the controller's.
+-- Reads coalesce the two: the prefix's warehouse, else this one.
+--
+-- It does not break "which warehouse is never stored on a lot": a non-stitching
+-- receipt is not a lot, and the column holds an id, so a rename still touches
+-- one warehouses row. Warehouses are only ever deactivated, never deleted, so
+-- the reference cannot dangle.
+--
+-- NO BACKFILL. Nobody recorded where past deliveries went, and a guess written
+-- into the data would read as a fact. Older receipts stay NULL and raise the
+-- derived missing_warehouse flag until someone edits them and picks one.
+--
+-- Nullable, no index, not UNIQUE -- so a plain DROP COLUMN stays possible.
+-- Additive: old code never reads it, so this file goes AHEAD of the deploy.
+--
+-- No semicolons may appear in these comments -- migrate.js splits on them.
+
+ALTER TABLE outbound_po_line_receipts
+  ADD COLUMN warehouse_id INTEGER REFERENCES warehouses(id)

@@ -659,7 +659,7 @@ export default function OutboundPODetail() {
                                         which stage the goods arrived at, and is what puts the lot
                                         on a Stitching tab. */}
                                     <td
-                                      className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''} ${(receipt.flags || []).some(f => f === 'missing_incoming_no' || f === 'missing_incoming_stage') ? 'text-amber-600' : ''}`}
+                                      className={`${tdCls} ${receipt.deleted_at ? 'opacity-50' : ''} ${(receipt.flags || []).some(f => f === 'missing_incoming_no' || f === 'missing_incoming_stage' || f === 'missing_warehouse') ? 'text-amber-600' : ''}`}
                                       title={receiptIncomingHint(receipt)}
                                     >
                                       {/* Bought straight into Third Party (091): no incoming number
@@ -672,7 +672,14 @@ export default function OutboundPODetail() {
                                           : '—'}
                                       {/* Colour alone is not a signal everyone can see, so the
                                           flagged state also carries a glyph. */}
-                                      {(receipt.flags || []).includes('missing_incoming_stage') && <span className="ml-1">⚠</span>}
+                                      {(receipt.flags || []).some(f => f === 'missing_incoming_stage' || f === 'missing_warehouse') && <span className="ml-1">⚠</span>}
+                                      {/* Where the goods sit, by name -- a prefix
+                                          says so only to someone who knows the
+                                          codes, and goods off the Stitching page
+                                          have no prefix at all (107). */}
+                                      {receipt.warehouse_name && (
+                                        <div className="text-[11px] text-gray-400">{receipt.warehouse_name}</div>
+                                      )}
                                     </td>
                                     {/* A checker only where one is asked: every receipt
                                         off the Stitching page, and a warehouse / Third
@@ -817,6 +824,7 @@ const num = (v) => (v == null || v === '' ? '—' : String(Math.round(Number(v) 
 // where the goods sit only to someone who knows the codes.
 const receiptIncomingHint = (r) => {
   const flags = r.flags || [];
+  if (flags.includes('missing_warehouse')) return FLAG_META.missing_warehouse.hint;
   if (flags.includes('missing_incoming_stage')) return FLAG_META.missing_incoming_stage.hint;
   if (flags.includes('missing_incoming_no')) return FLAG_META.missing_incoming_no.hint;
   if (r.warehouse_name) return `In ${r.warehouse_name}`;

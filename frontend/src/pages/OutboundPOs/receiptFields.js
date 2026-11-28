@@ -32,7 +32,8 @@ const tooManyRateDecimals = (n) =>
 // outbound_bill_no is asked only at Third Party. checked_by is asked on every
 // receipt that never reaches the Stitching page, and at a warehouse and Third
 // Party on one that does (receiptTakesChecker). warehouse_id says WHICH
-// warehouse at the Warehouse stage (migration 096), and only there.
+// warehouse: at the Warehouse stage on a stitching line (migration 096), and on
+// every receipt of goods that never reach the Stitching page (107).
 export const EMPTY_RECEIPT = {
   received_qty: '', unit_metric: '', received_rate: '', bill_no: '', incoming_no: '',
   process_rate: '', incoming_stage: '', warehouse_id: '',
@@ -205,11 +206,18 @@ export function receiptFieldError(v, { requireBillNo = true, requireChecker = tr
   // THE STAGE, first: it heads the form because everything below reshapes to
   // it, and the server checks it before anything else too (receiptStageError).
   // At the Warehouse stage, which warehouse is part of the same answer.
+  //
+  // Goods off the Stitching page have no stage, but the warehouse they were
+  // received at heads their form in the same slot, with the same message
+  // (migration 107). The form always sends it, so the server asks too.
+  const noWarehouse = v.warehouse_id === '' || v.warehouse_id == null;
   if (stitching) {
     if (!stage) return 'Stage is required';
     const blocked = receiptStageBlockReason(stage, kind);
     if (blocked) return blocked;
-    if (stage === STOCK_STAGE && (v.warehouse_id === '' || v.warehouse_id == null)) return 'Warehouse is required';
+    if (stage === STOCK_STAGE && noWarehouse) return 'Warehouse is required';
+  } else if (noWarehouse) {
+    return 'Warehouse is required';
   }
 
   if (!v.received_qty || Number(v.received_qty) <= 0) return 'Received Qty is required';

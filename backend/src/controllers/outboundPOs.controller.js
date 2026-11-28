@@ -301,6 +301,20 @@ const STITCHING_SQL = `COALESCE((SELECT op.goes_to_stitching FROM outbound_produ
 
 const nonBlank = (v) => (v != null && String(v).trim() !== '' ? String(v).trim() : null);
 
+// A warehouse that can take NEW goods: it exists and is active. One rule for
+// both ways a receipt names one -- the Warehouse stage of a stitching line
+// (through prefixIdForStage) and the location of a non-stitching one (107).
+// Returns [row, error].
+async function warehouseFor(warehouseId) {
+  const { rows } = await db.execute({
+    sql: 'SELECT id, name, is_active FROM warehouses WHERE id = ?',
+    args: [warehouseId],
+  });
+  if (!rows.length) return [null, 'Warehouse not found'];
+  if (!rows[0].is_active) return [null, `${rows[0].name} is no longer active — pick another warehouse`];
+  return [rows[0], null];
+}
+
 // The prefix a receipt's stage will carry. DERIVED, never chosen: the user picks
 // the stage the goods arrived at and the code picks the code that prints on it.
 //
@@ -317,13 +331,9 @@ const nonBlank = (v) => (v != null && String(v).trim() !== '' ? String(v).trim()
 async function prefixIdForStage(stage, warehouseId = null) {
   let warehouse = null;
   if (stage === STOCK_STAGE) {
-    const { rows } = await db.execute({
-      sql: 'SELECT id, name, is_active FROM warehouses WHERE id = ?',
-      args: [warehouseId],
-    });
-    if (!rows.length) return [null, 'Warehouse not found'];
-    if (!rows[0].is_active) return [null, `${rows[0].name} is no longer active — pick another warehouse`];
-    warehouse = rows[0];
+    const [row, error] = await warehouseFor(warehouseId);
+    if (error) return [null, error];
+    warehouse = row;
   }
   const { rows } = await db.execute({
     sql: `SELECT id FROM stitching_prefixes
@@ -372,6 +382,13 @@ const dozensFromQty = (stitching, kind, stage) => !!stitching && countsDozens(st
 // The Warehouse stage is one choice per warehouse on the form (096), so a
 // receipt booked into it names WHICH, as warehouse_id beside the stage. Whether
 // that warehouse exists and is active is prefixIdForStage's to say.
+//
+// Goods that never reach the Stitching page have no stage, but they still
+// land somewhere (107): the same warehouse_id names where, in the same slot --
+// the form puts it where the Stage would be -- with the same message. Asked on
+// every new receipt and on any edit that sends it, which the form always does,
+// so an older receipt saved before the question existed is filled in on its
+// next edit. Whether the warehouse exists and is active is warehouseFor's to say.
 function receiptStageError(body, { requireAll, line, kind }) {
   const present = (k) => Object.prototype.hasOwnProperty.call(body || {}, k);
   const stitching = isStitchingLine(line);
@@ -382,6 +399,8 @@ function receiptStageError(body, { requireAll, line, kind }) {
     const blocked = receiptStageBlockReason(stage, kind);
     if (blocked) return blocked;
     if (stage === STOCK_STAGE && nonBlank(body.warehouse_id) == null) return 'Warehouse is required';
+  } else if (!stitching) {
+    if ((requireAll || present('warehouse_id')) && nonBlank(body?.warehouse_id) == null) return 'Warehouse is required';
   } else if (stitching && requireAll) {
     return 'Stage is required';
   } else if (stitching && !present('incoming_stage') && present('unit_metric') && line?.incoming_stage) {
@@ -768,9 +787,11 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
                    -- A receipt booked straight into Third Party has no prefix,
                    -- and its stage is held on the receipt itself (091).
                    sp.prefix AS incoming_prefix, COALESCE(sp.stage, r.direct_stage) AS incoming_stage,
-                   -- Which warehouse, at the Warehouse stage: read off the
-                   -- prefix, never stored on the receipt (096).
-                   sp.warehouse_id, w.name AS warehouse_name,
+                   -- Which warehouse. A stitching receipt at the Warehouse stage
+                   -- reads it off its prefix, never stored on the lot (096). One
+                   -- for goods off the Stitching page holds its own (107). Only
+                   -- one of the two is ever set, the prefix first.
+                   COALESCE(sp.warehouse_id, r.warehouse_id) AS warehouse_id, w.name AS warehouse_name,
                    r.direct_stage, r.outbound_bill_no,
                    r.created_by, r.created_at, r.updated_by, r.updated_at, r.deleted_by, r.deleted_at,
                    cb.name AS created_by_name, ub.name AS updated_by_name, kb.name AS checked_by_name,
@@ -789,7 +810,7 @@ async function fetchLines(poIds, { withReceipts = false, includeDeleted = false,
             LEFT JOIN users ub ON ub.id = r.updated_by
             LEFT JOIN users kb ON kb.id = r.checked_by
             LEFT JOIN stitching_prefixes sp ON sp.id = r.incoming_prefix_id
-            LEFT JOIN warehouses w ON w.id = sp.warehouse_id
+            LEFT JOIN warehouses w ON w.id = COALESCE(sp.warehouse_id, r.warehouse_id)
             WHERE r.line_id IN (${rPlaceholders}) ${receiptDeletedClause}
             ORDER BY r.line_id, r.created_at, r.id`,
       args: lineIds,
@@ -1473,6 +1494,16 @@ async function createReceipt(req, res, next) {
       prefixId = resolved;
       warehouseName = name;
     }
+    // Goods off the Stitching page are placed by the receipt itself (107) --
+    // the warehouse they were received at, active, as for new goods anywhere.
+    // A stitching receipt stores none: its warehouse follows from its stage.
+    let ownWarehouseId = null;
+    if (!isStitchingLine(line)) {
+      const [warehouse, warehouseError] = await warehouseFor(req.body?.warehouse_id);
+      if (warehouseError) return res.status(400).json({ message: warehouseError });
+      ownWarehouseId = warehouse.id;
+      warehouseName = warehouse.name;
+    }
 
     const pairError = incomingPairError(incomingNo, prefixId);
     if (pairError) return res.status(400).json({ message: pairError });
@@ -1533,14 +1564,14 @@ async function createReceipt(req, res, next) {
     try {
       const { rows: inserted } = await tx.execute({
         sql: `INSERT INTO outbound_po_line_receipts (line_id, received_qty, received_rate, bill_no, checked_by, incoming_no,
-                process_rate, incoming_prefix_id, direct_stage, outbound_bill_no,
+                process_rate, incoming_prefix_id, warehouse_id, direct_stage, outbound_bill_no,
                 unit_metric, qty_in_metres, received_dozens,
                 fresh_dozens, second_dozens, third_dozens, note,
                 qty_diff_action, qty_diff_reason, closed_at, closed_by, created_by, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ${closesOnSave ? "datetime('now')" : 'NULL'}, ?, ?, ?) RETURNING id`,
         args: [lineId, receivedQty, receivedRate, billNo, checkedBy, incomingNo,
-          processRate, prefixId, directStage, outboundBillNo,
+          processRate, prefixId, ownWarehouseId, directStage, outboundBillNo,
           unitMetric, qtyInMetres, receivedDozens,
           grades.fresh_dozens, grades.second_dozens, grades.third_dozens, note,
           diffAction, diffReason, closesOnSave ? req.user.id : null, req.user.id, req.user.id],
@@ -1572,6 +1603,7 @@ async function createReceipt(req, res, next) {
         userId: req.user.id,
         actionType: 'OUTBOUND_PO_LINE_RECEIPT_CREATE',
         description: `Added receipt of ${receivedQty} on line "${line.category} - ${line.item_name}${line.variant ? ` - ${line.variant}` : ''}"${billNo ? `, bill #${billNo}` : ''} @ ${receivedRate}${incomingNo != null ? `, incoming #${incomingNo}` : ''} (PO ${padOrderNo(id)})`
+          + (ownWarehouseId != null ? `, received at ${warehouseName}` : '')
           + (closesOnSave ? `, received straight into ${warehouseName || STOCK_STAGE} and closed` : '')
           + (thirdParty ? `, sold straight on to a third party against outbound bill #${outboundBillNo}` : ''),
         entityType: 'outbound_po_line',
@@ -1600,12 +1632,17 @@ async function updateReceipt(req, res, next) {
                    r.stage_party_name, r.stage_rate, r.direct_stage, r.outbound_bill_no,
                    COALESCE(sp.stage, r.direct_stage) AS incoming_stage,
                    sp.warehouse_id, w.name AS warehouse_name,
+                   -- Where a non-stitching receipt was received (107). Its own
+                   -- alias: warehouse_id above is the PREFIX's, which the
+                   -- stitching branches below compare against.
+                   r.warehouse_id AS own_warehouse_id, ow.name AS own_warehouse_name,
                    l.category, l.item_name, l.variant, l.unit_metric AS line_unit_metric,
                    ${STITCHING_SQL} AS goes_to_stitching
             FROM outbound_po_line_receipts r
             JOIN outbound_po_lines l ON l.id = r.line_id
             LEFT JOIN stitching_prefixes sp ON sp.id = r.incoming_prefix_id
             LEFT JOIN warehouses w ON w.id = sp.warehouse_id
+            LEFT JOIN warehouses ow ON ow.id = r.warehouse_id
             WHERE r.id = ? AND r.line_id = ? AND l.po_id = ? AND r.deleted_at IS NULL`,
       args: [receiptId, lineId, id],
     });
@@ -1678,6 +1715,26 @@ async function updateReceipt(req, res, next) {
         nextPrefixId = resolved;
         nextWarehouseName = name;
         nextDirectStage = null;
+      }
+    }
+
+    // Where goods off the Stitching page were received (107). The one already
+    // stored, restated -- the form sends it on every save -- is kept even if that
+    // warehouse has since been retired: the goods are still there, and an edit
+    // to the bill number must not be refused because new goods can't go there.
+    // Any other warehouse must be able to take new goods. A stitching receipt
+    // stores none -- its warehouse follows from its stage -- so one left over
+    // from before its article was ticked is cleared by the next edit.
+    let nextOwnWarehouseId = null;
+    let nextOwnWarehouseName = null;
+    if (!isStitchingLine(receipt)) {
+      nextOwnWarehouseId = receipt.own_warehouse_id ?? null;
+      nextOwnWarehouseName = receipt.own_warehouse_name ?? null;
+      if (has('warehouse_id') && String(req.body.warehouse_id) !== String(receipt.own_warehouse_id ?? '')) {
+        const [warehouse, warehouseError] = await warehouseFor(req.body.warehouse_id);
+        if (warehouseError) return res.status(400).json({ message: warehouseError });
+        nextOwnWarehouseId = warehouse.id;
+        nextOwnWarehouseName = warehouse.name;
       }
     }
 
@@ -1857,6 +1914,12 @@ async function updateReceipt(req, res, next) {
       stage_party_name: nextStageParty, stage_rate: nextStageRate,
       direct_stage: nextDirectStage, outbound_bill_no: nextOutboundBillNo,
     }, RECEIPT_FIELDS);
+    // The location of a non-stitching receipt, by NAME, so the history reads
+    // "Warehouse: Panchal → Swastik" rather than two ids. Compared on the stored
+    // column, never the prefix's warehouse a stitching receipt reads.
+    if (String(nextOwnWarehouseId ?? '') !== String(receipt.own_warehouse_id ?? '')) {
+      changes.push({ field: 'warehouse', old: receipt.own_warehouse_name ?? null, new: nextOwnWarehouseName });
+    }
 
     // Moving a receipt INTO a warehouse closes it, the same as saving one there
     // does. Moving it OUT reopens it -- closed only means something at a
@@ -1897,12 +1960,12 @@ async function updateReceipt(req, res, next) {
         await tx.execute({
           sql: `UPDATE outbound_po_line_receipts SET received_qty = ?, received_rate = ?, bill_no = ?,
                   checked_by = ?, incoming_no = ?, process_rate = ?,
-                  incoming_prefix_id = ?, unit_metric = ?, qty_in_metres = ?, received_dozens = ?,
+                  incoming_prefix_id = ?, warehouse_id = ?, unit_metric = ?, qty_in_metres = ?, received_dozens = ?,
                   fresh_dozens = ?, second_dozens = ?, third_dozens = ?, note = ?,
                   stage_party_name = ?, stage_rate = ?, direct_stage = ?, outbound_bill_no = ?,
                   updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
           args: [nextQty, nextRate, nextBillNo, nextCheckedBy, nextIncomingNo,
-            nextProcessRate, nextPrefixId, nextUnitMetric,
+            nextProcessRate, nextPrefixId, nextOwnWarehouseId, nextUnitMetric,
             nextQtyInMetres, nextReceivedDozens,
             nextGrades.fresh_dozens, nextGrades.second_dozens, nextGrades.third_dozens, nextNote,
             nextStageParty, nextStageRate, nextDirectStage, nextOutboundBillNo,

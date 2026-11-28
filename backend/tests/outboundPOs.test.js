@@ -45,9 +45,13 @@ function lineFor(article, overrides = {}) {
 // unless a test is specifically exercising their validation. Checked By is
 // asked only at Panchal and Third Party, and ignored everywhere else -- it is
 // supplied here so a receipt at either of those stages meets the rule by default.
+// A warehouse is named at the Warehouse stage, and -- with no stage at all --
+// on goods that never reach the Stitching page (107). Panchal unless the test
+// says, which a stitching line with no stage never gets as far as reading.
 function receiptBody(overrides = {}) {
   const body = { received_qty: 1, received_rate: 10, checked_by: warehousePocId, bill_no: 'B-DEF', ...overrides };
-  if (body.incoming_stage === 'Warehouse' && body.warehouse_id === undefined) body.warehouse_id = panchalId;
+  if ((body.incoming_stage === 'Warehouse' || body.incoming_stage === undefined)
+      && body.warehouse_id === undefined) body.warehouse_id = panchalId;
   return body;
 }
 
@@ -870,14 +874,14 @@ describe('Outbound POs API', () => {
       ['null', { received_rate: null }],
     ])('rejects a receipt whose billed rate is %s', async (_label, patch) => {
       const { poId, lineId } = await setupLine();
-      const res = await rawPost(poId, lineId, { received_qty: 1, checked_by: warehousePocId, ...patch });
+      const res = await rawPost(poId, lineId, { received_qty: 1, checked_by: warehousePocId, warehouse_id: panchalId, ...patch });
       expect(res.status).toBe(400);
       expect(res.body.message).toMatch(/Billed Rate is required/);
     });
 
     test('rejects a negative billed rate', async () => {
       const { poId, lineId } = await setupLine();
-      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: -1, checked_by: warehousePocId });
+      const res = await rawPost(poId, lineId, { received_qty: 1, received_rate: -1, checked_by: warehousePocId, warehouse_id: panchalId });
       expect(res.status).toBe(400);
     });
 
@@ -901,7 +905,7 @@ describe('Outbound POs API', () => {
     // Panchal and Third Party: see "Checked By at the checker stages" below.)
     test('a receipt off the Stitching page needs a Warehouse POC', async () => {
       const { poId, lineId } = await setupLine();
-      const body = { received_qty: 1, received_rate: 10, bill_no: `B-${uid()}` };
+      const body = { received_qty: 1, received_rate: 10, bill_no: `B-${uid()}`, warehouse_id: panchalId };
 
       const missing = await rawPost(poId, lineId, body);
       expect(missing.status).toBe(400);
@@ -1040,7 +1044,7 @@ describe('Outbound POs API', () => {
     ])('rejects a receipt whose bill no is %s', async (_label, patch) => {
       const { poId, lineId } = await setupLine();
       const res = await rawPost(poId, lineId, {
-        received_qty: 1, received_rate: 10, checked_by: warehousePocId, ...patch,
+        received_qty: 1, received_rate: 10, checked_by: warehousePocId, warehouse_id: panchalId, ...patch,
       });
       expect(res.status).toBe(400);
       expect(res.body.message).toMatch(/Bill No is required/);
@@ -1081,6 +1085,175 @@ describe('Outbound POs API', () => {
       });
       expect(rows[0].incoming_no).toBe('IN-77');
       expect(rows[0].bill_no).toBeNull();
+    });
+  });
+
+  // Migration 107: goods that never reach the Stitching page have no stage,
+  // but they land in one of our warehouses, and the receipt says which. A
+  // stitching receipt's warehouse follows from its stage instead, so it stores
+  // none of its own.
+  describe('Non-stitching receipts name a warehouse', () => {
+    async function packagingLine(qty = 100) {
+      const vendor = await createVendor();
+      const created = await createPO({ vendor_id: vendor.body.id, lines: [lineFor(vendor.body.articles[0], { qty })] });
+      const [lineId] = await lineIdsOf(created.body.id);
+      return { poId: created.body.id, lineId };
+    }
+    const rawPost = (poId, lineId, body) => request(app)
+      .post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`)
+      .set('Authorization', `Bearer ${token}`).send(body);
+    const patchOne = (poId, lineId, receiptId, body) => request(app)
+      .patch(`/api/outbound-pos/${poId}/lines/${lineId}/receipts/${receiptId}`)
+      .set('Authorization', `Bearer ${token}`).send(body);
+    const getLine = async (poId) => (await request(app).get(`/api/outbound-pos/${poId}`)
+      .set('Authorization', `Bearer ${token}`)).body.lines[0];
+    const storedWarehouse = async (receiptId) => {
+      const { rows } = await db.execute({
+        sql: 'SELECT warehouse_id FROM outbound_po_line_receipts WHERE id = ?', args: [receiptId],
+      });
+      return rows[0].warehouse_id == null ? null : Number(rows[0].warehouse_id);
+    };
+    // A warehouse of our own, by SQL: goods off the Stitching page need no
+    // prefix, so none is minted, and no other suite's prefix choice moves.
+    const newWarehouse = async ({ active = true } = {}) => {
+      const tag = uid();
+      // The code is UNIQUE and short, so it takes the counter half of the uid --
+      // the timestamp half is the same for every call in a run.
+      const { rows } = await db.execute({
+        sql: 'INSERT INTO warehouses (name, code, is_active) VALUES (?, ?, ?) RETURNING id, name',
+        args: [`Swastik ${tag}`, `SW${tag.split('-')[1]}`, active ? 1 : 0],
+      });
+      return { id: Number(rows[0].id), name: rows[0].name };
+    };
+    const body = (overrides = {}) => ({
+      received_qty: 1, received_rate: 10, bill_no: `B-${uid()}`, checked_by: warehousePocId, ...overrides,
+    });
+
+    test('a new receipt must name one, ahead of every other field', async () => {
+      const { poId, lineId } = await packagingLine();
+      for (const missing of [{}, { warehouse_id: '' }, { warehouse_id: null }]) {
+        const res = await rawPost(poId, lineId, body(missing));
+        expect(res.status).toBe(400);
+        expect(res.body.message).toBe('Warehouse is required');
+      }
+      // Checked first -- before Received Qty and the Billed Rate.
+      const bare = await rawPost(poId, lineId, { received_qty: 0 });
+      expect(bare.status).toBe(400);
+      expect(bare.body.message).toBe('Warehouse is required');
+    });
+
+    test('it must exist and be active', async () => {
+      const { poId, lineId } = await packagingLine();
+      const nowhere = await rawPost(poId, lineId, body({ warehouse_id: 999999 }));
+      expect(nowhere.status).toBe(400);
+      expect(nowhere.body.message).toBe('Warehouse not found');
+
+      const retired = await newWarehouse({ active: false });
+      const refused = await rawPost(poId, lineId, body({ warehouse_id: retired.id }));
+      expect(refused.status).toBe(400);
+      expect(refused.body.message).toBe(`${retired.name} is no longer active — pick another warehouse`);
+    });
+
+    test('it is stored, shown by name, audited, and a stage is still refused', async () => {
+      const { poId, lineId } = await packagingLine();
+      const swastik = await newWarehouse();
+      const created = await rawPost(poId, lineId, body({ warehouse_id: swastik.id }));
+      expect(created.status).toBe(201);
+      expect(await storedWarehouse(created.body.id)).toBe(swastik.id);
+
+      const receipt = (await getLine(poId)).receipts[0];
+      expect(Number(receipt.warehouse_id)).toBe(swastik.id);
+      expect(receipt.warehouse_name).toBe(swastik.name);
+      expect(receipt.flags).not.toContain('missing_warehouse');
+
+      const history = await auditFor('outbound_po_line', lineId);
+      expect(history.body.some(r => r.action_type === 'OUTBOUND_PO_LINE_RECEIPT_CREATE'
+        && r.description.includes(`received at ${swastik.name}`))).toBe(true);
+
+      // Packaging travels no stage chain -- naming a warehouse does not change that.
+      const staged = await rawPost(poId, lineId, body({ warehouse_id: swastik.id, incoming_stage: 'Warehouse' }));
+      expect(staged.status).toBe(400);
+      expect(staged.body.message).toBe('Only articles that go through Stitching travel the Stitching stages');
+    });
+
+    test('moving it to another warehouse is audited by name', async () => {
+      const { poId, lineId } = await packagingLine();
+      const swastik = await newWarehouse();
+      const created = await rawPost(poId, lineId, body({ warehouse_id: panchalId }));
+      const moved = await patchOne(poId, lineId, created.body.id, { warehouse_id: swastik.id });
+      expect(moved.status).toBe(200);
+      expect(await storedWarehouse(created.body.id)).toBe(swastik.id);
+
+      const history = await auditFor('outbound_po_line', lineId);
+      const update = history.body.find(r => r.action_type === 'OUTBOUND_PO_LINE_RECEIPT_UPDATE');
+      expect(update.changes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ field: 'warehouse', old: 'Panchal', new: swastik.name }),
+      ]));
+
+      // An edit cannot blank it.
+      const cleared = await patchOne(poId, lineId, created.body.id, { warehouse_id: '' });
+      expect(cleared.status).toBe(400);
+      expect(cleared.body.message).toBe('Warehouse is required');
+    });
+
+    test('a warehouse retired since keeps its goods through an unrelated edit', async () => {
+      const { poId, lineId } = await packagingLine();
+      const swastik = await newWarehouse();
+      const created = await rawPost(poId, lineId, body({ warehouse_id: swastik.id }));
+      await db.execute({ sql: 'UPDATE warehouses SET is_active = 0 WHERE id = ?', args: [swastik.id] });
+
+      // Restated, as the form does on every save -- kept, not refused.
+      const edited = await patchOne(poId, lineId, created.body.id, { warehouse_id: swastik.id, note: 'Recounted' });
+      expect(edited.status).toBe(200);
+      expect(await storedWarehouse(created.body.id)).toBe(swastik.id);
+      // Not restated at all -- an API caller's edit -- also leaves it alone.
+      expect((await patchOne(poId, lineId, created.body.id, { note: 'Again' })).status).toBe(200);
+      expect(await storedWarehouse(created.body.id)).toBe(swastik.id);
+    });
+
+    test('an older receipt with none is flagged until an edit names one', async () => {
+      const { poId, lineId } = await packagingLine();
+      const created = await rawPost(poId, lineId, body({ warehouse_id: panchalId }));
+      await db.execute({
+        sql: 'UPDATE outbound_po_line_receipts SET warehouse_id = NULL WHERE id = ?', args: [created.body.id],
+      });
+      const flagged = await getLine(poId);
+      expect(flagged.receipts[0].flags).toContain('missing_warehouse');
+      expect(flagged.flags).toContain('missing_warehouse');
+      const listed = await request(app).get('/api/outbound-pos').query({ flag: 'missing_warehouse' })
+        .set('Authorization', `Bearer ${token}`);
+      expect(listed.body.rows.some(p => p.id === poId)).toBe(true);
+
+      // An edit that does not send it still saves -- the form always sends it.
+      expect((await patchOne(poId, lineId, created.body.id, { note: 'Unrelated' })).status).toBe(200);
+      expect((await getLine(poId)).receipts[0].flags).toContain('missing_warehouse');
+
+      expect((await patchOne(poId, lineId, created.body.id, { warehouse_id: panchalId })).status).toBe(200);
+      const fixed = await getLine(poId);
+      expect(fixed.receipts[0].flags).not.toContain('missing_warehouse');
+      expect(fixed.flags).not.toContain('missing_warehouse');
+    });
+
+    test('a stitching receipt stores none of its own -- its warehouse follows from its stage', async () => {
+      const vendor = await createVendor([{ category: 'Raw Material', item_name: 'Handkerchief - Cloth Fabrics' }]);
+      const po = await createPO({ vendor_id: vendor.body.id, lines: [lineFor(vendor.body.articles[0], { qty: 100 })] });
+      const [lineId] = await lineIdsOf(po.body.id);
+      const created = await rawPost(po.body.id, lineId, body({
+        received_qty: 50, incoming_no: `IN-${uid()}`, incoming_stage: 'Processing', qty_in_metres: 200,
+        warehouse_id: panchalId,
+      }));
+      expect(created.status).toBe(201);
+      expect(await storedWarehouse(created.body.id)).toBeNull();
+      const receipt = (await getLine(po.body.id)).receipts[0];
+      expect(receipt.warehouse_id).toBeNull();
+      expect(receipt.flags).not.toContain('missing_warehouse');
+
+      // One left behind from before its article was ticked is cleared by the next edit.
+      await db.execute({
+        sql: 'UPDATE outbound_po_line_receipts SET warehouse_id = ? WHERE id = ?', args: [panchalId, created.body.id],
+      });
+      expect((await patchOne(po.body.id, lineId, created.body.id, { note: 'Ticked since' })).status).toBe(200);
+      expect(await storedWarehouse(created.body.id)).toBeNull();
     });
   });
 
@@ -2038,14 +2211,18 @@ describe('Outbound POs API', () => {
     // missing_incoming_stage. The cases that are only about rate therefore pin a
     // prefix, to keep one flag's fixtures from testing another flag by accident.
     // goes_to_stitching on the line is what makes the flag applicable at all.
+    //
+    // The same goes for missing_warehouse the other way round (107): a receipt
+    // on a line WITHOUT the tick names its own warehouse, so the cases about
+    // other flags on such a line pin one (warehouse_id: 1).
     test.each([
-      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, ['rate_mismatch']],
-      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, []],
-      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 0 }, []],
-      [{ received_rate: 10, incoming_no: null }, { rate: 10 }, ['missing_incoming_no']],
-      [{ received_rate: 12, incoming_no: null }, { rate: 10 }, ['rate_mismatch', 'missing_incoming_no']],
-      [{ received_rate: null, incoming_no: 'IN-1', incoming_prefix_id: 1 }, { rate: 10 }, []],
-      [{ received_rate: 10, incoming_no: '   ' }, { rate: 10 }, ['missing_incoming_no']],
+      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: 1, warehouse_id: 1 }, { rate: 10 }, ['rate_mismatch']],
+      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: 1, warehouse_id: 1 }, { rate: 10 }, []],
+      [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: 1, warehouse_id: 1 }, { rate: 0 }, []],
+      [{ received_rate: 10, incoming_no: null, warehouse_id: 1 }, { rate: 10 }, ['missing_incoming_no']],
+      [{ received_rate: 12, incoming_no: null, warehouse_id: 1 }, { rate: 10 }, ['rate_mismatch', 'missing_incoming_no']],
+      [{ received_rate: null, incoming_no: 'IN-1', incoming_prefix_id: 1, warehouse_id: 1 }, { rate: 10 }, []],
+      [{ received_rate: 10, incoming_no: '   ', warehouse_id: 1 }, { rate: 10 }, ['missing_incoming_no']],
       // A number with no stage behind it — the legacy shape, on fabric.
       [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10, goes_to_stitching: 1 }, ['missing_incoming_stage']],
       [{ received_rate: 12, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10, goes_to_stitching: 1 }, ['rate_mismatch', 'missing_incoming_stage']],
@@ -2054,10 +2231,16 @@ describe('Outbound POs API', () => {
       [{ received_rate: 10, incoming_no: null, incoming_prefix_id: null, direct_stage: 'Third Party' }, { rate: 10, goes_to_stitching: 1 }, []],
       // The same receipt on anything that is not fabric travels no stage
       // chain, so there is no stage to be missing.
-      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: null }, { rate: 10 }, []],
+      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: null, warehouse_id: 1 }, { rate: 10 }, []],
       // No number at all raises missing_incoming_no only — one omission must not
       // light up two flags.
-      [{ received_rate: 10, incoming_no: null, incoming_prefix_id: null }, { rate: 10 }, ['missing_incoming_no']],
+      [{ received_rate: 10, incoming_no: null, incoming_prefix_id: null, warehouse_id: 1 }, { rate: 10 }, ['missing_incoming_no']],
+      // Packaging saved before it named a warehouse (107). A separate fact from
+      // the gate number, so both can fire.
+      [{ received_rate: 10, incoming_no: 'IN-1', warehouse_id: null }, { rate: 10 }, ['missing_warehouse']],
+      [{ received_rate: 10, incoming_no: null }, { rate: 10, goes_to_stitching: 0 }, ['missing_incoming_no', 'missing_warehouse']],
+      // A stitching receipt holds none of its own -- its stage says where it is.
+      [{ received_rate: 10, incoming_no: 'IN-1', incoming_prefix_id: 1, warehouse_id: null }, { rate: 10, goes_to_stitching: 1 }, []],
     ])('receipt %j against line %j yields %j', (receipt, line, expected) => {
       const actual = RECEIPT_FLAG_KEYS.filter(k => FLAGS[k].js(receipt, line));
       expect(actual.sort()).toEqual([...expected].sort());
@@ -2322,7 +2505,7 @@ describe('Outbound PO lines — unit metric selection', () => {
       const res = await request(app)
         .post(`/api/outbound-pos/${poId}/lines/${lineId}/receipts`)
         .set('Authorization', `Bearer ${token}`)
-        .send({ received_qty: 2, received_rate: 10, checked_by: warehousePocId, unit_metric: 'mtrs' });
+        .send({ received_qty: 2, received_rate: 10, checked_by: warehousePocId, warehouse_id: panchalId, unit_metric: 'mtrs' });
       expect(res.status).toBe(400);
       expect(res.body.message).toMatch(/Bill No is required/);
     });
